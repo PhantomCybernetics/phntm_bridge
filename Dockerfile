@@ -5,6 +5,7 @@ FROM ros:$ROS_DISTRO
 RUN apt-get update
 RUN apt-get install -y ssh \
                        vim \
+		       inetutils-ping \
                        pip
 
 COPY --chmod=a+x ./ros_entrypoint.sh /ros_entrypoint.sh
@@ -33,7 +34,9 @@ RUN --mount=type=bind,source=./,target=/ros2_ws/src/phntm_webrtc_bridge \
 # RUN ros2 run phntm_bridge phntm_bridge
 
 # hostame + purple prompts
-RUN echo "phntm-bridge" > /etc/hostname
+
+# RUN echo "phntm-bridge" > /etc/hostname
+
 RUN echo "PS1='\${debian_chroot:+(\$debian_chroot)}\\[\\033[01;35m\\]\\u@\\h\\[\\033[00m\\]:\\[\\033[01;34m\\]\\w\\[\\033[00m\\]\\$ '"  >> /root/.bashrc
 
 RUN echo "source /opt/ros/$ROS_DISTRO/setup.bash" >> /root/.bashrc
