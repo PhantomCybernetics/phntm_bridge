@@ -3,9 +3,12 @@
 <package format="3">
   <name>phntm_webrtc_bridge</name>
   <version>0.0.1</version>
-  <description>Bidirectional WebRTC bridge for fast P2P data visualization and intraction</description>
+  <description>Bidirectional WebRTC ROS bridge for fast P2P data visualization and human-robot interaction</description>
   <maintainer email="mirek@phntm.io">Mirek Burkon</maintainer>
   <license>MIT</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

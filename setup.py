@@ -4,23 +4,26 @@ package_name = 'phntm_webrtc_bridge'
 
 setup(
     name=package_name,
-    version='0.0.0',
+    version='0.0.1',
     packages=[package_name],
     data_files=[
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
     ],
-    install_requires=['setuptools'],
+    install_requires=['setuptools==58.2.0'],
     zip_safe=True,
-    maintainer='husarion',
-    maintainer_email='dev@phntm.io',
-    description='TODO: Package description',
-    license='TODO: License declaration',
+    maintainer='Mirek Burkon',
+    maintainer_email='mirek@phntm.io',
+    description='Bidirectional WebRTC ROS bridge for fast P2P data visualization and human-robot interaction',
+    license='MIT',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'bridge = phntm_webrtc_bridge.bridge:main'
+            'bridge = phntm_webrtc_bridge.bridge:main',
+            'talker = phntm_webrtc_bridge.publisher_member_function:main',
+            'listener = phntm_webrtc_bridge.subscriber_member_function:main',
+
         ],
     },
 )

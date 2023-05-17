@@ -3,7 +3,8 @@ ARG ROS_DISTRO=humble
 FROM ros:$ROS_DISTRO
 
 RUN apt-get update
-RUN apt-get install -y ssh
+RUN apt-get install -y ssh \
+                       pip
 
 COPY --chmod=a+x ./ros_entrypoint.sh /ros_entrypoint.sh
 
@@ -18,12 +19,12 @@ RUN mkdir -p $ROS_WS/src
 
 WORKDIR $ROS_WS
 
-RUN --mount=type=bind,source=./,target=/ros2_ws/src/phntm_bridge \
+RUN --mount=type=bind,source=./,target=/ros2_ws/src/phntm_webrtc_bridge \
     . /opt/ros/$ROS_DISTRO/setup.sh && \
      rosdep update --rosdistro $ROS_DISTRO && \
      rosdep install -i --from-path src --rosdistro $ROS_DISTRO -y
 
-RUN --mount=type=bind,source=./,target=/ros2_ws/src/phntm_bridge \
+RUN --mount=type=bind,source=./,target=/ros2_ws/src/phntm_webrtc_bridge \
     . /opt/ros/$ROS_DISTRO/setup.sh && \
     colcon build --symlink-install
 
