@@ -24,7 +24,7 @@ class MinimalSubscriber(Node):
         super().__init__('minimal_subscriber')
         self.subscription = self.create_subscription(
             String,
-            'talker_topic',
+            '/talker_topic',
             self.listener_callback,
             10)
         self.subscription  # prevent unused variable warning

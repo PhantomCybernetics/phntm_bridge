@@ -21,7 +21,7 @@ class MinimalPublisher(Node):
 
     def __init__(self):
         super().__init__('minimal_publisher')
-        self.publisher_ = self.create_publisher(String, 'talker_topic', 10)
+        self.publisher_ = self.create_publisher(String, '/talker_topic', 10)
 
         timer_period = 0.5  # seconds
         self.timer = self.create_timer(timer_period, self.timer_callback)
@@ -31,29 +31,32 @@ class MinimalPublisher(Node):
         self.led_left_ = self.create_publisher(Bool, '/led/left', 10)
         self.led_right_ = self.create_publisher(Bool, '/led/right', 10)
 
-
-
     def timer_callback(self):
-        msg = String()
-        msg.data = 'Hello World: %d' % self.i
-        self.publisher_.publish(msg)
 
-        self.i += 1
+        # self.get_logger().info(f'Publishing...')
+        try:
+            msg = String()
+            msg.data = 'Ohi!: %d' % self.i
+            self.publisher_.publish(msg)
 
-        msg_true = Bool()
-        msg_true.data = True
+            self.i += 1
 
-        msg_false = Bool()
-        msg_false.data = False
+            msg_true = Bool()
+            msg_true.data = True
 
-        self.led_left_.publish(msg_true if self.led_state_ else msg_false)
-        self.led_right_.publish(msg_false if self.led_state_ else msg_true)
+            msg_false = Bool()
+            msg_false.data = False
 
-        self.led_state_ = not self.led_state_
+            self.led_left_.publish(msg_true if self.led_state_ else msg_false)
+            self.led_right_.publish(msg_false if self.led_state_ else msg_true)
 
-        self.get_logger().info(f'Publishing: "%s", LED: {self.led_state_}' % msg.data)
+            self.led_state_ = not self.led_state_
 
-    def __del__(self):
+            self.get_logger().info(f'Published: "%s", LED: {self.led_state_}' % msg.data)
+        except:
+             self.get_logger().info(f'Failed publishing')
+
+    def clear_leds(self):
         self.get_logger().info('Clearing LEDs...')
 
         msg_false = Bool()
@@ -64,20 +67,39 @@ class MinimalPublisher(Node):
 
         self.get_logger().info('LEDS Clear')
 
+def shutdown_cleanup():
+    print('CONTEXT GOT SHUTDOWN')
+
+
 def main(args=None):
+
     rclpy.init(args=args)
 
     minimal_publisher = MinimalPublisher()
+    #context = rclpy.get_default_context()
+    minimal_publisher.context.on_shutdown(shutdown_cleanup)
+
+    # while not rclpy._shutdown():
+
+
     try:
         rclpy.spin(minimal_publisher)
     except KeyboardInterrupt:
-        minimal_publisher.get_logger().info('KeyboardInterrupt > Shutting Down...')
+        minimal_publisher.get_logger().info('Got KeyboardInterrupt, shutting down...')
+        minimal_publisher.destroy_timer(minimal_publisher.timer)
+        # rclpy.init(args=args)
+        #minimal_publisher = MinimalPublisher()
+        # minimal_publisher.clear_leds()
 
+    # rclpy.spin_once(minimal_publisher)
     # Destroy the node explicitly
     # (optional - otherwise it will be done automatically
     # when the garbage collector destroys the node object)
     minimal_publisher.destroy_node()
-    rclpy.shutdown()
+    try:
+        rclpy.shutdown()
+    except:
+        pass
 
 
 if __name__ == '__main__':

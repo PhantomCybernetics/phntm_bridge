@@ -1,0 +1,15 @@
+services:
+
+phntm_bridge:
+    image: phntm/bridge:humble
+    container_name: phntm-bridge
+    hostname: phntm-bridge
+    restart: unless-stopped
+    privileged: true
+    network_mode: "host"
+    volumes:
+      - ~/ros2_ws/src/phntm_webrtc_bridge:/ros2_ws/src/phntm_webrtc_bridge
+    devices:
+      - /dev:/dev
+    command: /bin/sh -c "while sleep 1000; do :; done"
+
