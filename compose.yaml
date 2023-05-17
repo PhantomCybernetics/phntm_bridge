@@ -1,6 +1,5 @@
 services:
-
-phntm_bridge:
+  phntm_bridge:
     image: phntm/bridge:humble
     container_name: phntm-bridge
     hostname: phntm-bridge
