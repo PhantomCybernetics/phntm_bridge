@@ -52,9 +52,9 @@ class StatusLED(Node):
             if self.interval_sec_ < 0:
                 self.on_sec_ = -1
             time.sleep(on_sec)
+            self._off()
 
             if self.on_sec_ > 0:
-                self._off()
                 if self.interval_sec_ > 0:
                     time.sleep(self.interval_sec_-self.on_sec_)
 
@@ -72,8 +72,8 @@ class StatusLED(Node):
     def stop(self):
         self.on_sec_ = -1 # kill loop
         self.blink_thread_ = None
-        self.publisher_.publish(self.msg_off) # off now
+        self._off() # off now
 
-    def once(self, duration_sec:float):
+    def once(self, duration_sec:float=.00001):
         self.blink(on_sec=duration_sec, interval_sec=-1)
 

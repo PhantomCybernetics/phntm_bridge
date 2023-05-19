@@ -11,8 +11,8 @@ def generate_launch_description():
             emulate_tty=True,
             parameters=[
                 {'id_robot': 'aa186123aASAsaaklsjds322234'},
-                {'ws_server': '192.168.1.67'},
-                {'ws_port': 1338 },
+                {'sio_address': 'https://192.168.1.67'},
+                {'sio_port': 1337 },
                 {'status_led_topic': '/led/right'}, # will blink here
             ]
         )
