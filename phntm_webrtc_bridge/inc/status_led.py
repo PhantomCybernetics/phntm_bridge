@@ -10,7 +10,7 @@ class StatusLED(Node):
     def __init__(self, name:str, topic:str):
         super().__init__('webrtc_bridge_led_blinker_'+name)
         self.topic = topic
-        self.publisher_ = self.create_publisher(Bool, self.topic, 1)
+        self.publisher_ = self.create_publisher(Bool, self.topic, 3)
 
         self.msg_off = Bool()
         self.msg_off.data = False
@@ -19,13 +19,16 @@ class StatusLED(Node):
 
         self.blink_thread_ = None
         # self.on_timer_ = None
+        self.keep_on = False
 
     def set_disconnected(self):
+        self.keep_on = False
         self.blink(on_sec=0.01, interval_sec=0.5)
 
     def set_connected(self):
         self.on_sec_ = -1 #kill thread
         self.blink_thread_ = None
+        self.keep_on = True
         self._on()
 
     def blink(self, on_sec:float, interval_sec:float):
@@ -51,7 +54,12 @@ class StatusLED(Node):
             self._on()
             if self.interval_sec_ < 0:
                 self.on_sec_ = -1
+
+            if self.keep_on:
+                return
+
             time.sleep(on_sec)
+
             self._off()
 
             if self.on_sec_ > 0:
@@ -63,17 +71,26 @@ class StatusLED(Node):
 
     def _on(self):
         # print('led on')
-        self.publisher_.publish(self.msg_on)
+        try:
+            self.publisher_.publish(self.msg_on)
+        except rclpy._rclpy_pybind11.RCLError:
+            pass
 
     def _off(self):
         # print('led off')
-        self.publisher_.publish(self.msg_off)
+        self.keep_on = False
+        try:
+            self.publisher_.publish(self.msg_off)
+        except rclpy._rclpy_pybind11.RCLError:
+            pass
 
     def stop(self):
         self.on_sec_ = -1 # kill loop
+        self.keep_on = False
         self.blink_thread_ = None
         self._off() # off now
 
     def once(self, duration_sec:float=.00001):
+        self.keep_on = False
         self.blink(on_sec=duration_sec, interval_sec=-1)
 

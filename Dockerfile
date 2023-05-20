@@ -10,6 +10,9 @@ RUN apt-get install -y ssh \
 
 COPY --chmod=a+x ./ros_entrypoint.sh /ros_entrypoint.sh
 
+# RUN pip install setuptools-58.2.0 \
+
+
 #ENV CC=clang
 #ENV CXX=clang++
 

@@ -1,0 +1,8 @@
+/**:
+  ros__parameters:
+    id_robot: ''
+    key: ''
+    sio_address: 'https://192.168.1.67'
+    sio_port: 1337
+    conn_led_topic: '/led/right' # will blink here
+    data_led_topic: '/led/left' # will blink here
