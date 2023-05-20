@@ -36,13 +36,15 @@ class BridgeController(Node):
             exit(1)
 
         # SOCKET.IO
-        self.declare_parameter('sio_address', 'https://api.phntm.io/robot')
+        self.declare_parameter('sio_address', 'https://api.phntm.io')
         self.declare_parameter('sio_port', 1337)
+        self.declare_parameter('sio_path', '/robot/socket.io')
         self.declare_parameter('sio_connection_retry_sec', 2)
         self.declare_parameter('sio_ssl_verify', True)
 
         self.sio_address = self.get_parameter('sio_address').get_parameter_value().string_value
         self.sio_port = self.get_parameter('sio_port').get_parameter_value().integer_value
+        self.sio_path = self.get_parameter('sio_path').get_parameter_value().string_value
         self.sio_ssl_verify = self.get_parameter('sio_ssl_verify').get_parameter_value().bool_value
         if (self.sio_address == None or self.sio_address == ''): self.get_logger().error(f'Param sio_address not provided!')
         if (self.sio_port == None): self.get_logger().error(f'Param sio_port not provided!')
@@ -83,14 +85,19 @@ class BridgeController(Node):
         self.discovery_timer()
 
 
-    async def start_sio_client(self, addr:str, port:int):
+    async def start_sio_client(self, addr:str, port:int, path:str):
 
         sio = socketio.AsyncClient(handle_sigint=True,
                                    logger=True,
                                    ssl_verify=self.sio_ssl_verify
                                    )
 
-
+        #     "id": "6468888265090fc017f1bc1a",
+        #     "key": "6468888265090fc017f1bc19",
+        #     "sio_address": "https://192.168.1.67",
+        #     "sio_path": "/robot/socket.io",
+        #     "sio_port": 1337
+        # }
 
         @sio.on('connect')
         async def on_connect():
@@ -102,10 +109,14 @@ class BridgeController(Node):
             )
 
         async def on_auth_reply(data):
-            self.get_logger().warn('Auth reply: ' + str(data))
-            if self.conn_led != None:
-                self.conn_led.set_connected()
+            if  not 'err' in data.keys():
+                self.get_logger().info('Auth successful: ' + str(data))
                 self.is_connected_ = True
+                if self.conn_led != None:
+                    self.conn_led.set_connected()
+            else:
+                self.get_logger().error('Auth failure: ' + str(data))
+                self.sio.disconnect()
 
         @sio.event
         async def connect_error(data):
@@ -132,12 +143,12 @@ class BridgeController(Node):
         #     print('socket.io error')
 
         self.sio = sio
-        self.get_logger().info(f'Socket.io connecting to {addr}:{port}')
+        self.get_logger().info(f'Socket.io connecting to {addr}{path}:{port}')
 
         while not self.is_connected_ and not self.shutting_down_:
             try:
                 self.get_logger().info("Connecting...");
-                await self.sio.connect(url=f'{addr}:{port}', socketio_path='/robot/socket.io/')
+                await self.sio.connect(url=f'{addr}:{port}', socketio_path=path)
                 # await self.sio.wait()
             except socketio.exceptions.ConnectionError:
                 self.get_logger().info('Socket.io connection error, will retry in 2...')
@@ -259,7 +270,7 @@ async def main_async(bridge_node:BridgeController):
     # create tasks for spinning and sleeping
     spin_task = asyncio.get_event_loop().create_task(spin_async(bridge_node))
     # sleep_task = asyncio.get_event_loop().create_task(asyncio.sleep(5.0))
-    connect_task = asyncio.get_event_loop().create_task(bridge_node.start_sio_client(addr=bridge_node.sio_address, port=bridge_node.sio_port))
+    connect_task = asyncio.get_event_loop().create_task(bridge_node.start_sio_client(addr=bridge_node.sio_address, port=bridge_node.sio_port, path=bridge_node.sio_path))
 
     # concurrently execute both tasks
     try:
