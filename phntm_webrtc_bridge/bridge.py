@@ -23,6 +23,8 @@ class BridgeController(Node):
         self.is_connected_ = False
         self.shutting_down_ = False
 
+        self.event_loop = asyncio.get_event_loop()
+
         # ID ROBOT
         self.declare_parameter('id_robot', '')
         self.declare_parameter('key', '')
@@ -39,13 +41,14 @@ class BridgeController(Node):
         self.declare_parameter('sio_address', 'https://api.phntm.io')
         self.declare_parameter('sio_port', 1337)
         self.declare_parameter('sio_path', '/robot/socket.io')
-        self.declare_parameter('sio_connection_retry_sec', 2)
+        self.declare_parameter('sio_connection_retry_sec', 2.0)
         self.declare_parameter('sio_ssl_verify', True)
 
         self.sio_address = self.get_parameter('sio_address').get_parameter_value().string_value
         self.sio_port = self.get_parameter('sio_port').get_parameter_value().integer_value
         self.sio_path = self.get_parameter('sio_path').get_parameter_value().string_value
         self.sio_ssl_verify = self.get_parameter('sio_ssl_verify').get_parameter_value().bool_value
+        self.sio_connection_retry_sec = self.get_parameter('sio_connection_retry_sec').get_parameter_value().double_value
         if (self.sio_address == None or self.sio_address == ''): self.get_logger().error(f'Param sio_address not provided!')
         if (self.sio_port == None): self.get_logger().error(f'Param sio_port not provided!')
 
@@ -55,8 +58,8 @@ class BridgeController(Node):
         self.conn_led = None
         if (self.conn_led_topic != None and self.conn_led_topic != ''):
             self.get_logger().info(f'CONN Led uses {self.conn_led_topic}')
-            self.conn_led = StatusLED('conn', self.conn_led_topic)
-            self.conn_led.set_disconnected()
+            self.conn_led = StatusLED('conn', self.conn_led_topic, QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT))
+            self.conn_led.set_fast_pulse()
             #self.led_spinner = self.create_timer(0.1, lambda: rclpy.spin_once(self.status_led))
 
         # Net LED
@@ -65,8 +68,8 @@ class BridgeController(Node):
         self.data_led = None
         if (self.data_led_topic != None and self.data_led_topic != ''):
             self.get_logger().info(f'DATA Led uses {self.data_led_topic}')
-            self.data_led = StatusLED('data', self.data_led_topic)
-            self.data_led.stop()
+            self.data_led = StatusLED('data', self.data_led_topic, QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT))
+            self.data_led.off()
 
         # TOPIC DICOVERY
         self.declare_parameter('discovery_period_sec', 5.0)
@@ -79,25 +82,50 @@ class BridgeController(Node):
         self.subscribed_topics_ = []
         self.subscriptions_ = { str: [ Subscription, int ] }
 
+        self.spin_thread: threading.Thread = None
+        self.spin_task: asyncio.Future[any] = None
+        self.sio_wait_task: asyncio.Future[any] = None
+
         self.get_logger().info(f'Phntm WebRTC Bridge started, idRobot={self.id_robot}')
 
-        self.discovery_timer_ = self.create_timer(self.get_parameter('discovery_period_sec').get_parameter_value().double_value, self.discovery_timer)
-        self.discovery_timer()
+    def start_discovery(self):
+        # run now
+        asyncio.get_event_loop().create_task(self.discover_topics())
+        #repeat with timer
+        self.discovery_timer_ = self.create_timer(self.get_parameter('discovery_period_sec').get_parameter_value().double_value, self.discover_topics)
+        self.get_logger().info("start_discovery finished")
+
+    async def report_topics(self):
+        if not self.is_connected_:
+            return
+
+        # self.get_logger().info('report_topics()!')
+
+        data = []
+
+        for discoveredTopicData in self.discovered_topics_:
+            topic = discoveredTopicData[0]
+            topic_data = [
+                topic,
+                key_in_list(topic, self.subscribed_topics_), #subsribed
+            ]
+            for msg_type in discoveredTopicData[1]:
+                topic_data.append(msg_type)
+            data.append(topic_data)
+
+        await self.sio.emit(
+            event='topics',
+            data=data,
+            callback=None
+            )
 
 
     async def start_sio_client(self, addr:str, port:int, path:str):
 
-        sio = socketio.AsyncClient(handle_sigint=True,
+        sio = socketio.AsyncClient(handle_sigint=False,
                                    logger=True,
                                    ssl_verify=self.sio_ssl_verify
                                    )
-
-        #     "id": "6468888265090fc017f1bc1a",
-        #     "key": "6468888265090fc017f1bc19",
-        #     "sio_address": "https://192.168.1.67",
-        #     "sio_path": "/robot/socket.io",
-        #     "sio_port": 1337
-        # }
 
         @sio.on('connect')
         async def on_connect():
@@ -113,10 +141,12 @@ class BridgeController(Node):
                 self.get_logger().info('Auth successful: ' + str(data))
                 self.is_connected_ = True
                 if self.conn_led != None:
-                    self.conn_led.set_connected()
+                    self.conn_led.on()
+                await asyncio.get_event_loop().create_task(self.report_topics())
+                #self asyncio.get_event_loop().
             else:
                 self.get_logger().error('Auth failure: ' + str(data))
-                self.sio.disconnect()
+                await self.sio.disconnect()
 
         @sio.event
         async def connect_error(data):
@@ -131,7 +161,7 @@ class BridgeController(Node):
         async def on_disconnect():
             self.get_logger().warn('Socket.io disconnected from server')
             if self.conn_led != None:
-                self.conn_led.set_disconnected()
+                self.conn_led.set_fast_pulse()
                 self.is_connected_ = False
 
         @sio.on('*')
@@ -143,16 +173,16 @@ class BridgeController(Node):
         #     print('socket.io error')
 
         self.sio = sio
-        self.get_logger().info(f'Socket.io connecting to {addr}{path}:{port}')
 
-        while not self.is_connected_ and not self.shutting_down_:
+        while not self.shutting_down_:
             try:
-                self.get_logger().info("Connecting...");
+                self.get_logger().info(f'Socket.io connecting to {addr}{path}:{port}')
                 await self.sio.connect(url=f'{addr}:{port}', socketio_path=path)
-                # await self.sio.wait()
+                self.sio_wait_task = asyncio.get_event_loop().create_task(self.sio.wait())
+                await self.sio_wait_task
             except socketio.exceptions.ConnectionError:
-                self.get_logger().info('Socket.io connection error, will retry in 2...')
-                await asyncio.sleep(2)
+                self.get_logger().info(f'Socket.io connection error, retrying in {self.sio_connection_retry_sec}s...')
+                await asyncio.sleep(self.sio_connection_retry_sec)
             except asyncio.CancelledError:
                 self.get_logger().info('CancelledError')
                 return
@@ -186,7 +216,7 @@ class BridgeController(Node):
         self.subscriptions_[topic][1] += 1
 
         if self.is_connected_ and topic != self.data_led_topic and self.data_led != None:
-            self.data_led.once()
+            self.data_led.blink()
 
         if self.subscriptions_[topic][1] == 1:
             self.get_logger().info(f'Receiving {type(msg).__name__} from {topic}')
@@ -199,31 +229,48 @@ class BridgeController(Node):
             #    self.conn_led.set_disconnected()
 
 
-    def discovery_timer(self):
+    async def discover_topics(self):
+        report_change = False
         discovered_topics = self.get_topic_names_and_types()
-        # self.get_logger().info(f'Seeing {len(discovered_topics)} topics...')
+        self.get_logger().info(f'Seeing {len(discovered_topics)} topics...')
+
         for topic in discovered_topics:
             if not key_in_list(topic[0], self.discovered_topics_):
                 # self.get_logger().info(f'Discovered topic {topic[0]}')
                 self.discovered_topics_.append(topic)
+                report_change = True
 
                 if not key_in_list(topic[0], self.subscribed_topics_) \
-                   and matches_param_filters(topic[0], self.get_parameter('topic_whitelist')) \
-                   and not matches_param_filters(topic[0], self.get_parameter('topic_blacklist')):
+                    and matches_param_filters(topic[0], self.get_parameter('topic_whitelist')) \
+                    and not matches_param_filters(topic[0], self.get_parameter('topic_blacklist')):
                     self.topic_subscribe(topic)
+                    report_change = True
                 else:
-                    self.get_logger().info(f'Ignoring topic {topic[0]} (filters)')
+                    self.get_logger().debug(f'Ignoring topic {topic[0]} (filters)')
 
-    def shutdown_cleanup(self):
+        if report_change:
+            #event_loop = asyncio.get_event_loop()
+            #if event_loop != None:
+            # self.get_logger().warn("UPDATING TOPICS")
+            self.event_loop.create_task(self.report_topics())
+            #else:
+           #     self.get_logger().error('couldnt report_topics()')
+
+
+    async def shutdown_cleanup(self):
         self.get_logger().warn('SHUTTING DOWN')
         self.shutting_down_ = True
 
-        self.sio.disconnect()
+        await self.sio.disconnect()
+        self.spin_task.cancel()
+
+        self.sio_wait_task.cancel()
+        await self.sio_wait_task
 
         if self.conn_led != None:
-            self.conn_led._off()
+            self.conn_led.clear()
         if self.data_led != None:
-            self.data_led._off()
+            self.data_led.clear()
 
 
 def key_in_list(key:str, search_list:list):
@@ -243,24 +290,32 @@ def matches_param_filters(key:str, param:Parameter):
             return True
     return False
 
-async def spin_async(node: Node):
+async def spin_async(node: BridgeController):
+
     cancel = node.create_guard_condition(lambda: None)
+
     def _spin(node: Node,
               future: asyncio.Future,
               event_loop: asyncio.AbstractEventLoop):
-        while not future.cancelled():
-            rclpy.spin_once(node)
+        while rclpy.ok and not future.cancelled() and not node.shutting_down_:
+            try:
+                rclpy.spin_once(node)
+            except:
+                pass
         if not future.cancelled():
             event_loop.call_soon_threadsafe(future.set_result, None)
-    event_loop = asyncio.get_event_loop()
-    spin_task = event_loop.create_future()
-    spin_thread = threading.Thread(target=_spin, args=(node, spin_task, event_loop))
-    spin_thread.start()
+
+    node.spin_task = node.event_loop.create_future()
+    node.spin_thread = threading.Thread(target=_spin, args=(node, node.spin_task, node.event_loop))
+    node.spin_thread.start()
     try:
-        await spin_task
-    except asyncio.CancelledError:
-        cancel.trigger()
-    spin_thread.join()
+        await node.spin_task
+    except:
+        pass
+
+    cancel.trigger()
+
+    node.spin_thread.join()
     node.destroy_guard_condition(cancel)
 
 
@@ -269,41 +324,40 @@ async def main_async(bridge_node:BridgeController):
 
     # create tasks for spinning and sleeping
     spin_task = asyncio.get_event_loop().create_task(spin_async(bridge_node))
-    # sleep_task = asyncio.get_event_loop().create_task(asyncio.sleep(5.0))
     connect_task = asyncio.get_event_loop().create_task(bridge_node.start_sio_client(addr=bridge_node.sio_address, port=bridge_node.sio_port, path=bridge_node.sio_path))
 
     # concurrently execute both tasks
-    try:
-        await asyncio.wait([spin_task, connect_task], return_when=asyncio.ALL_COMPLETED)
-    except:
-        bridge_node.shutdown_cleanup()
+    await asyncio.wait([spin_task, connect_task], return_when=asyncio.ALL_COMPLETED)
 
     # cancel tasks
     if spin_task.cancel():
         await spin_task
     if connect_task.cancel():
-       await connect_task
+        await connect_task
 
 
 def main(args=None):
-    rclpy.init()
+
+    rclpy.init(signal_handler_options=rclpy.SignalHandlerOptions.NO)
+    rclpy.uninstall_signal_handlers() #duplicate?
+
     bridge_node = BridgeController()
+    bridge_node.start_discovery()
 
-    rclpy.uninstall_signal_handlers()
+    try:
+        asyncio.get_event_loop().run_until_complete(main_async(bridge_node))
+    except:
+        pass
 
-    asyncio.get_event_loop().run_until_complete(main_async(bridge_node))
-    asyncio.get_event_loop().close()
+    asyncio.get_event_loop().run_until_complete(bridge_node.shutdown_cleanup())
+
     try:
         bridge_node.destroy_node()
         rclpy.shutdown()
     except:
         pass
 
-    # try:
-    #     rclpy.spin(bridge_node)
-    # except KeyboardInterrupt:
-    #     pass
-
+    asyncio.get_event_loop().close()
 
 if __name__ == '__main__':
     main()
