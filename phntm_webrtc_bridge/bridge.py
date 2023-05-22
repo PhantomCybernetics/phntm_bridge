@@ -5,6 +5,7 @@ from rclpy.node import Node, Parameter, Subscription, QoSProfile
 from rclpy.qos import QoSReliabilityPolicy
 from .inc.status_led import StatusLED
 import signal
+import time
 
 # from rclpy.subscription import TypeVar
 from ros2topic.api import get_msg_class
@@ -58,7 +59,7 @@ class BridgeController(Node):
         self.conn_led = None
         if (self.conn_led_topic != None and self.conn_led_topic != ''):
             self.get_logger().info(f'CONN Led uses {self.conn_led_topic}')
-            self.conn_led = StatusLED('conn', self.conn_led_topic, QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT))
+            self.conn_led = StatusLED('conn', StatusLED.Mode.OFF, self.conn_led_topic, QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT))
             self.conn_led.set_fast_pulse()
             #self.led_spinner = self.create_timer(0.1, lambda: rclpy.spin_once(self.status_led))
 
@@ -68,8 +69,8 @@ class BridgeController(Node):
         self.data_led = None
         if (self.data_led_topic != None and self.data_led_topic != ''):
             self.get_logger().info(f'DATA Led uses {self.data_led_topic}')
-            self.data_led = StatusLED('data', self.data_led_topic, QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT))
-            self.data_led.off()
+            self.data_led = StatusLED('data', StatusLED.Mode.OFF, self.data_led_topic, QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT))
+            #self.data_led.off()
 
         # TOPIC DICOVERY
         self.declare_parameter('discovery_period_sec', 5.0)
@@ -85,6 +86,7 @@ class BridgeController(Node):
         self.spin_thread: threading.Thread = None
         self.spin_task: asyncio.Future[any] = None
         self.sio_wait_task: asyncio.Future[any] = None
+        self.sio_reconnect_wait_task: asyncio.Future[any] = None
 
         self.get_logger().info(f'Phntm WebRTC Bridge started, idRobot={self.id_robot}')
 
@@ -161,8 +163,11 @@ class BridgeController(Node):
         async def on_disconnect():
             self.get_logger().warn('Socket.io disconnected from server')
             if self.conn_led != None:
-                self.conn_led.set_fast_pulse()
                 self.is_connected_ = False
+                if not self.shutting_down_:
+                    self.conn_led.set_fast_pulse()
+                else:
+                    self.conn_led.off()
 
         @sio.on('*')
         async def catch_all(event, data):
@@ -180,9 +185,12 @@ class BridgeController(Node):
                 await self.sio.connect(url=f'{addr}:{port}', socketio_path=path)
                 self.sio_wait_task = asyncio.get_event_loop().create_task(self.sio.wait())
                 await self.sio_wait_task
+                self.sio_wait_task = None
             except socketio.exceptions.ConnectionError:
                 self.get_logger().info(f'Socket.io connection error, retrying in {self.sio_connection_retry_sec}s...')
-                await asyncio.sleep(self.sio_connection_retry_sec)
+                self.sio_reconnect_wait_task = asyncio.get_event_loop().create_task(asyncio.sleep(self.sio_connection_retry_sec))
+                await self.sio_reconnect_wait_task
+                self.sio_reconnect_wait_task = None
             except asyncio.CancelledError:
                 self.get_logger().info('CancelledError')
                 return
@@ -216,7 +224,7 @@ class BridgeController(Node):
         self.subscriptions_[topic][1] += 1
 
         if self.is_connected_ and topic != self.data_led_topic and self.data_led != None:
-            self.data_led.blink()
+            self.data_led.once()
 
         if self.subscriptions_[topic][1] == 1:
             self.get_logger().info(f'Receiving {type(msg).__name__} from {topic}')
@@ -264,8 +272,12 @@ class BridgeController(Node):
         await self.sio.disconnect()
         self.spin_task.cancel()
 
-        self.sio_wait_task.cancel()
-        await self.sio_wait_task
+        if self.sio_wait_task != None:
+            self.sio_wait_task.cancel()
+            await self.sio_wait_task
+
+        if self.sio_reconnect_wait_task != None:
+            await self.sio_reconnect_wait_task
 
         if self.conn_led != None:
             self.conn_led.clear()
