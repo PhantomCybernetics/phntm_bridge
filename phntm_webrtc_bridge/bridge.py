@@ -16,6 +16,9 @@ import threading
 import socketio
 # from websockets.sync.client import connect
 
+from aiortc import RTCPeerConnection, RTCSessionDescription
+from aiortc.contrib.media import MediaPlayer, MediaRelay
+from aiortc.rtcrtpsender import RTCRtpSender
 
 class BridgeController(Node):
     def __init__(self):
@@ -28,8 +31,10 @@ class BridgeController(Node):
 
         # ID ROBOT
         self.declare_parameter('id_robot', '')
+        self.declare_parameter('name', 'Unnamed Robot')
         self.declare_parameter('key', '')
         self.id_robot = self.get_parameter('id_robot').get_parameter_value().string_value
+        self.robot_name = self.get_parameter('name').get_parameter_value().string_value
         self.auth_key = self.get_parameter('key').get_parameter_value().string_value
         if (self.id_robot == None or self.id_robot == ''):
             self.get_logger().error(f'Param id_robot not provided!')
@@ -134,12 +139,12 @@ class BridgeController(Node):
             self.get_logger().warn('Socket.io connection established')
             await sio.emit(
                 event='auth',
-                data={ 'id': self.id_robot, 'key': self.auth_key },
+                data={ 'id': self.id_robot, 'key': self.auth_key, 'name': self.robot_name },
                 callback=on_auth_reply
             )
 
         async def on_auth_reply(data):
-            if  not 'err' in data.keys():
+            if  not 'err' in data.keys() and 'success' in data.keys():
                 self.get_logger().info('Auth successful: ' + str(data))
                 self.is_connected_ = True
                 if self.conn_led != None:
