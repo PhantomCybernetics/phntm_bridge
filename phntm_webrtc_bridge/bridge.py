@@ -4,8 +4,13 @@ import rclpy
 from rclpy.node import Node, Parameter, Subscription, QoSProfile
 from rclpy.qos import QoSReliabilityPolicy
 from .inc.status_led import StatusLED
+from .inc.ros_video_streaming import ROSVideoStreamTrack
+from .inc.ros_data_streaming import ROSDataStreamTrack
+
 import signal
 import time
+
+from sensor_msgs.msg import Image
 
 # from rclpy.subscription import TypeVar
 from ros2topic.api import get_msg_class
@@ -16,9 +21,17 @@ import threading
 import socketio
 # from websockets.sync.client import connect
 
-from aiortc import RTCPeerConnection, RTCSessionDescription
+from aiortc import RTCPeerConnection, RTCSessionDescription, RTCDataChannel, RTCConfiguration, RTCIceServer
 from aiortc.contrib.media import MediaPlayer, MediaRelay
 from aiortc.rtcrtpsender import RTCRtpSender
+
+import ssl
+from aiortc.contrib.media import MediaPlayer, MediaRelay
+from aiortc.rtcrtpsender import RTCRtpSender
+import os
+import platform
+
+ROOT = os.path.dirname(__file__)
 
 class BridgeController(Node):
     def __init__(self):
@@ -93,6 +106,12 @@ class BridgeController(Node):
         self.sio_wait_task: asyncio.Future[any] = None
         self.sio_reconnect_wait_task: asyncio.Future[any] = None
 
+        self.wrtc_relay:MediaRelay = None
+        self.wrtc_webcam:MediaPlayer = None
+        self.wrtc_pcs = dict() # id_peer => pc
+
+        self.data_sender:RTCDataChannel = None
+
         self.get_logger().info(f'Phntm WebRTC Bridge started, idRobot={self.id_robot}')
 
     def start_discovery(self):
@@ -154,6 +173,14 @@ class BridgeController(Node):
             else:
                 self.get_logger().error('Auth failure: ' + str(data))
                 await self.sio.disconnect()
+
+        @sio.on('offer')
+        async def on_offer(data):
+             return await self.on_wrtc_offer(data)
+
+        # @sio.on('answer')
+        # async def on_answer(data):
+        #      return await self.set_wrtc_answer(data)
 
         @sio.event
         async def connect_error(data):
@@ -228,11 +255,22 @@ class BridgeController(Node):
     def topic_subscriber_callback(self, topic, msg):
         self.subscriptions_[topic][1] += 1
 
-        if self.is_connected_ and topic != self.data_led_topic and self.data_led != None:
-            self.data_led.once()
+        # if self.is_connected_ and topic != self.data_led_topic and self.data_led != None:
+        #   self.data_led.once()
+
+        if topic == '/battery':
+            if self.data_sender != None and self.data_sender.readyState == 'open':
+                print('Sending /battery')
+                if self.data_led != None:
+                    self.data_led.once()
+                payload:bytes = bytes(10)
+                self.data_sender.send("hello?")
+            else:
+                print('NOT sending /battery self.data_sender.readyState='+self.data_sender.readyState)
 
         if self.subscriptions_[topic][1] == 1:
             self.get_logger().info(f'Receiving {type(msg).__name__} from {topic}')
+
 
             # vif topic == '/joy' and self.conn_led != None:
             #    self.is_connected_ = True
@@ -245,7 +283,7 @@ class BridgeController(Node):
     async def discover_topics(self):
         report_change = False
         discovered_topics = self.get_topic_names_and_types()
-        self.get_logger().info(f'Seeing {len(discovered_topics)} topics...')
+        # self.get_logger().info(f'Seeing {len(discovered_topics)} topics...')
 
         for topic in discovered_topics:
             if not key_in_list(topic[0], self.discovered_topics_):
@@ -274,6 +312,11 @@ class BridgeController(Node):
         self.get_logger().warn('SHUTTING DOWN')
         self.shutting_down_ = True
 
+        # close peer connections
+        coros = [pc.close() for pc in self.wrtc_pcs.values()]
+        await asyncio.gather(*coros)
+        self.wrtc_pcs.clear()
+
         await self.sio.disconnect()
         self.spin_task.cancel()
 
@@ -288,6 +331,157 @@ class BridgeController(Node):
             self.conn_led.clear()
         if self.data_led != None:
             self.data_led.clear()
+
+    def create_local_webrtc_track(self, topic:str):
+
+        options = {"framerate": "30", "video_size": "640x480"}
+        if self.wrtc_relay is None:
+            if platform.system() == "Darwin":
+                self.wrtc_webcam = MediaPlayer(
+                    "default:none", format="avfoundation", options=options
+                )
+            elif platform.system() == "Windows":
+                self.wrtc_webcam = MediaPlayer(
+                    "video=Integrated Camera", format="dshow", options=options
+                )
+            else:
+                for b in range(3,4):
+                    for i in range(2,3):
+                        dev = '/dev/bus/usb/00'+str(b)+'/00'+str(i)
+                        # try:
+                        self.wrtc_webcam = MediaPlayer(dev, options=options)
+                        #     break
+                        # except:
+                        #     self.get_logger().error(dev+' failed')
+
+            self.wrtc_relay = MediaRelay()
+
+        return self.wrtc_relay.subscribe(self.wrtc_webcam.video)
+
+    async def on_wrtc_offer(self, offerData:dict):
+
+        if not 'sdp' in offerData.keys():
+            return { 'err': 2, 'msg': 'Offer missing sdp' }
+        if not 'type' in offerData.keys():
+            return { 'err': 2, 'msg': 'Offer missing type' }
+
+        offer = RTCSessionDescription(sdp=offerData["sdp"], type=offerData["type"])
+
+        id_peer:str = None
+        if 'id_app' in offerData.keys():
+            id_peer = offerData['id_app']
+        if 'id_instance' in offerData.keys():
+            id_peer = offerData['id_instance']
+
+        if id_peer == None:
+            return { 'err': 2, 'msg': 'No valid peer id provided' }
+
+        self.get_logger().warn('Got offer from '+id_peer+': '+str(offer))
+
+        if id_peer in self.wrtc_pcs.keys():
+            pc = self.wrtc_pcs[id_peer]
+        else:
+            config = RTCConfiguration(iceServers=[RTCIceServer(urls=['stun:stun.l.google.com:19302'])])
+            pc = RTCPeerConnection(config)
+            self.wrtc_pcs[id_peer] = pc
+
+        # open media source
+        video_track = ROSVideoStreamTrack()
+        #  data_track = ROSDataStreamTrack()
+
+        # self.create_local_webrtc_track(topic='/camera/tbd')
+        # if video_track:
+        # video_sender:RTCRtpSender = pc.addTrack(video_track)
+        self.data_sender = pc.createDataChannel('test')
+            # if args.video_codec:
+            #     force_codec(pc, video_sender, args.video_codec)
+            # elif args.play_without_decoding:
+            #     raise Exception("You must specify the video codec using --video-codec")
+
+        # offer:RTCSessionDescription = await pc.createOffer()
+
+        print('iceConnectionState: ', pc.iceConnectionState)
+        print('iceGatheringState: ', pc.iceGatheringState)
+
+        @pc.on("connectionstatechange")
+        async def on_connectionstatechange():
+            print(f"WebRTC Connection (peer={id_peer}) state is %s" % pc.connectionState)
+
+            if pc.connectionState == "failed":
+                await pc.close()
+                self.wrtc_pcs.pop(id_peer)
+
+        @pc.on("icegatheringstatechange")
+        async def on_icegatheringstatechange():
+            print(f"WebRTC icegatheringstatechange (peer={id_peer}) state is %s" % pc.iceGatheringState)
+
+        @pc.on("iceconnectionstatechange")
+        async def on_iceconnectionstatechange():
+            print(f"WebRTC iceconnectionstatechange (peer={id_peer}) state is %s" % pc.iceConnectionState)
+
+        # async def ice_checker():
+        #     while pc.iceGatheringState != 'complete':
+        #         await asyncio.sleep(.1)
+
+        # await ice_checker()
+
+        await pc.setRemoteDescription(offer)
+
+        answer = await pc.createAnswer()
+
+        self.get_logger().info('Generated answer: '+str(answer))
+
+        await pc.setLocalDescription(answer)
+
+        return { 'sdp': pc.localDescription.sdp, 'type':pc.localDescription.type }
+
+        # open media source
+        # audio, video = create_local_tracks(
+        #     args.play_from, decode=not args.play_without_decoding
+        # )
+
+        # if audio:
+        #     audio_sender = pc.addTrack(audio)
+        #     if args.audio_codec:
+        #         force_codec(pc, audio_sender, args.audio_codec)
+        #     elif args.play_without_decoding:
+        #         raise Exception("You must specify the audio codec using --audio-codec")
+
+        # if video:
+        #     video_sender = pc.addTrack(video)
+        #     if args.video_codec:
+        #         force_codec(pc, video_sender, args.video_codec)
+        #     elif args.play_without_decoding:
+        #         raise Exception("You must specify the video codec using --video-codec")
+
+        # await pc.setRemoteDescription(offer)
+
+        # answer = await pc.createAnswer()
+        # await pc.setLocalDescription(answer)
+
+    async def set_wrtc_answer(self, answer_data:dict):
+
+        print('answer data: ', answer_data)
+
+        id_peer:str = None
+        if 'id_app' in answer_data.keys():
+            id_peer = answer_data['id_app']
+        if 'id_instance' in answer_data.keys():
+            id_peer = answer_data['id_instance']
+
+        if id_peer == None:
+            return { 'err': 1, 'msg': 'No valid peer id provided' }
+
+        if not id_peer in self.wrtc_pcs.keys():
+            return { 'err': 1, 'msg': 'Peer not found' }
+
+        if not 'sdp' in answer_data.keys() or not 'type' in answer_data.keys():
+            return { 'err': 1, 'msg': 'Invalid answer data' }
+
+        answer:RTCSessionDescription = RTCSessionDescription(sdp=answer_data['sdp'], type=answer_data['type'])
+
+        await self.wrtc_pcs[id_peer].setRemoteDescription(answer)
+        return { 'success': 1 }
 
 
 def key_in_list(key:str, search_list:list):

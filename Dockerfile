@@ -5,7 +5,7 @@ FROM ros:$ROS_DISTRO
 RUN apt-get update
 RUN apt-get install -y ssh \
                        vim \
-		       inetutils-ping \
+		               inetutils-ping \
                        pip
 
 COPY --chmod=a+x ./ros_entrypoint.sh /ros_entrypoint.sh

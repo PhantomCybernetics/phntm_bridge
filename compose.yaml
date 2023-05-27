@@ -8,6 +8,7 @@ services:
     network_mode: "host"
     volumes:
       - ~/ros2_ws/src/phntm_webrtc_bridge:/ros2_ws/src/phntm_webrtc_bridge
+      - ~/phntm_launch_params.yaml:/ros2_ws/phntm_launch_params.yaml
     devices:
       - /dev:/dev
     command: /bin/sh -c "while sleep 1000; do :; done"
