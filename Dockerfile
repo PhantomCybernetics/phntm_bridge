@@ -5,13 +5,15 @@ FROM ros:$ROS_DISTRO
 RUN apt-get update
 RUN apt-get install -y ssh \
                        vim \
-		               inetutils-ping \
+                       inetutils-ping \
                        pip
 
 COPY --chmod=a+x ./ros_entrypoint.sh /ros_entrypoint.sh
 
-# RUN pip install setuptools-58.2.0 \
-
+RUN pip install setuptools==58.2.0 \
+                aiortc \
+                python-socketio \
+                aiohttp
 
 #ENV CC=clang
 #ENV CXX=clang++
@@ -32,6 +34,8 @@ RUN --mount=type=bind,source=./,target=/ros2_ws/src/phntm_webrtc_bridge \
 RUN --mount=type=bind,source=./,target=/ros2_ws/src/phntm_webrtc_bridge \
     . /opt/ros/$ROS_DISTRO/setup.sh && \
     colcon build --symlink-install
+
+
 
 # RUN . install/local_setup.bash
 # RUN ros2 run phntm_bridge phntm_bridge

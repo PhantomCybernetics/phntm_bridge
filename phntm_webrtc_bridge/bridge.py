@@ -2,17 +2,22 @@
 
 import rclpy
 from rclpy.node import Node, Parameter, Subscription, QoSProfile
-from rclpy.qos import QoSReliabilityPolicy
+from rclpy.qos import QoSHistoryPolicy, QoSReliabilityPolicy, DurabilityPolicy
+from rclpy.duration import Duration, Infinite
+
 from .inc.status_led import StatusLED
 from .inc.ros_video_streaming import ROSVideoStreamTrack
-
+from rcl_interfaces.msg import ParameterDescriptor
 import signal
 import time
 
 from sensor_msgs.msg import Image
+from sensor_msgs.msg import BatteryState
+
 
 # from rclpy.subscription import TypeVar
-from ros2topic.api import get_msg_class
+from ros2topic.api import get_msg_class, get_message
+
 
 import asyncio
 # import engineio
@@ -62,6 +67,19 @@ class BridgeController(Node):
         self.declare_parameter('sio_connection_retry_sec', 2.0)
         self.declare_parameter('sio_ssl_verify', True)
 
+        self.declare_parameter('topic_overrides', [ '' ])
+        self.topic_overrides = self.get_parameter('topic_overrides').get_parameter_value().string_array_value
+        for topic_override in self.topic_overrides:
+            if topic_override == '':
+                continue
+            self.declare_parameter(f'{topic_override}.name', '')
+            self.declare_parameter(f'{topic_override}.durability', 0)
+            self.declare_parameter(f'{topic_override}.raw', True)
+            self.declare_parameter(f'{topic_override}.reliability', 0)
+
+
+        print('topic_overrides', self.topic_overrides)
+
         self.sio_address = self.get_parameter('sio_address').get_parameter_value().string_value
         self.sio_port = self.get_parameter('sio_port').get_parameter_value().integer_value
         self.sio_path = self.get_parameter('sio_path').get_parameter_value().string_value
@@ -97,19 +115,25 @@ class BridgeController(Node):
         self.declare_parameter('param_blacklist', [ '' ])
 
         self.discovered_topics_ = []
-        self.subscribed_topics_ = []
-        self.subscriptions_ = { str: [ Subscription, int ] }
+        self.subscribed_topics_:list[tuple[str, list[str]]] = []
+        self.subscriptions_ = { str: [ Subscription, int, any, float ] } # Subscription, num received msgs, mast msg, mast msg received time
+
+
+
 
         self.spin_thread: threading.Thread = None
         self.spin_task: asyncio.Future[any] = None
         self.sio_wait_task: asyncio.Future[any] = None
         self.sio_reconnect_wait_task: asyncio.Future[any] = None
 
-        self.wrtc_relay:MediaRelay = None
-        self.wrtc_webcam:MediaPlayer = None
-        self.wrtc_pcs = dict() # id_peer => pc
+        #self.wrtc_relay:MediaRelay = None
+        #self.wrtc_webcam:MediaPlayer = None
+        self.wrtc_nextChannelId = 1
+        self.wrtc_pcs:dict[str,RTCPeerConnection] = dict() # id_peer => pc
+        self.wrtc_channels:dict[str,dict[str,RTCDataChannel]] = dict() # id_peer => channel
 
-        self.data_sender:RTCDataChannel = None
+
+        # self.data_sender:RTCDataChannel = None
 
         self.get_logger().info(f'Phntm WebRTC Bridge started, idRobot={self.id_robot}')
 
@@ -144,6 +168,46 @@ class BridgeController(Node):
             callback=None
             )
 
+    async def report_data(self, topic:str, payload:any):
+
+        for id_peer in self.wrtc_channels.keys():
+            if topic in self.wrtc_channels[id_peer].keys():
+                dc = self.wrtc_channels[id_peer][topic]
+
+                if dc.readyState == 'open':
+                    if type(payload) is bytes:
+                        self.get_logger().info(f'Sending {len(payload)}B into {topic} id_peer={id_peer}')
+                        dc.send(payload) #raw
+                    else:
+                        self.get_logger().info(f'Sending {type(payload)} into {topic} id_peer={id_peer}')
+                        dc.send(str(payload)) #raw
+
+                    if self.data_led != None:
+                        self.data_led.once()
+
+    async def report_latest_when_ready(self, id_peer:str, topic:str):
+
+        while True:
+
+            if not id_peer in self.wrtc_channels:
+                return
+            if not topic in self.wrtc_channels[id_peer]:
+                return
+            payload = self.subscriptions_[topic][2]
+            if payload == None:
+                return
+            dc = self.wrtc_channels[id_peer][topic]
+            if dc.readyState == 'open':
+                if type(payload) is bytes:
+                    self.get_logger().info(f'Sending latest {len(payload)}B into {topic} id_peer={id_peer}')
+                    dc.send(payload) #raw
+                else:
+                    self.get_logger().info(f'Sending latest {type(payload)} into {topic} id_peer={id_peer}')
+                    dc.send(str(payload)) #raw
+                return
+            else:
+                await asyncio.sleep(2)
+
 
     async def start_sio_client(self, addr:str, port:int, path:str):
 
@@ -177,9 +241,58 @@ class BridgeController(Node):
         async def on_offer(data):
              return await self.on_wrtc_offer(data)
 
-        # @sio.on('answer')
-        # async def on_answer(data):
-        #      return await self.set_wrtc_answer(data)
+        # subscribe and unsubscribe data channels
+        # bcs the negotionation doesn't seem to be implemented well at the moment
+        # it's be nice to do thisvia webrtc tho
+        @sio.on('peer_subscription')
+        async def on_peer_subscription(data:dict):
+
+            self.get_logger().info('on_peer_subscription: ' + str(data))
+
+            id_peer:str = None
+            if 'id_app' in data:
+                id_peer = data['id_app']
+            if 'id_instance' in data:
+                id_peer = data['id_instance']
+
+            if id_peer == None:
+                return { 'err': 2, 'msg': 'No valid peer id provided' }
+
+            if not id_peer in self.wrtc_pcs:
+                 return { 'err': 2, 'msg': 'Peer not connected' }
+
+            subscribed = list()
+            num_unsubscribed = 0
+            if 'topics' in data:
+                for topic_data in data['topics']: # : [ topic, subscribe, ...]
+                    topic:str = topic_data[0]
+                    subscribe:int = int(topic_data[1])
+
+                    if subscribe > 0:
+                        if not id_peer in self.wrtc_channels:
+                            self.wrtc_channels[id_peer] = dict()
+                        if not topic in self.wrtc_channels[id_peer]:
+                            pc = self.wrtc_pcs[id_peer]
+                            protocol:str = None
+                            for subscribed_topic in self.subscribed_topics_:
+                                if subscribed_topic[0] == topic:
+                                    protocol = ', '.join(subscribed_topic[1])
+                                    break
+                            self.wrtc_nextChannelId += 1
+                            self.get_logger().info(f'Peer {id_peer} subscribing to {topic} (protocol={protocol}, id={self.wrtc_nextChannelId})')
+                            self.wrtc_channels[id_peer][topic] = pc.createDataChannel(topic, id=self.wrtc_nextChannelId, protocol=protocol, negotiated=True) # negotiated doesn't work tho
+                            subscribed.append([topic, self.wrtc_nextChannelId])
+
+                            await self.report_latest_when_ready(id_peer, topic)
+
+                    else: # unsubscribe
+                        if id_peer in self.wrtc_channels and topic in self.wrtc_channels[id_peer]:
+                            self.get_logger().info(f'Peer {id_peer} sunubscribing from {topic}')
+                            self.wrtc_channels[id_peer][topic].close()
+                            self.wrtc_channels[id_peer].pop(topic)
+                            num_unsubscribed += 1
+
+            return { 'success': 1, 'subscribed': subscribed, 'unsubscribed': num_unsubscribed}
 
         @sio.event
         async def connect_error(data):
@@ -227,49 +340,57 @@ class BridgeController(Node):
                 return
 
 
-    def topic_subscribe(self, topic:tuple[str, list[str]]):
+    def topic_subscribe(self, topic_data:tuple[str, list[str]]):
+
+        topic:str = topic_data[0]
+        msg_type:str = topic_data[1][0]
 
         # for topic_msg_type_str in topic[1]:
         message_class = None
         try:
-            message_class = get_msg_class(self, topic[0])
+            message_class = get_message(msg_type)
         except:
             pass
 
         if message_class == None:
-            self.get_logger().error(f'NOT subscribing to topic {topic[0]} {topic[1]} (msg class not found)')
+            self.get_logger().error(f'NOT subscribing to topic {topic} (msg class {msg_type} not loaded)')
             return None
 
-        qosProfile = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT)
+        #is_text = msg_type == 'std_msgs/msg/String'
+        raw = self.get_parameter_or(f'{topic}.raw', Parameter(name='', value=True)).get_parameter_value().bool_value
+        reliability = self.get_parameter_or(f'{topic}.reliability', Parameter(name='', value=QoSReliabilityPolicy.BEST_EFFORT)).get_parameter_value().integer_value
+        durability = self.get_parameter_or(f'{topic}.durability', Parameter(name='', value=DurabilityPolicy.SYSTEM_DEFAULT)).get_parameter_value().integer_value
 
-        self.get_logger().warn(f'Subscribing to topic {topic[0]} {message_class}')
-        self.subscriptions_[topic[0]] = [ self.create_subscription(
-            message_class,
-            topic[0],
-            lambda msg: self.topic_subscriber_callback(topic[0], msg),
-            qosProfile), 0]
-        self.subscribed_topics_.append(topic)
+        qosProfile = QoSProfile(history=QoSHistoryPolicy.KEEP_LAST, \
+                                depth=1, \
+                                reliability=reliability, \
+                                durability=durability, \
+                                lifespan=Infinite \
+                                )
+
+        self.get_logger().warn(f'Subscribing to topic {topic} {msg_type} raw={raw}')
+        self.subscriptions_[topic] = [ self.create_subscription(
+            msg_type=message_class,
+            topic=topic,
+            callback=lambda msg: self.topic_subscriber_callback(topic, msg),
+            qos_profile=qosProfile,
+            raw=raw
+            ), 0, None, -1.0] #2nd list item is numbver of msgs received
+        self.subscribed_topics_.append(topic_data)
 
 
     def topic_subscriber_callback(self, topic, msg):
-        self.subscriptions_[topic][1] += 1
+        self.subscriptions_[topic][1] += 1 # num recieved
+        self.subscriptions_[topic][2] = msg #latest val
+        self.subscriptions_[topic][3] = time.time() #latest time
 
         # if self.is_connected_ and topic != self.data_led_topic and self.data_led != None:
         #   self.data_led.once()
 
-        if topic == '/battery':
-            if self.data_sender != None and self.data_sender.readyState == 'open':
-                print('Sending /battery')
-                if self.data_led != None:
-                    self.data_led.once()
-                payload:bytes = bytes(10)
-                self.data_sender.send("hello?")
-            else:
-                print('NOT sending /battery self.data_sender.readyState='+self.data_sender.readyState)
-
         if self.subscriptions_[topic][1] == 1:
             self.get_logger().info(f'Receiving {type(msg).__name__} from {topic}')
 
+        self.event_loop.create_task(self.report_data(topic, msg))
 
             # vif topic == '/joy' and self.conn_led != None:
             #    self.is_connected_ = True
@@ -375,7 +496,7 @@ class BridgeController(Node):
         if id_peer == None:
             return { 'err': 2, 'msg': 'No valid peer id provided' }
 
-        self.get_logger().warn('Got offer from '+id_peer+': '+str(offer))
+        self.get_logger().info('Got offer from '+id_peer+': '+str(offer))
 
         if id_peer in self.wrtc_pcs.keys():
             pc = self.wrtc_pcs[id_peer]
@@ -391,13 +512,20 @@ class BridgeController(Node):
         # self.create_local_webrtc_track(topic='/camera/tbd')
         # if video_track:
         # video_sender:RTCRtpSender = pc.addTrack(video_track)
-        self.data_sender = pc.createDataChannel('test')
+
             # if args.video_codec:
             #     force_codec(pc, video_sender, args.video_codec)
             # elif args.play_without_decoding:
             #     raise Exception("You must specify the video codec using --video-codec")
 
         # offer:RTCSessionDescription = await pc.createOffer()
+
+        # @self.data_sender.on('open')
+        # async def on_sender_on():
+        #     print('SENDER ON! Sending tests...')
+        #     self.data_sender.send("Hello, is there anybody out there? 1")
+        #     self.data_sender.send("Hello, is there anybody out there? 2" )
+        #     self.data_sender.send("Hello, is there anybody out there? 3")
 
         print('iceConnectionState: ', pc.iceConnectionState)
         print('iceGatheringState: ', pc.iceGatheringState)
