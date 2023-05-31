@@ -218,24 +218,14 @@ class BridgeController(Node):
 
         @sio.on('connect')
         async def on_connect():
-            self.get_logger().warn('Socket.io connection established')
-            await sio.emit(
-                event='auth',
-                data={ 'id': self.id_robot, 'key': self.auth_key, 'name': self.robot_name },
-                callback=on_auth_reply
-            )
+            self.get_logger().warn('Socket.io connection established, auth successful')
 
-        async def on_auth_reply(data):
-            if  not 'err' in data.keys() and 'success' in data.keys():
-                self.get_logger().info('Auth successful: ' + str(data))
-                self.is_connected_ = True
-                if self.conn_led != None:
-                    self.conn_led.on()
-                await asyncio.get_event_loop().create_task(self.report_topics())
-                #self asyncio.get_event_loop().
-            else:
-                self.get_logger().error('Auth failure: ' + str(data))
-                await self.sio.disconnect()
+            self.is_connected_ = True
+
+            if self.conn_led != None:
+                self.conn_led.on()
+
+            await asyncio.get_event_loop().create_task(self.report_topics())
 
         @sio.on('offer')
         async def on_offer(data):
@@ -280,7 +270,13 @@ class BridgeController(Node):
                                     break
                             self.wrtc_nextChannelId += 1
                             self.get_logger().info(f'Peer {id_peer} subscribing to {topic} (protocol={protocol}, id={self.wrtc_nextChannelId})')
-                            self.wrtc_channels[id_peer][topic] = pc.createDataChannel(topic, id=self.wrtc_nextChannelId, protocol=protocol, negotiated=True) # negotiated doesn't work tho
+                            dc = pc.createDataChannel(topic, id=self.wrtc_nextChannelId, protocol=protocol, negotiated=True) # negotiated doesn't work tho
+
+                            @dc.on('message')
+                            async def on_channel_message(msg):
+                                print(f'{topic} got message: '+str(msg))
+
+                            self.wrtc_channels[id_peer][topic] = dc
                             subscribed.append([topic, self.wrtc_nextChannelId])
 
                             await self.report_latest_when_ready(id_peer, topic)
@@ -326,8 +322,14 @@ class BridgeController(Node):
         while not self.shutting_down_:
             try:
                 self.get_logger().info(f'Socket.io connecting to {addr}{path}:{port}')
-                await self.sio.connect(url=f'{addr}:{port}', socketio_path=path)
-                self.sio_wait_task = asyncio.get_event_loop().create_task(self.sio.wait())
+                auth_data = {
+                    'id_robot': self.id_robot,
+                    'key': self.auth_key,
+                    'name': self.robot_name
+                }
+                await self.sio.connect(url=f'{addr}:{port}', socketio_path=path, auth=auth_data)
+
+                self.sio_wait_task = asyncio.get_event_loop().create_task(self.sio.wait()) # wait as long as connected
                 await self.sio_wait_task
                 self.sio_wait_task = None
             except socketio.exceptions.ConnectionError:
@@ -527,8 +529,8 @@ class BridgeController(Node):
         #     self.data_sender.send("Hello, is there anybody out there? 2" )
         #     self.data_sender.send("Hello, is there anybody out there? 3")
 
-        print('iceConnectionState: ', pc.iceConnectionState)
-        print('iceGatheringState: ', pc.iceGatheringState)
+        print(f'IceConnectionState: {pc.iceConnectionState} IceGatheringState: {pc.iceGatheringState}')
+
 
         @pc.on("connectionstatechange")
         async def on_connectionstatechange():
@@ -541,6 +543,10 @@ class BridgeController(Node):
         @pc.on("icegatheringstatechange")
         async def on_icegatheringstatechange():
             print(f"WebRTC icegatheringstatechange (peer={id_peer}) state is %s" % pc.iceGatheringState)
+
+        @pc.on("signalingstatechange")
+        async def on_signalingstatechange():
+            print('signalingstatechange', str(pc.signalingState))
 
         @pc.on("iceconnectionstatechange")
         async def on_iceconnectionstatechange():
