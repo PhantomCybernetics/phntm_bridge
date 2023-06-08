@@ -23,10 +23,8 @@ class StatusLED(Node):
         self.topic = topic
         self.publisher_ = self.create_publisher(Bool, self.topic, qos)
 
-        self.msg_off = Bool()
-        self.msg_off.data = False
-        self.msg_on = Bool()
-        self.msg_on.data = True
+        self.msg_off = Bool(data=False)
+        self.msg_on = Bool(data=True)
 
         self.state_:Bool = None
         self.mode_ = mode

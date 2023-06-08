@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 import rclpy
-from rclpy.node import Node, Parameter, Subscription, QoSProfile
+from rclpy.node import Node, Parameter, Subscription, QoSProfile, Publisher
 from rclpy.qos import QoSHistoryPolicy, QoSReliabilityPolicy, DurabilityPolicy
 from rclpy.duration import Duration, Infinite
 
@@ -122,9 +122,18 @@ class BridgeController(Node):
             list[str] #subscribed peers
         ] ] = {}
 
+        self.topic_publishers_:dict[str: tuple[
+            Publisher,
+            int, # num written msgs
+            any, # last msg
+            float, # last msg received time(s)
+            list[str] #publishing peers
+        ] ] = {}
+
         self.wrtc_nextChannelId = 1
         self.wrtc_peer_pcs:dict[str,RTCPeerConnection] = dict() # id_peer => pc
-        self.wrtc_peer_channels:dict[str,dict[str,RTCDataChannel]] = dict() # id_peer => channel
+        self.wrtc_peer_read_channels:dict[str,dict[str,RTCDataChannel]] = dict() # id_peer => channel
+        self.wrtc_peer_write_channels:dict[str,dict[str,RTCDataChannel]] = dict() # id_peer => channel
 
         self.spin_thread: threading.Thread = None
         self.spin_task: asyncio.Future[any] = None
@@ -168,9 +177,9 @@ class BridgeController(Node):
 
     async def report_data(self, topic:str, payload:any):
 
-        for id_peer in self.wrtc_peer_channels.keys():
-            if topic in self.wrtc_peer_channels[id_peer].keys():
-                dc = self.wrtc_peer_channels[id_peer][topic]
+        for id_peer in self.wrtc_peer_read_channels.keys():
+            if topic in self.wrtc_peer_read_channels[id_peer].keys():
+                dc = self.wrtc_peer_read_channels[id_peer][topic]
 
                 if dc.readyState == 'open':
                     if type(payload) is bytes:
@@ -187,9 +196,9 @@ class BridgeController(Node):
 
         while True:
 
-            if not id_peer in self.wrtc_peer_channels.keys():
+            if not id_peer in self.wrtc_peer_read_channels.keys():
                 return
-            if not topic in self.wrtc_peer_channels[id_peer].keys():
+            if not topic in self.wrtc_peer_read_channels[id_peer].keys():
                 return
             if not topic in self.topic_read_subscriptions_.keys():
                 return #not subscribed yet
@@ -199,7 +208,7 @@ class BridgeController(Node):
             if payload == None:
                 return #nothing received yet
 
-            dc = self.wrtc_peer_channels[id_peer][topic]
+            dc = self.wrtc_peer_read_channels[id_peer][topic]
             if dc.readyState == 'open':
                 if type(payload) is bytes:
                     self.get_logger().info(f'Sending latest {len(payload)}B into {topic} id_peer={id_peer}')
@@ -252,6 +261,7 @@ class BridgeController(Node):
 
             if not id_peer in self.wrtc_peer_pcs:
                  return { 'err': 2, 'msg': 'Peer not connected' }
+            pc = self.wrtc_peer_pcs[id_peer]
 
             if not 'topics' in data:
                 return { 'err': 2, 'msg': 'No topics specified' }
@@ -267,22 +277,21 @@ class BridgeController(Node):
                     if not topic in self.discovered_topics_.keys():
                         return { 'err': 2, 'msg': f'Topic {topic} not discovered yet'}
 
-                    if not id_peer in self.wrtc_peer_channels:
-                        self.wrtc_peer_channels[id_peer] = dict()
+                    if not id_peer in self.wrtc_peer_read_channels:
+                        self.wrtc_peer_read_channels[id_peer] = dict()
 
-                    if not topic in self.wrtc_peer_channels[id_peer]:
-                        pc = self.wrtc_peer_pcs[id_peer]
+                    if not topic in self.wrtc_peer_read_channels[id_peer]:
                         protocol:str = ', '.join(self.discovered_topics_[topic]['msg_types'])
 
                         self.wrtc_nextChannelId += 1
-                        self.get_logger().info(f'Peer {id_peer} subscribing to {topic} (protocol={protocol}, ch_id={self.wrtc_nextChannelId})')
+                        self.get_logger().info(f'Peer {id_peer} subscribing to {topic}/R (protocol={protocol}, ch_id={self.wrtc_nextChannelId})')
                         dc = pc.createDataChannel(topic, id=self.wrtc_nextChannelId, protocol=protocol, negotiated=True) # negotiated doesn't work tho
 
                         @dc.on('message')
                         async def on_channel_message(msg):
-                            self.get_logger().warn(f'{topic} got message: '+str(msg))
+                            self.get_logger().warn(f'{topic}/R got message: '+str(msg))
 
-                        self.wrtc_peer_channels[id_peer][topic] = dc
+                        self.wrtc_peer_read_channels[id_peer][topic] = dc
                         res_subscribed.append([topic, self.wrtc_nextChannelId])
 
                         if not self.subscribe_topic(topic, id_peer):
@@ -291,14 +300,91 @@ class BridgeController(Node):
                         await self.report_latest_when_ready(id_peer, topic)
 
                 else: # unsubscribe
-                    if id_peer in self.wrtc_peer_channels and topic in self.wrtc_peer_channels[id_peer]:
-                        self.get_logger().info(f'Peer {id_peer} unsubscribed from {topic}')
-                        id_closed_dc = self.wrtc_peer_channels[id_peer][topic].id
-                        self.wrtc_peer_channels[id_peer][topic].close()
-                        self.wrtc_peer_channels[id_peer].pop(topic)
+                    if id_peer in self.wrtc_peer_read_channels and topic in self.wrtc_peer_read_channels[id_peer]:
+                        self.get_logger().info(f'Peer {id_peer} unsubscribed from {topic}/R')
+                        id_closed_dc = self.wrtc_peer_read_channels[id_peer][topic].id
+                        self.wrtc_peer_read_channels[id_peer][topic].close()
+                        self.wrtc_peer_read_channels[id_peer].pop(topic)
                         res_unsubscribed.append([ topic, id_closed_dc ])
 
                     self.unsubscribe_topic(topic, id_peer)
+
+            return { 'success': 1, 'subscribed': res_subscribed, 'unsubscribed': res_unsubscribed}
+
+        # WRITE SUBS
+        @sio.on('subscription:write')
+        async def on_write_subscription(data:dict):
+
+            self.get_logger().info('on_write_subscription: ' + str(data))
+
+            id_peer:str = None
+            if 'id_app' in data:
+                id_peer = data['id_app']
+            if 'id_instance' in data:
+                id_peer = data['id_instance']
+            if id_peer == None:
+                return { 'err': 2, 'msg': 'No valid peer id provided' }
+
+            if not id_peer in self.wrtc_peer_pcs:
+                 return { 'err': 2, 'msg': 'Peer not connected' }
+            pc = self.wrtc_peer_pcs[id_peer]
+
+            if not 'topics' in data:
+                return { 'err': 2, 'msg': 'No topics specified' }
+
+            res_subscribed:list[tuple[str,int]] = list() # [ topic, id_ch ]
+            res_unsubscribed:list[tuple[str,int]] = list()
+
+            for topic_data in data['topics']: # : [ topic, subscribe, ...]
+                topic:str = topic_data[0]
+                subscribe:bool = int(topic_data[1]) > 0
+                protocol:str = topic_data[2]
+
+                if protocol == None:
+                    return { 'err': 2, 'msg': f'Protocol not specified for {topic}' }
+
+                if subscribe:
+                    # if not topic in self.discovered_topics_.keys():
+                    #    return { 'err': 2, 'msg': f'Topic {topic} not discovered yet'}
+
+                    if not id_peer in self.wrtc_peer_write_channels:
+                        self.wrtc_peer_write_channels[id_peer] = dict()
+
+                    if not topic in self.wrtc_peer_write_channels[id_peer]:
+
+
+                        self.wrtc_nextChannelId += 1
+                        self.get_logger().info(f'Peer {id_peer} subscribing to {topic}/W (protocol={protocol}, ch_id={self.wrtc_nextChannelId})')
+                        dc = pc.createDataChannel(topic, id=self.wrtc_nextChannelId, protocol=protocol, negotiated=True) # negotiated doesn't work tho
+
+                        self.wrtc_peer_write_channels[id_peer][topic] = dc
+                        res_subscribed.append([topic, self.wrtc_nextChannelId, protocol])
+
+                        if not self.start_topic_publisher(topic, id_peer, protocol):
+                            return { 'err': 2, 'msg': f'Topic {topic} failed to create publisher'}
+
+                        @dc.on('message')
+                        async def on_channel_message(msg):
+
+                            if type(msg) is bytes:
+                                self.get_logger().warn(f'{topic}/W got message: {len(msg)}B')
+                            else:
+                                self.get_logger().warn(f'{topic}/W got message: {len(msg)}')
+
+                            self.topic_publishers_[topic][0].publish(msg);
+                            self.topic_publishers_[topic][1] += 1
+                            self.topic_publishers_[topic][2] = msg
+                            self.topic_publishers_[topic][3] = time.time()
+
+                else: # unsubscribe
+                    if id_peer in self.wrtc_peer_write_channels and topic in self.wrtc_peer_write_channels[id_peer]:
+                        self.get_logger().info(f'Peer {id_peer} unsubscribed from {topic}/W')
+                        id_closed_dc = self.wrtc_peer_write_channels[id_peer][topic].id
+                        self.wrtc_peer_write_channels[id_peer][topic].close()
+                        self.wrtc_peer_write_channels[id_peer].pop(topic)
+                        res_unsubscribed.append([ topic, id_closed_dc ])
+
+                    self.stop_topic_publisher(topic, id_peer)
 
             return { 'success': 1, 'subscribed': res_subscribed, 'unsubscribed': res_unsubscribed}
 
@@ -389,22 +475,25 @@ class BridgeController(Node):
                                 )
 
         self.get_logger().warn(f'Subscribing to topic {topic} {msg_type} raw={raw}')
-        self.topic_read_subscriptions_[topic] = [ self.create_subscription(
+
+        sub = self.create_subscription(
             msg_type=message_class,
             topic=topic,
             callback=lambda msg: self.topic_subscriber_callback(topic, msg),
             qos_profile=qosProfile,
             raw=raw
-            ),
+        )
+        if sub == None:
+            self.get_logger().error(f'Failed subscribing to topic {topic}, msg class={msg_type} (all={", ".join(topic_info["msg_types"])} )')
+            return False
+
+        self.topic_read_subscriptions_[topic] = [
+            sub,
             0, # num received msgs
             None, # last msg
             -1.0, #l ast timestamp
             [ id_peer ] # subscribers
         ]
-        if self.topic_read_subscriptions_[topic][0] == None:
-            self.topic_read_subscriptions_.remove(topic, None)
-            self.get_logger().error(f'Failed subscribing to topic {topic}, msg class={msg_type} (all={", ".join(topic_info["msg_types"])} )')
-            return False
 
         return True
 
@@ -444,6 +533,41 @@ class BridgeController(Node):
 
             # if topic == '/cmd_vel' and self.conn_led != None:
             #    self.conn_led.set_disconnected()
+
+    def start_topic_publisher(self, topic:str, id_peer:str, protocol:str) -> bool:
+
+        message_class = None
+        try:
+            message_class = get_message(protocol)
+        except:
+            pass
+
+        if message_class == None:
+            self.get_logger().error(f'NOT creating publisher for topic {topic}, msg class {protocol} not loaded')
+            return False
+
+        qos = QoSProfile(history=QoSHistoryPolicy.KEEP_LAST, \
+                         depth=1, \
+                         reliability=QoSReliabilityPolicy.RELIABLE \
+                         )
+
+        pub = self.create_publisher(message_class, topic, qos)
+        if pub == None:
+            self.get_logger().error(f'Failed creating publisher for topic {topic}, msg class={protocol}')
+            return False
+
+        self.topic_publishers_[topic] = [
+            pub,
+            0, # num sent msgs
+            None, # last msg
+            -1.0, #l ast timestamp
+            [ id_peer ] # publisher peers
+        ]
+
+        return True
+
+    def stop_topic_publisher(self, topic:str, id_peer:str):
+        pass
 
 
     async def discover_topics(self):
