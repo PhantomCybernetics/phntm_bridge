@@ -11,5 +11,7 @@ services:
       - ~/phntm_launch_params.yaml:/ros2_ws/phntm_launch_params.yaml
     devices:
       - /dev:/dev
-    command: /bin/sh -c "while sleep 1000; do :; done"
+    command:
+      # ros2 launch phntm_webrtc_bridge bridge_launch.py
+      /bin/sh -c "while sleep 1000; do :; done"
 

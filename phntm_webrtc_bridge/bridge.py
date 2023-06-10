@@ -19,6 +19,8 @@ from sensor_msgs.msg import BatteryState
 from ros2topic.api import get_msg_class, get_message
 
 import asyncio
+from asyncio import Condition
+
 # import engineio
 import threading
 import socketio
@@ -65,6 +67,9 @@ class BridgeController(Node):
         self.declare_parameter('sio_path', '/robot/socket.io')
         self.declare_parameter('sio_connection_retry_sec', 2.0)
         self.declare_parameter('sio_ssl_verify', True)
+
+        self.declare_parameter('log_message_every_sec', 10.0)
+        self.log_message_every_sec = self.get_parameter('log_message_every_sec').get_parameter_value().double_value
 
         self.declare_parameter('topic_overrides', [ '' ])
         self.topic_overrides = self.get_parameter('topic_overrides').get_parameter_value().string_array_value
@@ -118,8 +123,9 @@ class BridgeController(Node):
             Subscription, # reader
             int, # num received msgs
             any, # last msg
-            float, # last msg received time(s)
-            list[str] #subscribed peers
+            float, # last msg received time (s)
+            list[str], #subscribed peers
+            float #last time logged (s)
         ] ] = {}
 
         self.topic_publishers_:dict[str: tuple[
@@ -127,13 +133,14 @@ class BridgeController(Node):
             int, # num written msgs
             any, # last msg
             float, # last msg received time(s)
-            list[str] #publishing peers
+            list[str], #publishing peers
+            float #last time logged (s)
         ] ] = {}
 
         self.wrtc_nextChannelId = 1
         self.wrtc_peer_pcs:dict[str,RTCPeerConnection] = dict() # id_peer => pc
-        self.wrtc_peer_read_channels:dict[str,dict[str,RTCDataChannel]] = dict() # id_peer => channel
-        self.wrtc_peer_write_channels:dict[str,dict[str,RTCDataChannel]] = dict() # id_peer => channel
+        self.wrtc_peer_read_channels:dict[str,dict[str,RTCDataChannel]] = dict() # id_peer => [ topic => read webrtc channel ]
+        self.wrtc_peer_write_channels:dict[str,dict[str,RTCDataChannel]] = dict() # id_peer => [ topic => write webrtc channel ]
 
         self.spin_thread: threading.Thread = None
         self.spin_task: asyncio.Future[any] = None
@@ -175,18 +182,20 @@ class BridgeController(Node):
             callback=None
             )
 
-    async def report_data(self, topic:str, payload:any):
+    async def report_data(self, topic:str, payload:any, log:bool, total_sent:int):
 
         for id_peer in self.wrtc_peer_read_channels.keys():
             if topic in self.wrtc_peer_read_channels[id_peer].keys():
                 dc = self.wrtc_peer_read_channels[id_peer][topic]
-
+                self.wrtc_peer_read_channels[id_peer][topic]
                 if dc.readyState == 'open':
                     if type(payload) is bytes:
-                        self.get_logger().info(f'Sending {len(payload)}B into {topic} id_peer={id_peer}')
+                        if log:
+                            self.get_logger().info(f'△ Sending {len(payload)}B into {topic} for id_peer={id_peer}, total sent: {total_sent}')
                         dc.send(payload) #raw
                     else:
-                        self.get_logger().info(f'Sending {type(payload)} into {topic} id_peer={id_peer}')
+                        if (log):
+                            self.get_logger().info(f'△ Sending {type(payload)} into {topic} for id_peer={id_peer}, total sent: {total_sent}')
                         dc.send(str(payload)) #raw
 
                     if self.data_led != None:
@@ -289,7 +298,7 @@ class BridgeController(Node):
 
                         @dc.on('message')
                         async def on_channel_message(msg):
-                            self.get_logger().warn(f'{topic}/R got message: '+str(msg))
+                            self.get_logger().info(f' ⇣ {topic}/R got message: '+str(msg))
 
                         self.wrtc_peer_read_channels[id_peer][topic] = dc
                         res_subscribed.append([topic, self.wrtc_nextChannelId])
@@ -366,15 +375,18 @@ class BridgeController(Node):
                         @dc.on('message')
                         async def on_channel_message(msg):
 
-                            if type(msg) is bytes:
-                                self.get_logger().warn(f'{topic}/W got message: {len(msg)}B')
-                            else:
-                                self.get_logger().warn(f'{topic}/W got message: {len(msg)}')
-
-                            self.topic_publishers_[topic][0].publish(msg);
                             self.topic_publishers_[topic][1] += 1
                             self.topic_publishers_[topic][2] = msg
                             self.topic_publishers_[topic][3] = time.time()
+
+                            if time.time()-self.topic_publishers_[topic][5] > self.log_message_every_sec:
+                                self.topic_publishers_[topic][5] = time.time() #logged now
+                                if type(msg) is bytes:
+                                    self.get_logger().info(f'▼ {topic}/W got message: {len(msg)}B from id_peer={id_peer}, total rcvd: {self.topic_publishers_[topic][1]}')
+                                else:
+                                    self.get_logger().info(f'▼ {topic}/W got message: {len(msg)}, from id_peer={id_peer}, total rcvd: {self.topic_publishers_[topic][1]}')
+
+                            self.topic_publishers_[topic][0].publish(msg);
 
                 else: # unsubscribe
                     if id_peer in self.wrtc_peer_write_channels and topic in self.wrtc_peer_write_channels[id_peer]:
@@ -492,7 +504,8 @@ class BridgeController(Node):
             0, # num received msgs
             None, # last msg
             -1.0, #l ast timestamp
-            [ id_peer ] # subscribers
+            [ id_peer ], # subscribers
+            -1.0 # last time logged
         ]
 
         return True
@@ -522,10 +535,15 @@ class BridgeController(Node):
         # if self.is_connected_ and topic != self.data_led_topic and self.data_led != None:
         #   self.data_led.once()
 
-        if self.topic_read_subscriptions_[topic][1] == 1:
+        log_msg = False
+        if self.topic_read_subscriptions_[topic][1] == 1: # first data in
             self.get_logger().info(f'Receiving {type(msg).__name__} from {topic}')
 
-        self.event_loop.create_task(self.report_data(topic, msg))
+        if self.topic_read_subscriptions_[topic][5] < 0 or time.time()-self.topic_read_subscriptions_[topic][5] > self.log_message_every_sec:
+            log_msg = True
+            self.topic_read_subscriptions_[topic][5] = time.time() #last logged now
+
+        self.event_loop.create_task(self.report_data(topic, msg, log=log_msg, total_sent=self.topic_read_subscriptions_[topic][1]))
 
             # vif topic == '/joy' and self.conn_led != None:
             #    self.is_connected_ = True
@@ -560,8 +578,9 @@ class BridgeController(Node):
             pub,
             0, # num sent msgs
             None, # last msg
-            -1.0, #l ast timestamp
-            [ id_peer ] # publisher peers
+            -1.0, # last timestamp
+            [ id_peer ], # publisher peers
+            -1.0 # last logged never
         ]
 
         return True
@@ -670,13 +689,26 @@ class BridgeController(Node):
         if id_peer in self.wrtc_peer_pcs.keys():
             pc = self.wrtc_peer_pcs[id_peer]
         else:
+            # config = RTCConfiguration(
+            #     iceServers=[
+            #         RTCIceServer(
+            #             urls=[
+            #                 "stun:stun.l.google.com:19302",
+            #                 "stun:stun1.l.google.com:19302",
+            #                 "stun:stun2.l.google.com:19302",
+            #                 "stun:stun3.l.google.com:19302",
+            #                 "stun:stun4.l.google.com:19302",
+            #             ]
+            #         ),
+            #     ]
+            # )
             config = RTCConfiguration(iceServers=[RTCIceServer(urls=['stun:stun.l.google.com:19302'])])
             pc = RTCPeerConnection(config)
             self.wrtc_peer_pcs[id_peer] = pc
 
         # open media source
-        video_track = ROSVideoStreamTrack()
-        #  data_track = ROSDataStreamTrack()
+        # video_track = ROSVideoStreamTrack()
+        # data_track = ROSDataStreamTrack()
 
         # self.create_local_webrtc_track(topic='/camera/tbd')
         # if video_track:
@@ -698,6 +730,10 @@ class BridgeController(Node):
 
         print(f'IceConnectionState: {pc.iceConnectionState} IceGatheringState: {pc.iceGatheringState}')
 
+        await pc.setRemoteDescription(offer)
+
+        answer = await pc.createAnswer()
+        await pc.setLocalDescription(answer)
 
         @pc.on("connectionstatechange")
         async def on_connectionstatechange():
@@ -722,16 +758,18 @@ class BridgeController(Node):
         # async def ice_checker():
         #     while pc.iceGatheringState != 'complete':
         #         await asyncio.sleep(.1)
+        #     self.get_logger().warn(f"Unlocking!")
 
         # await ice_checker()
 
-        await pc.setRemoteDescription(offer)
+        # async with iceComplete:
+        #     await iceComplete.wait()
+        #     await iceComplete.release()
 
-        answer = await pc.createAnswer()
+        # answer = await pc.createAnswer()
+        #await pc.setLocalDescription(answer)
 
-        self.get_logger().info('Generated answer: '+str(answer))
-
-        await pc.setLocalDescription(answer)
+        self.get_logger().info('Generated answer: '+str(pc.localDescription))
 
         return { 'sdp': pc.localDescription.sdp, 'type':pc.localDescription.type }
 

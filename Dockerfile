@@ -10,10 +10,10 @@ RUN apt-get install -y ssh \
 
 COPY --chmod=a+x ./ros_entrypoint.sh /ros_entrypoint.sh
 
-RUN pip install setuptools==58.2.0 \
-                aiortc \
-                python-socketio \
-                aiohttp
+RUN pip install aiortc \
+                aiohttp \
+                setuptools==58.2.0 \
+                python-socketio
 
 #ENV CC=clang
 #ENV CXX=clang++
