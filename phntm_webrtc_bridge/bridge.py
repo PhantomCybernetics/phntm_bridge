@@ -119,6 +119,8 @@ class BridgeController(Node):
         self.declare_parameter('param_blacklist', [ '' ])
 
         self.discovered_topics_:dict[str: dict['msg_types':list[str]]] = {}
+        self.discovered_services_:dict[str: dict['msg_types':list[str]]] = {}
+
         self.topic_read_subscriptions_:dict[str: tuple[
             Subscription, # reader
             int, # num received msgs
@@ -178,6 +180,28 @@ class BridgeController(Node):
 
         await self.sio.emit(
             event='topics',
+            data=data,
+            callback=None
+            )
+
+    async def report_services(self):
+        if not self.is_connected_:
+            return
+
+        data = []
+
+        for service in self.discovered_services_.keys():
+            service_data = [
+                service #,
+                # service in self.topic_read_subscriptions_.keys(), # subsribed here
+                # msg types follow
+            ]
+            for msg_type in self.discovered_services_[service]['msg_types']:
+                service_data.append(msg_type)
+            data.append(service_data)
+
+        await self.sio.emit(
+            event='services',
             data=data,
             callback=None
             )
@@ -247,6 +271,7 @@ class BridgeController(Node):
                 self.conn_led.on()
 
             await asyncio.get_event_loop().create_task(self.report_topics())
+            await asyncio.get_event_loop().create_task(self.report_services())
 
         @sio.on('offer')
         async def on_offer(data):
@@ -592,7 +617,6 @@ class BridgeController(Node):
     async def discover_topics(self):
         topics_changed = False
         new_topics = self.get_topic_names_and_types()
-        # self.get_logger().info(f'Seeing {len(discovered_topics)} topics...')
 
         for topic_info in new_topics:
             topic = topic_info[0]
@@ -614,6 +638,20 @@ class BridgeController(Node):
 
         if topics_changed:
             self.event_loop.create_task(self.report_topics())
+
+        services_changed = False
+        new_services = self.get_service_names_and_types()
+
+        for service_info in new_services:
+            service = service_info[0]
+
+            if not service in self.discovered_services_:
+                self.discovered_services_[service] = { 'msg_types': service_info[1] }
+                services_changed = True
+                self.get_logger().warn(f'Discovered service {service}')
+
+        if services_changed:
+            self.event_loop.create_task(self.report_services())
 
 
     async def shutdown_cleanup(self):
