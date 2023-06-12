@@ -13,10 +13,12 @@ import time
 
 from sensor_msgs.msg import Image
 from sensor_msgs.msg import BatteryState
-
+from std_srvs.srv import Empty, SetBool
 
 # from rclpy.subscription import TypeVar
-from ros2topic.api import get_msg_class, get_message
+from rosidl_runtime_py.utilities import get_message, get_interface
+
+# from ros2topic.api import get_msg_class
 
 import asyncio
 from asyncio import Condition
@@ -424,6 +426,54 @@ class BridgeController(Node):
                     self.stop_topic_publisher(topic, id_peer)
 
             return { 'success': 1, 'subscribed': res_subscribed, 'unsubscribed': res_unsubscribed}
+
+        @sio.on('service')
+        async def on_peer_service_call(data:dict):
+
+            self.get_logger().info('on_peer_service_call: ' + str(data))
+
+            id_peer:str = None
+            if 'id_app' in data:
+                id_peer = data['id_app']
+            if 'id_instance' in data:
+                id_peer = data['id_instance']
+            if id_peer == None:
+                return { 'err': 2, 'msg': 'No valid peer id provided' }
+            service = data['service']
+
+            if not service in self.discovered_services_.keys():
+                return { 'err': 2, 'msg': f'Service {service} not discovered (yet?)' }
+
+            message_class = None
+            try:
+                message_class = get_interface(self.discovered_services_[service]['msg_types'][0])
+            except:
+                pass
+
+            if message_class == None:
+                self.get_logger().error(f'NOT calling service {service}, msg class {self.discovered_services_[service]["msg_types"][0]} not loaded')
+                return False
+
+            cli = self.create_client(message_class, service)
+            if cli == None:
+                self.get_logger().error(f'Failed creating client for service {service}, msg class={self.discovered_services_[service]["msg_types"][0]}')
+                return False
+
+            while not cli.wait_for_service(timeout_sec=1.0):
+                self.get_logger().warn('Service {service} not available, waiting again...')
+            # self.req = AddTwoInts.Request()
+
+            payload = None
+            if 'msg' in data.keys():
+                payload = data['msg']
+            req = None
+            if payload:
+                req = message_class.Request(payload)
+            else:
+                req = message_class.Request()
+            self.future = cli.call_async(req)
+            rclpy.spin_until_future_complete(self, self.future)
+            return self.future.result()
 
         @sio.event
         async def connect_error(data):
