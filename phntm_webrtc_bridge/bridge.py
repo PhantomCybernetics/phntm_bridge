@@ -14,6 +14,7 @@ import time
 from sensor_msgs.msg import Image
 from sensor_msgs.msg import BatteryState
 from std_srvs.srv import Empty, SetBool
+from std_srvs.srv._empty import Empty_Response
 
 # from rclpy.subscription import TypeVar
 from rosidl_runtime_py.utilities import get_message, get_interface
@@ -459,21 +460,34 @@ class BridgeController(Node):
                 self.get_logger().error(f'Failed creating client for service {service}, msg class={self.discovered_services_[service]["msg_types"][0]}')
                 return False
 
-            while not cli.wait_for_service(timeout_sec=1.0):
-                self.get_logger().warn('Service {service} not available, waiting again...')
-            # self.req = AddTwoInts.Request()
+            async def srv_ready_checker():
+                timeout_sec = 10.0
+                while cli.context.ok() and not cli.service_is_ready() and timeout_sec > 0.0:
+                    await asyncio.sleep(.1)
+                    timeout_sec -= .1
+                self.get_logger().warn(f"Service {service} is_ready: {cli.service_is_ready()}")
+
+            await srv_ready_checker()
 
             payload = None
             if 'msg' in data.keys():
                 payload = data['msg']
             req = None
             if payload:
-                req = message_class.Request(payload)
+                req = message_class.Request(data=payload)
             else:
                 req = message_class.Request()
-            self.future = cli.call_async(req)
-            rclpy.spin_until_future_complete(self, self.future)
-            return self.future.result()
+            future = cli.call_async(req)
+            # rclpy.spin_until_future_complete(self, self.future)
+            async def srv_finished_checker():
+                timeout_sec = 10.0
+                while not future.done() and not self.shutting_down_:
+                    await asyncio.sleep(.1)
+                    timeout_sec -= .1
+                self.get_logger().warn(f"Service {service} call finished w res: {str(future.result())}")
+
+            await srv_finished_checker()
+            return str(future.result())
 
         @sio.event
         async def connect_error(data):
@@ -843,12 +857,12 @@ class BridgeController(Node):
         async def on_iceconnectionstatechange():
             print(f"WebRTC iceconnectionstatechange (peer={id_peer}) state is %s" % pc.iceConnectionState)
 
-        # async def ice_checker():
-        #     while pc.iceGatheringState != 'complete':
-        #         await asyncio.sleep(.1)
-        #     self.get_logger().warn(f"Unlocking!")
+        async def ice_checker():
+            while pc.iceGatheringState != 'complete':
+                await asyncio.sleep(.1)
+            self.get_logger().warn(f"Unlocking!")
 
-        # await ice_checker()
+        await ice_checker()
 
         # async with iceComplete:
         #     await iceComplete.wait()
