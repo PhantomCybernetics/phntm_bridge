@@ -4,12 +4,15 @@ import rclpy
 from rclpy.node import Node, Parameter, Subscription, QoSProfile, Publisher
 from rclpy.qos import QoSHistoryPolicy, QoSReliabilityPolicy, DurabilityPolicy
 from rclpy.duration import Duration, Infinite
+from rclpy.serialization import deserialize_message
 
 from .inc.status_led import StatusLED
 from .inc.ros_video_streaming import ROSVideoStreamTrack
 from rcl_interfaces.msg import ParameterDescriptor
 import signal
 import time
+
+import numpy as np
 
 from sensor_msgs.msg import Image
 from sensor_msgs.msg import BatteryState
@@ -32,10 +35,14 @@ import socketio
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCDataChannel, RTCConfiguration, RTCIceServer
 from aiortc.contrib.media import MediaPlayer, MediaRelay
 from aiortc.rtcrtpsender import RTCRtpSender
+#from av.video.frame import VideoFrame
+
+import av
 
 import ssl
 from aiortc.contrib.media import MediaPlayer, MediaRelay
 from aiortc.rtcrtpsender import RTCRtpSender
+
 import os
 import platform
 
@@ -144,8 +151,9 @@ class BridgeController(Node):
 
         self.wrtc_nextChannelId = 1
         self.wrtc_peer_pcs:dict[str,RTCPeerConnection] = dict() # id_peer => pc
-        self.wrtc_peer_read_channels:dict[str,dict[str,RTCDataChannel]] = dict() # id_peer => [ topic => read webrtc channel ]
-        self.wrtc_peer_write_channels:dict[str,dict[str,RTCDataChannel]] = dict() # id_peer => [ topic => write webrtc channel ]
+        self.wrtc_peer_read_channels:dict[str,dict[str,RTCDataChannel]] = dict() # id_peer => [ topic => peer read webrtc channel ]
+        self.wrtc_peer_write_channels:dict[str,dict[str,RTCDataChannel]] = dict() # id_peer => [ topic => peer writen webrtc channel ]
+        self.wrtc_peer_video_tracks:dict[str,dict[str,RTCRtpSender]] = dict() # id_peer => [ topic => peer read webrtc video track ]
 
         self.spin_thread: threading.Thread = None
         self.spin_task: asyncio.Future[any] = None
@@ -227,6 +235,60 @@ class BridgeController(Node):
 
                     if self.data_led != None:
                         self.data_led.once()
+
+    async def report_frame(self, topic:str, frame_msg_bytes:any, log:bool, total_sent:int):
+
+        im:Image = deserialize_message(frame_msg_bytes, Image)
+
+        # im.deserialize(frame_msg_bytes)
+
+        # self.get_logger().info(f'{str(frame_msg)}')
+        # frame_np = np.frombuffer(frame_msg, dtype=np.uint8)
+        # frame = av.VideoFrame.from_ndarray(frame_np, format='bgr24')
+        self.get_logger().info(f'Got img bytes from {topic} {str(im.header)} {im.width}x{im.height} data={len(im.data)}B enc={im.encoding} is_bigendian={im.is_bigendian} step={im.step}')
+
+        # Extract the image data from the Image message
+        # width = im.width
+        # height = image_msg.height
+        channels = int(im.step / im.width)  # 3 for RGB format
+
+        # Convert the image data to a NumPy array
+        np_array = np.frombuffer(im.data, dtype=np.uint8)
+
+        # Reshape the array based on the image dimensions
+        np_array = np_array.reshape(im.height, im.width, channels)
+
+        # Assuming the frame is in RGB format
+        frame = av.VideoFrame.from_ndarray(np_array, format='rgb24') # im.encoding=rgb8 for /camera/color (rgb8 throws  exception=ValueError('Expected numpy array with ndim `2` but got `3`')>)
+        frame.pts = None
+
+        self.get_logger().warn(f' => frame {frame.width}x{frame.height} format={frame.format}')
+
+
+        # '': 'std_msgs/Header',
+        # 'height': 'uint32',
+        # '': 'uint32',
+        # 'encoding': 'string',
+        # 'is_bigendian': 'uint8',
+        # 'step': 'uint32',
+        # 'data': 'sequence<uint8>',
+
+        # for id_peer in self.wrtc_peer_read_channels.keys():
+        #     if topic in self.wrtc_peer_read_channels[id_peer].keys():
+        #         dc = self.wrtc_peer_read_channels[id_peer][topic]
+        #         self.wrtc_peer_read_channels[id_peer][topic]
+        #         if dc.readyState == 'open':
+        #             if type(payload) is bytes:
+        #                 if log:
+        #                     self.get_logger().info(f'△ Sending {len(payload)}B into {topic} for id_peer={id_peer}, total sent: {total_sent}')
+        #                 dc.send(payload) #raw
+        #             else:
+        #                 if (log):
+        #                     self.get_logger().info(f'△ Sending {type(payload)} into {topic} for id_peer={id_peer}, total sent: {total_sent}')
+        #                 dc.send(str(payload)) #raw
+
+        #             if self.data_led != None:
+        #                 self.data_led.once()
 
     async def report_latest_when_ready(self, id_peer:str, topic:str):
 
@@ -318,23 +380,36 @@ class BridgeController(Node):
                         self.wrtc_peer_read_channels[id_peer] = dict()
 
                     if not topic in self.wrtc_peer_read_channels[id_peer]:
+
                         protocol:str = ', '.join(self.discovered_topics_[topic]['msg_types'])
+                        is_image = protocol == 'sensor_msgs/msg/Image'
 
-                        self.wrtc_nextChannelId += 1
-                        self.get_logger().info(f'Peer {id_peer} subscribing to {topic}/R (protocol={protocol}, ch_id={self.wrtc_nextChannelId})')
-                        dc = pc.createDataChannel(topic, id=self.wrtc_nextChannelId, protocol=protocol, negotiated=True) # negotiated doesn't work tho
+                        if not is_image:
 
-                        @dc.on('message')
-                        async def on_channel_message(msg):
-                            self.get_logger().info(f' ⇣ {topic}/R got message: '+str(msg))
+                            self.wrtc_nextChannelId += 1
+                            self.get_logger().info(f'Peer {id_peer} subscribing to {topic}/R (protocol={protocol}, ch_id={self.wrtc_nextChannelId})')
+                            dc = pc.createDataChannel(topic, id=self.wrtc_nextChannelId, protocol=protocol, negotiated=True) # negotiated doesn't work tho
 
-                        self.wrtc_peer_read_channels[id_peer][topic] = dc
-                        res_subscribed.append([topic, self.wrtc_nextChannelId])
+                            @dc.on('message')
+                            async def on_channel_message(msg):
+                                self.get_logger().info(f' ⇣ {topic}/R got message: '+str(msg))
 
-                        if not self.subscribe_topic(topic, id_peer):
-                            return { 'err': 2, 'msg': f'Topic {topic} failed to subscribe'}
+                            self.wrtc_peer_read_channels[id_peer][topic] = dc
+                            res_subscribed.append([topic, self.wrtc_nextChannelId])
 
-                        await self.report_latest_when_ready(id_peer, topic)
+                            if not self.subscribe_topic(topic, id_peer):
+                                return { 'err': 2, 'msg': f'Topic {topic} failed to subscribe'}
+
+                            await self.report_latest_when_ready(id_peer, topic)
+
+                        else:
+
+                            # frame = av.VideoFrame.from_ndarray(msg, format='rgb24')
+                            if not self.subscribe_topic(topic, id_peer):
+                                return { 'err': 2, 'msg': f'Image topic {topic} failed to subscribe'}
+
+                            # xxlxlxlxl
+                            pass
 
                 else: # unsubscribe
                     if id_peer in self.wrtc_peer_read_channels and topic in self.wrtc_peer_read_channels[id_peer]:
@@ -481,10 +556,11 @@ class BridgeController(Node):
             # rclpy.spin_until_future_complete(self, self.future)
             async def srv_finished_checker():
                 timeout_sec = 10.0
-                while not future.done() and not self.shutting_down_:
+                while not future.done() and not self.shutting_down_ and timeout_sec > 0.0:
                     await asyncio.sleep(.1)
                     timeout_sec -= .1
-                self.get_logger().warn(f"Service {service} call finished w res: {str(future.result())}")
+                is_timeout = timeout_sec <= 0.0
+                self.get_logger().warn(f"Service {service} call finished w res: {str(future.result())}{(' TIMEOUT' if is_timeout else '')}")
 
             await srv_finished_checker()
             return str(future.result())
@@ -563,6 +639,8 @@ class BridgeController(Node):
             self.get_logger().error(f'NOT subscribing to topic {topic}, msg class {msg_type} not loaded (all={", ".join(topic_info["msg_types"])} )')
             return False
 
+        is_image = msg_type == 'sensor_msgs/msg/Image'
+
         #is_text = msg_type == 'std_msgs/msg/String'
         raw = self.get_parameter_or(f'{topic}.raw', Parameter(name='', value=True)).get_parameter_value().bool_value
         reliability = self.get_parameter_or(f'{topic}.reliability', Parameter(name='', value=QoSReliabilityPolicy.BEST_EFFORT)).get_parameter_value().integer_value
@@ -575,12 +653,12 @@ class BridgeController(Node):
                                 lifespan=Infinite \
                                 )
 
-        self.get_logger().warn(f'Subscribing to topic {topic} {msg_type} raw={raw}')
+        self.get_logger().warn(f'Subscribing to topic {topic} {msg_type} {"IMAGE" if is_image else "raw={raw}"}')
 
         sub = self.create_subscription(
             msg_type=message_class,
             topic=topic,
-            callback=lambda msg: self.topic_subscriber_callback(topic, msg),
+            callback=lambda msg: self.topic_subscriber_callback(topic, is_image, msg),
             qos_profile=qosProfile,
             raw=raw
         )
@@ -616,7 +694,7 @@ class BridgeController(Node):
             del self.topic_read_subscriptions_[topic]
 
 
-    def topic_subscriber_callback(self, topic, msg):
+    def topic_subscriber_callback(self, topic, is_image, msg):
         self.topic_read_subscriptions_[topic][1] += 1 # num recieved
         self.topic_read_subscriptions_[topic][2] = msg #latest val
         self.topic_read_subscriptions_[topic][3] = time.time() #latest time
@@ -632,7 +710,10 @@ class BridgeController(Node):
             log_msg = True
             self.topic_read_subscriptions_[topic][5] = time.time() #last logged now
 
-        self.event_loop.create_task(self.report_data(topic, msg, log=log_msg, total_sent=self.topic_read_subscriptions_[topic][1]))
+        if not is_image:
+            self.event_loop.create_task(self.report_data(topic, msg, log=log_msg, total_sent=self.topic_read_subscriptions_[topic][1]))
+        else:
+            self.event_loop.create_task(self.report_frame(topic, msg, log=log_msg, total_sent=self.topic_read_subscriptions_[topic][1]))
 
             # vif topic == '/joy' and self.conn_led != None:
             #    self.is_connected_ = True
