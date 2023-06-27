@@ -7,12 +7,22 @@ from rclpy.duration import Duration, Infinite
 from rclpy.serialization import deserialize_message
 
 from .inc.status_led import StatusLED
-from .inc.ros_video_streaming import ROSVideoStream
+from .inc.ros_video_streaming import ROSVideoStream, VIDEO_PTIME, VIDEO_CLOCK_RATE, VIDEO_TIME_BASE
 from rcl_interfaces.msg import ParameterDescriptor
 import signal
 import time
+import sys
 
+import copy
+
+from .msg_types.theora_image_transport.msg._packet import Packet
+
+from av.frame import Frame
+from av.video.frame import VideoFrame
 import numpy as np
+from sensor_msgs.msg import Image
+import av
+from av.video.frame import VideoFrame
 
 from sensor_msgs.msg import BatteryState
 from std_srvs.srv import Empty, SetBool
@@ -28,12 +38,15 @@ from asyncio import Condition
 
 # import engineio
 import threading
+from threading import active_count
+
 import socketio
 # from websockets.sync.client import connect
 
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCDataChannel, RTCConfiguration, RTCIceServer
 from aiortc.contrib.media import MediaPlayer, MediaRelay
-from aiortc.rtcrtpsender import RTCRtpSender
+from aiortc.rtcrtpsender import RTCRtpSender, RTCEncodedFrame
+from aiortc.codecs import Vp8Encoder
 #from av.video.frame import VideoFrame
 
 import av
@@ -137,8 +150,11 @@ class BridgeController(Node):
             any, # last msg
             float, # last msg received time (s)
             list[str], #subscribed peers
-            float #last time logged (s)
+            float, #last time logged (s),
+            threading.Thread #frame processor thread
         ] ] = {}
+        self.topic_read_frame_raw_:dict[str:bytes] = {} # topic => frame bytes
+        # self.topic_read_frame_enc_:dict[str:dict[str:VideoFrame]] = {} # topic => [ codec => encoded frame ]
 
         self.topic_publishers_:dict[str: tuple[
             Publisher,
@@ -227,33 +243,30 @@ class BridgeController(Node):
                 if dc.readyState == 'open':
                     if type(payload) is bytes:
                         if log:
-                            self.get_logger().info(f'△ Sending {len(payload)}B into {topic} for id_peer={id_peer}, total sent: {total_sent}')
+                            self.get_logger().debug(f'△ Sending {len(payload)}B into {topic} for id_peer={id_peer}, total sent: {total_sent}')
                         dc.send(payload) #raw
                     else:
                         if (log):
-                            self.get_logger().info(f'△ Sending {type(payload)} into {topic} for id_peer={id_peer}, total sent: {total_sent}')
+                            self.get_logger().debug(f'△ Sending {type(payload)} into {topic} for id_peer={id_peer}, total sent: {total_sent}')
                         dc.send(str(payload)) #raw
 
                     if self.data_led != None:
                         self.data_led.once()
 
-    async def report_frame(self, topic:str, frame_msg_bytes:any, log:bool, total_sent:int):
+    def report_frame(self, topic:str, frame_msg_bytes:any, total_sent:int):
 
-        self.get_logger().debug(f'Got {len(frame_msg_bytes)}B from {topic}')
+        # if log:
+        #     self.get_logger().info(f'Receiving fame bytes from {topic}, this msg {len(frame_msg_bytes)}B')
 
         # if topic in self.topic_media_streams_.keys():
         #     await self.topic_media_streams_[topic].set_frame(frame_msg_bytes)
 
-        for id_peer in self.wrtc_peer_video_tracks.keys():
-            if topic in self.wrtc_peer_video_tracks[id_peer].keys():
-                sender:RTCRtpSender = self.wrtc_peer_video_tracks[id_peer][topic]
-                if sender.track == None:
-                    self.get_logger().error(f' => sending frame to track failed sender={str(sender)} track={str(sender.track)}')
-                    continue
+        # if log:
+        #     self.get_logger().debug(f'△ Sending {len(payload)}B into {topic} for id_peer={id_peer}, total sent: {total_sent}')
 
-                # TODO frames need to go through async encoder thread
-                # and then shared by all topic subscribers encoded
-                await sender.track.set_frame(frame_msg_bytes)
+        self.topic_read_frame_raw_[topic] = frame_msg_bytes # frame processorthread reads this
+
+
 
         #         # if sender == 'open':
         #         #     if type(payload) is bytes:
@@ -287,10 +300,10 @@ class BridgeController(Node):
             dc = self.wrtc_peer_read_channels[id_peer][topic]
             if dc.readyState == 'open':
                 if type(payload) is bytes:
-                    self.get_logger().info(f'Sending latest {len(payload)}B into {topic} id_peer={id_peer}')
+                    self.get_logger().debug(f'△ Sending latest {len(payload)}B into {topic} id_peer={id_peer}')
                     dc.send(payload) #raw
                 else:
-                    self.get_logger().info(f'Sending latest {type(payload)} into {topic} id_peer={id_peer}')
+                    self.get_logger().debug(f'△ Sending latest {type(payload)} into {topic} id_peer={id_peer}')
                     dc.send(str(payload)) #raw
                 return
             else:
@@ -417,19 +430,24 @@ class BridgeController(Node):
                             res_err.append([topic, 'Image topic failed to subscribe'])
                             continue
 
-                        if not id_peer in self.wrtc_peer_video_tracks:
+                        if not id_peer in self.wrtc_peer_video_tracks.keys():
                             self.wrtc_peer_video_tracks[id_peer] = dict()
 
                         sender:RTCRtpSender = None
-                        if topic in self.wrtc_peer_video_tracks[id_peer]: # never destroyed during p2p session
+                        if topic in self.wrtc_peer_video_tracks[id_peer].keys(): # never destroyed during p2p session
                             sender = self.wrtc_peer_video_tracks[id_peer][topic]
                         else:
-                            sender = pc.addTrack(ROSVideoStream(self.get_logger()))
-                            self.get_logger().info(f'Created sender, _stream_id={sender._stream_id}')
+                            sender = pc.addTrack(ROSVideoStream(self.get_logger(), topic, id_peer, self.log_message_every_sec))
+                            sender.__logger = self.get_logger()
+                            # aiortc sets _stream_id to self.__stream_id in RTCPeerConnection.__createTransceiver
+                            # this makes it impossible to identify streams on received
+                            # this should fix it for now
+                            sender._stream_id = sender._track_id
+                            self.get_logger().warn(f'Created sender for id_peer={id_peer} {topic}, _stream_id={sender._stream_id} _track_id=={sender._track_id}')
 
                             @sender.track.on('ended')
                             async def on_sender_track_ended():
-                                self.get_logger().warn(f'Sender track ended, _stream_id={str(sender._stream_id)}')
+                                self.get_logger().warn(f'Sender track ended, _stream_id={str(sender._stream_id)} _track_id=={str(sender._track_id)}')
                                 # await pc.removeTrack(sender)
                                 # if topic in self.wrtc_peer_video_tracks[id_peer]:
                                 #     self.wrtc_peer_video_tracks[id_peer].pop(topic)
@@ -438,8 +456,8 @@ class BridgeController(Node):
                             # await sender.track.set_frame(av.VideoFrame(width=640, height=480, format='rgb24'))
                             self.get_logger().info(f'Sender capabilities: {str(sender.getCapabilities(kind="video"))}')
 
-                        sender.pause(False);
-                        res_subscribed.append([topic, sender._stream_id ]) #id is generated str
+                        # sender.pause(False);
+                        res_subscribed.append([topic, sender._track_id ]) #id is generated str
 
                 else: # unsubscribe
 
@@ -454,7 +472,7 @@ class BridgeController(Node):
 
                     if id_peer in self.wrtc_peer_video_tracks and topic in self.wrtc_peer_video_tracks[id_peer]:
                         self.get_logger().info(f'Peer {id_peer} unsubscribed from {topic} /R IMG (NOT EVEN pausing stream)')
-                        self.wrtc_peer_video_tracks[id_peer][topic].pause()
+                        # self.wrtc_peer_video_tracks[id_peer][topic].pause()
                         # self.wrtc_peer_video_tracks[id_peer][topic].pause()
                         # id_closed_track = self.wrtc_peer_video_tracks[id_peer][topic].track.id # str generated
                         # if id_peer in self.wrtc_peer_video_tracks:
@@ -510,7 +528,7 @@ class BridgeController(Node):
                 self.wrtc_peer_video_tracks.pop(id_peer)
 
             if id_peer in self.wrtc_peer_pcs:
-                self.wrtc_peer_pcs[id_peer].close() #pops itself from  wrtc_peer_pcs
+                await self.wrtc_peer_pcs[id_peer].close() #pops itself from  wrtc_peer_pcs
                 self.wrtc_peer_pcs.pop(id_peer)
 
         # WRITE SUBS
@@ -756,7 +774,9 @@ class BridgeController(Node):
             self.get_logger().error(f'Failed subscribing to topic {topic}, msg class={msg_type} (all={", ".join(topic_info["msg_types"])} )')
             return False
 
-        # TODO init topic frame processor thread here
+        frame_processor = None
+        if is_image: # init topic frame processor thread here
+            frame_processor = threading.Thread(target=self.topic_frame_processor, args=(topic,), daemon=True)
 
         self.topic_read_subscriptions_[topic] = [
             sub,
@@ -764,11 +784,86 @@ class BridgeController(Node):
             None, # last msg
             -1.0, #l ast timestamp
             [ id_peer ], # subscribers
-            -1.0 # last time logged
+            -1.0, # last time logged
+            frame_processor # frame processor thread
         ]
+
+        if frame_processor:
+            frame_processor.start()
 
         return True
 
+    def topic_frame_processor(self, topic:str):
+        self.get_logger().info(f'Frame worker thread {topic} started')
+        frame_num = 0
+        _start = time.time()
+        _timestamp = 0
+
+        # vp8_encoder = Vp8Encoder()
+
+        while not self.shutting_down_ and topic in self.topic_read_subscriptions_.keys():
+
+            _timestamp += int(VIDEO_PTIME * VIDEO_CLOCK_RATE)
+            if not topic in self.topic_read_frame_raw_.keys() or not self.topic_read_frame_raw_[topic]:
+                # self.get_logger().info(f' ... Frame worker thread {topic} input empty')
+                time.sleep(.01)
+                continue
+
+            im:Image = deserialize_message(self.topic_read_frame_raw_[topic], Image)
+            self.topic_read_frame_raw_[topic] = None # don't encode again
+
+            # self.get_logger().warn(f' ... >> F{im.header.stamp.sec}:{im.header.stamp.nanosec} {im.width}x{im.height} data={len(im.data)}B enc={im.encoding} is_bigendian={im.is_bigendian} step={im.step}')
+
+            if im.encoding == 'rgb8':
+                channels = 3  # 3 for RGB format
+                # Convert the image data to a NumPy array
+                np_array = np.frombuffer(im.data, dtype=np.uint8)
+                # Reshape the array based on the image dimensions
+                np_array = np_array.reshape(im.height, im.width, channels)
+                format = 'rgb24'
+            elif im.encoding == '16UC1':
+                # channels = 1  # 3 for RGB format
+                np_array = np.frombuffer(im.data, dtype=np.uint16)
+                np_array = np_array.reshape(im.height, im.width)
+                format = 'gray16le'
+            else:
+                self.get_logger().error(f' >> Unsupported frame type: F{im.header.stamp.sec}:{im.header.stamp.nanosec} {im.width}x{im.height} data={len(im.data)}B enc={im.encoding} is_bigendian={im.is_bigendian} step={im.step}')
+                self.get_logger().error(f' >> Frame processor stopping for {topic}')
+                break
+
+            frame = av.VideoFrame.from_ndarray(np_array, format=format)
+
+            # pts, time_base = self.next_timestamp()
+            frame.pts = _timestamp
+            frame.time_base = VIDEO_TIME_BASE
+            frame_num += 1
+
+            # preformat for Vp8Encoder - todo check if needed, test video/H264
+            frame_yuv420p = frame.reformat(format="yuv420p")
+
+            # self.get_logger().info(f'Frame worker thread {topic} frame no:{frame_num} threads={active_count()}')
+
+            for id_peer in self.wrtc_peer_video_tracks.keys():
+                if topic in self.wrtc_peer_video_tracks[id_peer].keys():
+                    if self.wrtc_peer_video_tracks[id_peer][topic].track != None:
+                        sender = self.wrtc_peer_video_tracks[id_peer][topic]
+                        # if sender.encoder == None:
+                            # self.get_logger().info(f' >> Frame processor not encoding {topic} here... sender={str(sender)}')
+                        # pc = self.wrtc_peer_pcs[id_peer]
+                        # peer_codec = pc.__localRtp(transceiver).codecs[0]
+                        if isinstance(sender.encoder, Vp8Encoder):
+                            # self.get_logger().info(f'Frame worker thread {topic} setting frame no:{frame_num} to id_peer={id_peer} _stream_id={sender._stream_id}')
+                            sender.track.set_frame(frame_yuv420p)
+                        else:
+                            self.get_logger().error(f'Frame worker thread {topic} NOT setting frame no:{frame_num} to id_peer={id_peer} _stream_id={sender._stream_id} encoder={str(sender.encoder)}')
+
+                        # payloads, timestamp = vp8_encoder.encode(frame, sender.force_keyframe)
+                        # encoded_frame = RTCEncodedFrame(payloads, timestamp, None)
+                        # sender.track.set_encoded_frame(encoded_frame)
+
+            # self.topic_read_frame_enc_[topic][codec] = frame
+
+        self.get_logger().warn(f'Frame worker for {topic} finished')
 
     def unsubscribe_topic(self, topic:str, id_peer:str):
         if not topic in self.topic_read_subscriptions_.keys():
@@ -805,7 +900,7 @@ class BridgeController(Node):
 
         log_msg = False
         if self.topic_read_subscriptions_[topic][1] == 1: # first data in
-            self.get_logger().info(f'Receiving {type(msg).__name__} from {topic}')
+            self.get_logger().debug(f'Receiving {type(msg).__name__} from {topic}')
 
         if self.topic_read_subscriptions_[topic][5] < 0 or time.time()-self.topic_read_subscriptions_[topic][5] > self.log_message_every_sec:
             log_msg = True
@@ -814,7 +909,8 @@ class BridgeController(Node):
         if not is_image:
             self.event_loop.create_task(self.report_data(topic, msg, log=log_msg, total_sent=self.topic_read_subscriptions_[topic][1]))
         else:
-            self.event_loop.create_task(self.report_frame(topic, msg, log=log_msg, total_sent=self.topic_read_subscriptions_[topic][1]))
+            self.report_frame(topic, msg, total_sent=self.topic_read_subscriptions_[topic][1])
+            # self.event_loop.create_task()
 
             # vif topic == '/joy' and self.conn_led != None:
             #    self.is_connected_ = True

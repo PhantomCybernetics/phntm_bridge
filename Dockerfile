@@ -26,16 +26,14 @@ RUN mkdir -p $ROS_WS/src
 
 WORKDIR $ROS_WS
 
-RUN --mount=type=bind,source=./,target=/ros2_ws/src/phntm_webrtc_bridge \
+RUN --mount=type=bind,source=./,target=/ros2_ws/src/webrtc_bridge \
     . /opt/ros/$ROS_DISTRO/setup.sh && \
      rosdep update --rosdistro $ROS_DISTRO && \
      rosdep install -i --from-path src --rosdistro $ROS_DISTRO -y
 
-RUN --mount=type=bind,source=./,target=/ros2_ws/src/phntm_webrtc_bridge \
+RUN --mount=type=bind,source=./,target=/ros2_ws/src/webrtc_bridge \
     . /opt/ros/$ROS_DISTRO/setup.sh && \
     colcon build --symlink-install
-
-
 
 # RUN . install/local_setup.bash
 # RUN ros2 run phntm_bridge phntm_bridge
