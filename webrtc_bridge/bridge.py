@@ -24,12 +24,18 @@ from sensor_msgs.msg import Image
 import av
 from av.video.frame import VideoFrame
 
+
+
 from sensor_msgs.msg import BatteryState
 from std_srvs.srv import Empty, SetBool
 from std_srvs.srv._empty import Empty_Response
 
 # from rclpy.subscription import TypeVar
 from rosidl_runtime_py.utilities import get_message, get_interface
+
+import cv2
+
+# from cv_bridge import
 
 # from ros2topic.api import get_msg_class
 
@@ -824,8 +830,22 @@ class BridgeController(Node):
             elif im.encoding == '16UC1':
                 # channels = 1  # 3 for RGB format
                 np_array = np.frombuffer(im.data, dtype=np.uint16)
-                np_array = np_array.reshape(im.height, im.width)
-                format = 'gray16le'
+
+                mask = np.zeros(np_array.shape, dtype=np.uint8)
+                mask = np.bitwise_or(np_array, mask)
+
+                np_array = cv2.cvtColor(np_array, cv2.COLOR_GRAY2RGB)
+
+                np_array = cv2.convertScaleAbs(np_array, alpha=255/2000) # converts to 8 bit
+                mask = cv2.convertScaleAbs(mask) # converts to 8 bit
+
+                np_array = np_array.reshape(im.height, im.width, 3)
+                mask = mask.reshape(im.height, im.width, 1)
+
+                np_array = (255-np_array)
+                np_array = np.bitwise_and(np_array, mask)
+
+                format = 'rgb24'
             else:
                 self.get_logger().error(f' >> Unsupported frame type: F{im.header.stamp.sec}:{im.header.stamp.nanosec} {im.width}x{im.height} data={len(im.data)}B enc={im.encoding} is_bigendian={im.is_bigendian} step={im.step}')
                 self.get_logger().error(f' >> Frame processor stopping for {topic}')
