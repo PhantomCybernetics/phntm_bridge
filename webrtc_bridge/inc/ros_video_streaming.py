@@ -83,6 +83,7 @@ class ROSVideoStream(MediaStreamTrack):
 
         self.f = None
         self.encodedFrame = None
+
         self._total_processed += 1
 
         if frame and (self._last_log_time < 0 or time.time()-self._last_log_time > self._log_message_every_sec):

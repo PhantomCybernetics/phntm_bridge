@@ -171,6 +171,8 @@ class BridgeController(Node):
             float #last time logged (s)
         ] ] = {}
 
+        self.service_clients_:dict[str: any] = {} # service name => client
+
         self.wrtc_nextChannelId = 1
         self.wrtc_peer_pcs:dict[str,RTCPeerConnection] = dict() # id_peer => pc
         self.wrtc_peer_read_channels:dict[str,dict[str,RTCDataChannel]] = dict() # id_peer => [ topic => peer read webrtc channel ]
@@ -260,32 +262,7 @@ class BridgeController(Node):
                         self.data_led.once()
 
     def report_frame(self, topic:str, frame_msg_bytes:any, total_sent:int):
-
-        # if log:
-        #     self.get_logger().info(f'Receiving fame bytes from {topic}, this msg {len(frame_msg_bytes)}B')
-
-        # if topic in self.topic_media_streams_.keys():
-        #     await self.topic_media_streams_[topic].set_frame(frame_msg_bytes)
-
-        # if log:
-        #     self.get_logger().debug(f'△ Sending {len(payload)}B into {topic} for id_peer={id_peer}, total sent: {total_sent}')
-
         self.topic_read_frame_raw_[topic] = frame_msg_bytes # frame processorthread reads this
-
-
-
-        #         # if sender == 'open':
-        #         #     if type(payload) is bytes:
-        #         #         if log:
-        #         #             self.get_logger().info(f'△ Sending {len(payload)}B into {topic} for id_peer={id_peer}, total sent: {total_sent}')
-        #         #         dc.send(payload) #raw
-        #         #     else:
-        #         #         if (log):
-        #         #             self.get_logger().info(f'△ Sending {type(payload)} into {topic} for id_peer={id_peer}, total sent: {total_sent}')
-        #         #         dc.send(str(payload)) #raw
-
-        #         #     if self.data_led != None:
-        #         #         self.data_led.once()
 
     async def report_latest_when_ready(self, id_peer:str, topic:str):
 
@@ -639,13 +616,19 @@ class BridgeController(Node):
             except:
                 pass
 
-            self.get_logger().debug(f"Peer {id_peer} calling service {service} with {str(data['msg'])}")
+            self.get_logger().warn(f"Peer {id_peer} calling service {service} with args: {str(data['msg'])}")
 
             if message_class == None:
                 self.get_logger().error(f'NOT calling service {service}, msg class {self.discovered_services_[service]["msg_types"][0]} not loaded')
                 return False
 
-            cli = self.create_client(message_class, service)
+            cli = None
+            if service in self.service_clients_.keys():
+                cli = self.service_clients_[service]
+            else:
+                cli = self.create_client(message_class, service)
+                self.service_clients_[service] = cli
+
             if cli == None:
                 self.get_logger().error(f'Failed creating client for service {service}, msg class={self.discovered_services_[service]["msg_types"][0]}')
                 return False
@@ -655,9 +638,11 @@ class BridgeController(Node):
                 while cli.context.ok() and not cli.service_is_ready() and timeout_sec > 0.0:
                     await asyncio.sleep(.1)
                     timeout_sec -= .1
-                self.get_logger().info(f"Service {service} is_ready: {cli.service_is_ready()}")
-
             await srv_ready_checker()
+
+            if not cli.service_is_ready():
+                self.get_logger().error(f'Failed calling service {service}, client not ready')
+                return False
 
             payload = None
             if 'msg' in data.keys():
@@ -813,11 +798,13 @@ class BridgeController(Node):
             _timestamp += int(VIDEO_PTIME * VIDEO_CLOCK_RATE)
             if not topic in self.topic_read_frame_raw_.keys() or not self.topic_read_frame_raw_[topic]:
                 # self.get_logger().info(f' ... Frame worker thread {topic} input empty')
-                time.sleep(.01)
+                time.sleep(.001)
                 continue
 
-            im:Image = deserialize_message(self.topic_read_frame_raw_[topic], Image)
+            src_msg = self.topic_read_frame_raw_[topic]
             self.topic_read_frame_raw_[topic] = None # don't encode again
+
+            im:Image = deserialize_message(src_msg, Image)
 
             # self.get_logger().warn(f' ... >> F{im.header.stamp.sec}:{im.header.stamp.nanosec} {im.width}x{im.height} data={len(im.data)}B enc={im.encoding} is_bigendian={im.is_bigendian} step={im.step}')
 
@@ -859,28 +846,22 @@ class BridgeController(Node):
             frame.time_base = VIDEO_TIME_BASE
             frame_num += 1
 
-            # preformat for Vp8Encoder - todo check if needed, test video/H264
-            frame_yuv420p = frame.reformat(format="yuv420p")
-
             # self.get_logger().info(f'Frame worker thread {topic} frame no:{frame_num} threads={active_count()}')
 
+            receivers_yuv420p = []
             for id_peer in self.wrtc_peer_video_tracks.keys():
                 if topic in self.wrtc_peer_video_tracks[id_peer].keys():
                     if self.wrtc_peer_video_tracks[id_peer][topic].track != None:
                         sender = self.wrtc_peer_video_tracks[id_peer][topic]
-                        # if sender.encoder == None:
-                            # self.get_logger().info(f' >> Frame processor not encoding {topic} here... sender={str(sender)}')
-                        # pc = self.wrtc_peer_pcs[id_peer]
-                        # peer_codec = pc.__localRtp(transceiver).codecs[0]
                         if isinstance(sender.encoder, Vp8Encoder):
-                            # self.get_logger().info(f'Frame worker thread {topic} setting frame no:{frame_num} to id_peer={id_peer} _stream_id={sender._stream_id}')
-                            sender.track.set_frame(frame_yuv420p)
+                            receivers_yuv420p.append(sender)
                         else:
-                            self.get_logger().error(f'Frame worker thread {topic} NOT setting frame no:{frame_num} to id_peer={id_peer} _stream_id={sender._stream_id} encoder={str(sender.encoder)}')
+                            sender.track.set_frame(frame)
 
-                        # payloads, timestamp = vp8_encoder.encode(frame, sender.force_keyframe)
-                        # encoded_frame = RTCEncodedFrame(payloads, timestamp, None)
-                        # sender.track.set_encoded_frame(encoded_frame)
+            if len(receivers_yuv420p): # preprocess here for all subscribers
+                frame_yuv420p = frame.reformat(format="yuv420p")
+                for sender in receivers_yuv420p:
+                    sender.track.set_frame(frame_yuv420p)
 
             # self.topic_read_frame_enc_[topic][codec] = frame
 
@@ -931,13 +912,7 @@ class BridgeController(Node):
             self.event_loop.create_task(self.report_data(topic, msg, log=log_msg, total_sent=self.topic_read_subscriptions_[topic][1]))
         else:
             self.report_frame(topic, msg, total_sent=self.topic_read_subscriptions_[topic][1])
-            # self.event_loop.create_task()
-
-            # vif topic == '/joy' and self.conn_led != None:
-            #    self.is_connected_ = True
-
-            # if topic == '/cmd_vel' and self.conn_led != None:
-            #    self.conn_led.set_disconnected()
+            # self.event_loop.create_task(self.report_frame(topic, msg, total_sent=self.topic_read_subscriptions_[topic][1]))
 
     def start_topic_publisher(self, topic:str, id_peer:str, protocol:str) -> bool:
 
