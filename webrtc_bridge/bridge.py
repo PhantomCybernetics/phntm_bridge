@@ -339,7 +339,6 @@ class BridgeController(Node):
         async def on_offer(data):
              return await self.on_wrtc_offer(data)
 
-
         # subscribe and unsubscribe data channels
         # bcs the negotionation doesn't seem to be implemented well at the moment
         # it's be nice to do thisvia webrtc tho
@@ -640,6 +639,8 @@ class BridgeController(Node):
             except:
                 pass
 
+            self.get_logger().debug(f"Peer {id_peer} calling service {service} with {str(data['msg'])}")
+
             if message_class == None:
                 self.get_logger().error(f'NOT calling service {service}, msg class {self.discovered_services_[service]["msg_types"][0]} not loaded')
                 return False
@@ -654,7 +655,7 @@ class BridgeController(Node):
                 while cli.context.ok() and not cli.service_is_ready() and timeout_sec > 0.0:
                     await asyncio.sleep(.1)
                     timeout_sec -= .1
-                self.get_logger().warn(f"Service {service} is_ready: {cli.service_is_ready()}")
+                self.get_logger().info(f"Service {service} is_ready: {cli.service_is_ready()}")
 
             await srv_ready_checker()
 
@@ -1132,7 +1133,13 @@ class BridgeController(Node):
 
         self.get_logger().info(f'IceConnectionState: {pc.iceConnectionState} IceGatheringState: {pc.iceGatheringState}')
 
+        if pc.connectionState in ['closed', 'failed']:
+            return
+
         await pc.setRemoteDescription(offer)
+
+        if pc.connectionState in ['closed', 'failed']:
+            return
 
         answer = await pc.createAnswer()
         await pc.setLocalDescription(answer)
