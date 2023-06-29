@@ -7,7 +7,7 @@ from rclpy.duration import Duration, Infinite
 from rclpy.serialization import deserialize_message
 
 from .inc.status_led import StatusLED
-from .inc.ros_video_streaming import ROSVideoStream, VIDEO_PTIME, VIDEO_CLOCK_RATE, VIDEO_TIME_BASE
+from .inc.ros_video_streaming import ROSVideoStream, ROSFrameProcessor, VIDEO_PTIME, VIDEO_CLOCK_RATE, VIDEO_TIME_BASE
 from rcl_interfaces.msg import ParameterDescriptor
 import signal
 import time
@@ -24,7 +24,7 @@ from sensor_msgs.msg import Image
 import av
 from av.video.frame import VideoFrame
 
-
+from dataclasses import dataclass
 
 from sensor_msgs.msg import BatteryState
 from std_srvs.srv import Empty, SetBool
@@ -40,11 +40,14 @@ import cv2
 # from ros2topic.api import get_msg_class
 
 import asyncio
-from asyncio import Condition
+# from asyncio import Condition
+
+import multiprocessing as mp
+from queue import Empty, Full
 
 # import engineio
-import threading
-from threading import active_count
+# import threading
+# from threading import active_count
 
 import socketio
 # from websockets.sync.client import connect
@@ -66,7 +69,33 @@ import platform
 
 ROOT = os.path.dirname(__file__)
 
+class TopicReadSubscription:
+    sub:Subscription
+    num_received:int
+    last_msg:any
+    last_msg_time:float
+    peers: list[ str ]
+    last_log:float
+    frame_processor:mp.Process
+    raw_frames:mp.Queue
+    processed_frames:mp.Queue
+
+    def __init__(self, sub:Subscription, peers:list[str], frame_processor:mp.Process, raw_frames:mp.Queue, processed_frames:mp.Queue):
+        self.sub = sub
+        self.num_received = 0
+        self.last_msg = -1.0
+        self.last_msg_time = -1.0
+        self.peers = peers
+        self.last_log = -1.0
+        self.frame_processor = frame_processor
+        self.raw_frames = raw_frames
+        self.processed_frames = processed_frames
+
+
 class BridgeController(Node):
+
+    topic_read_subscriptions_:dict[str: TopicReadSubscription]
+
     def __init__(self):
         super().__init__('webrtc_bridge')
 
@@ -150,16 +179,8 @@ class BridgeController(Node):
         self.discovered_topics_:dict[str: dict['msg_types':list[str]]] = {}
         self.discovered_services_:dict[str: dict['msg_types':list[str]]] = {}
 
-        self.topic_read_subscriptions_:dict[str: tuple[
-            Subscription, # reader
-            int, # num received msgs
-            any, # last msg
-            float, # last msg received time (s)
-            list[str], #subscribed peers
-            float, #last time logged (s),
-            threading.Thread #frame processor thread
-        ] ] = {}
-        self.topic_read_frame_raw_:dict[str:bytes] = {} # topic => frame bytes
+        self.topic_read_subscriptions_ = {}
+        # self.topic_read_frame_raw_:dict[str:bytes] = {} # topic => frame bytes
         # self.topic_read_frame_enc_:dict[str:dict[str:VideoFrame]] = {} # topic => [ codec => encoded frame ]
 
         self.topic_publishers_:dict[str: tuple[
@@ -262,7 +283,14 @@ class BridgeController(Node):
                         self.data_led.once()
 
     def report_frame(self, topic:str, frame_msg_bytes:any, total_sent:int):
-        self.topic_read_frame_raw_[topic] = frame_msg_bytes # frame processorthread reads this
+
+        # self.get_logger().debug(f'Putting frame into raw_frames of {topic}...')
+        raw_queue:mp.Queue = self.topic_read_subscriptions_[topic].raw_frames
+        try:
+            raw_queue.put_nowait(frame_msg_bytes)
+        except Full:
+            self.get_logger().error(f'Frame queue full for {topic}!')
+        # self.get_logger().debug(f'Frame added into raw_frames queue of {topic}')
 
     async def report_latest_when_ready(self, id_peer:str, topic:str):
 
@@ -275,7 +303,7 @@ class BridgeController(Node):
             if not topic in self.topic_read_subscriptions_.keys():
                 return #not subscribed yet
 
-            payload = self.topic_read_subscriptions_[topic][2] # save latest
+            payload = self.topic_read_subscriptions_[topic].last_msg # saved latest
 
             if payload == None:
                 return #nothing received yet
@@ -420,7 +448,7 @@ class BridgeController(Node):
                             sender = self.wrtc_peer_video_tracks[id_peer][topic]
                         else:
                             sender = pc.addTrack(ROSVideoStream(self.get_logger(), topic, id_peer, self.log_message_every_sec))
-                            sender.__logger = self.get_logger()
+                            # sender.__logger = self.get_logger()
                             # aiortc sets _stream_id to self.__stream_id in RTCPeerConnection.__createTransceiver
                             # this makes it impossible to identify streams on received
                             # this should fix it for now
@@ -500,7 +528,7 @@ class BridgeController(Node):
 
             data["topics"] = [];
             for topic in self.topic_read_subscriptions_.keys():
-                if id_peer in self.topic_read_subscriptions_[topic][4]: #peer subscribed?
+                if id_peer in self.topic_read_subscriptions_[topic].peers: #peer subscribed?
                     data["topics"].append([topic, 0]) #unsubscribe
 
             await on_read_subscription(data)
@@ -720,8 +748,8 @@ class BridgeController(Node):
     def subscribe_topic(self, topic:str, id_peer:str) -> bool:
 
         if topic in self.topic_read_subscriptions_:
-            if not id_peer in self.topic_read_subscriptions_[topic][4]:
-                self.topic_read_subscriptions_[topic][4].append(id_peer)
+            if not id_peer in self.topic_read_subscriptions_[topic].peers:
+                self.topic_read_subscriptions_[topic].peers.append(id_peer)
             return True # we cool here
 
         topic_info = self.discovered_topics_[topic]
@@ -767,125 +795,49 @@ class BridgeController(Node):
             return False
 
         frame_processor = None
-        if is_image: # init topic frame processor thread here
-            frame_processor = threading.Thread(target=self.topic_frame_processor, args=(topic,), daemon=True)
+        raw_frames_queue = None
+        processed_frames_queue = None
 
-        self.topic_read_subscriptions_[topic] = [
-            sub,
-            0, # num received msgs
-            None, # last msg
-            -1.0, #l ast timestamp
-            [ id_peer ], # subscribers
-            -1.0, # last time logged
-            frame_processor # frame processor thread
-        ]
+        if is_image: # init topic frame processor thread here
+            raw_frames_queue = mp.Queue()
+            processed_frames_queue = mp.Queue()
+            frame_processor = mp.Process(target=ROSFrameProcessor, args=(topic, raw_frames_queue, processed_frames_queue))
+
+        self.topic_read_subscriptions_[topic] = TopicReadSubscription(
+            sub = sub,
+            peers = [ id_peer ],
+            frame_processor = frame_processor,
+            raw_frames = raw_frames_queue,
+            processed_frames = processed_frames_queue
+        )
 
         if frame_processor:
             frame_processor.start()
 
         return True
 
-    def topic_frame_processor(self, topic:str):
-        self.get_logger().info(f'Frame worker thread {topic} started')
-        frame_num = 0
-        _start = time.time()
-        _timestamp = 0
-
-        # vp8_encoder = Vp8Encoder()
-
-        while not self.shutting_down_ and topic in self.topic_read_subscriptions_.keys():
-
-            _timestamp += int(VIDEO_PTIME * VIDEO_CLOCK_RATE)
-            if not topic in self.topic_read_frame_raw_.keys() or not self.topic_read_frame_raw_[topic]:
-                # self.get_logger().info(f' ... Frame worker thread {topic} input empty')
-                time.sleep(.001)
-                continue
-
-            src_msg = self.topic_read_frame_raw_[topic]
-            self.topic_read_frame_raw_[topic] = None # don't encode again
-
-            im:Image = deserialize_message(src_msg, Image)
-
-            # self.get_logger().warn(f' ... >> F{im.header.stamp.sec}:{im.header.stamp.nanosec} {im.width}x{im.height} data={len(im.data)}B enc={im.encoding} is_bigendian={im.is_bigendian} step={im.step}')
-
-            if im.encoding == 'rgb8':
-                channels = 3  # 3 for RGB format
-                # Convert the image data to a NumPy array
-                np_array = np.frombuffer(im.data, dtype=np.uint8)
-                # Reshape the array based on the image dimensions
-                np_array = np_array.reshape(im.height, im.width, channels)
-                format = 'rgb24'
-            elif im.encoding == '16UC1':
-                # channels = 1  # 3 for RGB format
-                np_array = np.frombuffer(im.data, dtype=np.uint16)
-
-                mask = np.zeros(np_array.shape, dtype=np.uint8)
-                mask = np.bitwise_or(np_array, mask)
-
-                np_array = cv2.cvtColor(np_array, cv2.COLOR_GRAY2RGB)
-
-                np_array = cv2.convertScaleAbs(np_array, alpha=255/2000) # converts to 8 bit
-                mask = cv2.convertScaleAbs(mask) # converts to 8 bit
-
-                np_array = np_array.reshape(im.height, im.width, 3)
-                mask = mask.reshape(im.height, im.width, 1)
-
-                np_array = (255-np_array)
-                np_array = np.bitwise_and(np_array, mask)
-
-                format = 'rgb24'
-            else:
-                self.get_logger().error(f' >> Unsupported frame type: F{im.header.stamp.sec}:{im.header.stamp.nanosec} {im.width}x{im.height} data={len(im.data)}B enc={im.encoding} is_bigendian={im.is_bigendian} step={im.step}')
-                self.get_logger().error(f' >> Frame processor stopping for {topic}')
-                break
-
-            frame = av.VideoFrame.from_ndarray(np_array, format=format)
-
-            # pts, time_base = self.next_timestamp()
-            frame.pts = _timestamp
-            frame.time_base = VIDEO_TIME_BASE
-            frame_num += 1
-
-            # self.get_logger().info(f'Frame worker thread {topic} frame no:{frame_num} threads={active_count()}')
-
-            receivers_yuv420p = []
-            for id_peer in self.wrtc_peer_video_tracks.keys():
-                if topic in self.wrtc_peer_video_tracks[id_peer].keys():
-                    if self.wrtc_peer_video_tracks[id_peer][topic].track != None:
-                        sender = self.wrtc_peer_video_tracks[id_peer][topic]
-                        if isinstance(sender.encoder, Vp8Encoder):
-                            receivers_yuv420p.append(sender)
-                        else:
-                            sender.track.set_frame(frame)
-
-            if len(receivers_yuv420p): # preprocess here for all subscribers
-                frame_yuv420p = frame.reformat(format="yuv420p")
-                for sender in receivers_yuv420p:
-                    sender.track.set_frame(frame_yuv420p)
-
-            # self.topic_read_frame_enc_[topic][codec] = frame
-
-        self.get_logger().warn(f'Frame worker for {topic} finished')
 
     def unsubscribe_topic(self, topic:str, id_peer:str):
         if not topic in self.topic_read_subscriptions_.keys():
             self.get_logger().error(f'{topic} not found in self.topic_read_subscriptions_ ({str(self.topic_read_subscriptions_)})')
             return
 
-        if id_peer in self.topic_read_subscriptions_[topic][4]:
-            self.topic_read_subscriptions_[topic][4].remove(id_peer)
+        if id_peer in self.topic_read_subscriptions_[topic].peers:
+            self.topic_read_subscriptions_[topic].peers.remove(id_peer)
 
-        self.get_logger().info(f'{topic} remaining subs: {len(self.topic_read_subscriptions_[topic][4])} {str(self.topic_read_subscriptions_[topic][4])}')
+        self.get_logger().info(f'{topic} remaining subs: {len(self.topic_read_subscriptions_[topic].peers)} {str(self.topic_read_subscriptions_[topic].peers)}')
 
-        if len(self.topic_read_subscriptions_[topic][4]) == 0: #no subscribers => clear (but keep media streams!)
+        if len(self.topic_read_subscriptions_[topic].peers) == 0: #no subscribers => clear (but keep media streams!)
             self.get_logger().warn(f'Unsubscribing from topic {topic} (no subscribers)')
             # if (self.topic_read_subscriptions_[topic][6]): #stream
             #     self.topic_read_subscriptions_[topic][6].stop()
 
-            self.destroy_subscription(self.topic_read_subscriptions_[topic][0])
+            if self.topic_read_subscriptions_[topic].frame_processor:
+                self.topic_read_subscriptions_[topic].frame_processor.terminate()
+                self.topic_read_subscriptions_[topic].frame_processor.join()
+
+            self.destroy_subscription(self.topic_read_subscriptions_[topic].sub)
             del self.topic_read_subscriptions_[topic]
-
-
 
             # if topic in self.topic_media_streams_.keys():
             #     self.topic_media_streams_[topic].stop()
@@ -893,26 +845,26 @@ class BridgeController(Node):
 
 
     def topic_subscriber_callback(self, topic, is_image, msg):
-        self.topic_read_subscriptions_[topic][1] += 1 # num recieved
-        self.topic_read_subscriptions_[topic][2] = msg #latest val
-        self.topic_read_subscriptions_[topic][3] = time.time() #latest time
+        self.topic_read_subscriptions_[topic].num_received += 1 # num recieved
+        self.topic_read_subscriptions_[topic].last_msg = msg #latest val
+        self.topic_read_subscriptions_[topic].last_msg_time = time.time() #latest time
 
         # if self.is_connected_ and topic != self.data_led_topic and self.data_led != None:
         #   self.data_led.once()
 
         log_msg = False
-        if self.topic_read_subscriptions_[topic][1] == 1: # first data in
+        if self.topic_read_subscriptions_[topic].num_received == 1: # first data in
             self.get_logger().debug(f'Receiving {type(msg).__name__} from {topic}')
 
-        if self.topic_read_subscriptions_[topic][5] < 0 or time.time()-self.topic_read_subscriptions_[topic][5] > self.log_message_every_sec:
+        if self.topic_read_subscriptions_[topic].last_log < 0 or time.time()-self.topic_read_subscriptions_[topic].last_log > self.log_message_every_sec:
             log_msg = True
-            self.topic_read_subscriptions_[topic][5] = time.time() #last logged now
+            self.topic_read_subscriptions_[topic].last_log = time.time() #last logged now
 
         if not is_image:
-            self.event_loop.create_task(self.report_data(topic, msg, log=log_msg, total_sent=self.topic_read_subscriptions_[topic][1]))
+            self.event_loop.create_task(self.report_data(topic, msg, log=log_msg, total_sent=self.topic_read_subscriptions_[topic].num_received))
         else:
-            self.report_frame(topic, msg, total_sent=self.topic_read_subscriptions_[topic][1])
-            # self.event_loop.create_task(self.report_frame(topic, msg, total_sent=self.topic_read_subscriptions_[topic][1]))
+            self.report_frame(topic, msg, total_sent=self.topic_read_subscriptions_[topic].num_received)
+            # self.event_loop.create_task(self.report_frame(topic, msg, total_sent=self.topic_read_subscriptions_[topic].num_received))
 
     def start_topic_publisher(self, topic:str, id_peer:str, protocol:str) -> bool:
 
@@ -1294,4 +1246,5 @@ def main(args=None):
     asyncio.get_event_loop().close()
 
 if __name__ == '__main__':
+    mp.set_start_method('spawn')
     main()
