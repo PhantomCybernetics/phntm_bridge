@@ -13,6 +13,8 @@ import signal
 import time
 import sys
 
+from termcolor import colored
+
 import copy
 
 from .msg_types.theora_image_transport.msg._packet import Packet
@@ -46,7 +48,7 @@ import multiprocessing as mp
 from queue import Empty, Full
 
 # import engineio
-# import threading
+import threading
 # from threading import active_count
 
 import socketio
@@ -1011,27 +1013,31 @@ class BridgeController(Node):
         if id_peer == None:
             return { 'err': 2, 'msg': 'No valid peer id provided' }
 
-        self.get_logger().info('Got offer from '+id_peer+': '+str(offer))
+        self.get_logger().debug('Got offer from '+id_peer+' SDP:')
+        print(colored(str(offer.sdp), 'dark_grey'))
 
         if id_peer in self.wrtc_peer_pcs.keys():
             pc = self.wrtc_peer_pcs[id_peer]
         else:
-            # config = RTCConfiguration(
-            #     iceServers=[
-            #         RTCIceServer(
-            #             urls=[
-            #                 "stun:stun.l.google.com:19302",
-            #                 "stun:stun1.l.google.com:19302",
-            #                 "stun:stun2.l.google.com:19302",
-            #                 "stun:stun3.l.google.com:19302",
-            #                 "stun:stun4.l.google.com:19302",
-            #             ]
-            #         ),
-            #     ]
-            # )
             config = RTCConfiguration(
-                iceServers=[RTCIceServer(urls=['stun:stun.l.google.com:19302'])] #, sdpSemantics='unified-plan', #sdpSemantics not supported by current aiortc
+                iceServers=[
+                    RTCIceServer(
+                        urls=[
+                            "stun:stun.l.google.com:19302",
+                            "stun:stun1.l.google.com:19302",
+                            "stun:stun2.l.google.com:19302",
+                            "stun:stun3.l.google.com:19302",
+                            "stun:stun4.l.google.com:19302",
+                            "turn:turn.phntm.io:3478",
+                            "turn:turn.phntm.io:5349",
+                        ],
+                        credential="robopass",
+                    ),
+                ]
             )
+            # config = RTCConfiguration(
+            #     iceServers=[RTCIceServer(urls=['stun:stun.l.google.com:19302'])] #, sdpSemantics='unified-plan', #sdpSemantics not supported by current aiortc
+            # )
             pc = RTCPeerConnection(config)
             # pc.addTransceiver('video', direction='sendonly') #must have at least one
             self.wrtc_peer_pcs[id_peer] = pc
@@ -1066,10 +1072,8 @@ class BridgeController(Node):
         await pc.setRemoteDescription(offer)
 
         if pc.connectionState in ['closed', 'failed']:
+            self.get_logger().info(f'WebRTC Connection is closed')
             return
-
-        answer = await pc.createAnswer()
-        await pc.setLocalDescription(answer)
 
         @pc.on("connectionstatechange")
         async def on_connectionstatechange():
@@ -1092,12 +1096,18 @@ class BridgeController(Node):
         async def on_iceconnectionstatechange():
             self.get_logger().info(f'WebRTC iceconnectionstatechange (peer={id_peer}) state is %s' % pc.iceConnectionState)
 
+
+        answer = await pc.createAnswer()
+        await pc.setLocalDescription(answer)
+
         async def ice_checker():
             while pc.iceGatheringState != 'complete':
                 await asyncio.sleep(.1)
             self.get_logger().info(f'Intial ICE gathering unlocked w state={pc.iceGatheringState}')
 
         await ice_checker()
+
+        # answer = await pc.createAnswer()
 
         # async with iceComplete:
         #     await iceComplete.wait()
@@ -1106,7 +1116,8 @@ class BridgeController(Node):
         # answer = await pc.createAnswer()
         #await pc.setLocalDescription(answer)
 
-        self.get_logger().info('Generated answer: '+str(pc.localDescription))
+        self.get_logger().debug('Generated answer, SDP:')
+        print(colored(str(pc.localDescription.sdp), 'cyan'))
 
         return { 'sdp': pc.localDescription.sdp, 'type':pc.localDescription.type }
 
