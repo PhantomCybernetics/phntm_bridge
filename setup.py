@@ -2,7 +2,7 @@ from setuptools import setup
 import os
 from glob import glob
 
-package_name = 'webrtc_bridge'
+package_name = 'phntm_bridge'
 
 setup(
     name=package_name,
@@ -24,7 +24,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'bridge = webrtc_bridge.bridge:main',
+            'bridge = phntm_bridge.bridge:main',
         ],
     },
 )

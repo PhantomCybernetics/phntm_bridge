@@ -8,18 +8,23 @@ RUN apt-get install -y ssh \
                        iputils-ping net-tools iproute2 curl \
                        pip
 
-RUN pip install --upgrade pip # aiorc neeed pip update or fails on cffi version inconsistency
+# aiorc neeed pip update or fails on cffi version inconsistency
+RUN pip install --upgrade pip
 
 # aiortc dev dependencies
-RUN apt install -y libavdevice-dev libavfilter-dev libopus-dev libvpx-dev pkg-config
+RUN apt-get update -y --fix-missing
+RUN apt-get install -y libavdevice-dev libavfilter-dev libopus-dev libvpx-dev pkg-config
+
+# gazebo
+# RUN apt install -y ros-$ROS_DISTRO-ros-gz
 
 RUN pip install setuptools==58.2.0 \
                 python-socketio \
                 opencv-python \
                 termcolor \
                 aiohttp
-		# aiortc
-                # aiohttp
+		# aiortc #forked
+                # aiohttp #forker
 
 # generate entrypoint script
 RUN echo '#!/bin/bash \n \
@@ -52,25 +57,26 @@ WORKDIR $ROS_WS
 
 # mount forked ~/aiortc repo and install with pip
 # needs rw access to regenerate src/aiortc/codecs/*.so
-RUN --mount=type=bind,rw=true,source=./aiortc,target=/ros2_ws/src/aiortc \
-        pip install -e /ros2_ws/src/aiortc
 
 # mount forked ~/aioice repo and install with pip
-RUN --mount=type=bind,rw=true,source=./aioice,target=/ros2_ws/src/aioice \
-        pip install -e /ros2_ws/src/aioice
+RUN --mount=type=bind,rw=true,source=./aioice,target=/ros2_ws/aioice \
+        pip install -e /ros2_ws/aioice
+
+RUN --mount=type=bind,rw=true,source=./aiortc,target=/ros2_ws/aiortc \
+        pip install -e /ros2_ws/aiortc
 
 # mount ~/phntm_webrtc_bridge repo and buidl the pkg for the first time
-RUN --mount=type=bind,source=./phntm_webrtc_bridge,target=/ros2_ws/src/webrtc_bridge \
+RUN --mount=type=bind,source=./phntm_bridge,target=/ros2_ws/src/phntm_bridge \
         . /opt/ros/$ROS_DISTRO/setup.sh && \
         rosdep update --rosdistro $ROS_DISTRO && \
         rosdep install -i --from-path src --rosdistro $ROS_DISTRO -y && \
-        colcon build --symlink-install --packages-select webrtc_bridge
+        colcon build --symlink-install --packages-select phntm_bridge
 
 # RUN . install/local_setup.bash
 # RUN ros2 run phntm_bridge phntm_bridge
 
 # pimp up prompt with hostame and color
-RUN echo "PS1='\${debian_chroot:+(\$debian_chroot)}\\[\\033[01;35m\\]\\u@\\h\\[\\033[00m\\]:\\[\\033[01;34m\\]\\w\\[\\033[00m\\]\\$ '"  >> /root/.bashrc
+RUN echo "PS1='\${debian_chroot:+(\$debian_chroot)}\\[\\033[01;35m\\]\\u@\\h\\[\\033[00m\\] \\[\\033[01;34m\\]\\w\\[\\033[00m\\] 🦄 '"  >> /root/.bashrc
 
 ENTRYPOINT ["/ros_entrypoint.sh"]
 CMD [ "bash" ]

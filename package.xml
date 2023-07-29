@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>webrtc_bridge</name>
+  <name>phntm_bridge</name>
   <version>0.0.1</version>
   <description>Bidirectional WebRTC ROS bridge for fast P2P data visualization and human-robot interaction</description>
   <maintainer email="mirek@phntm.io">Mirek Burkon</maintainer>

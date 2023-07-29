@@ -1,0 +1,193 @@
+services:
+  phntm_bridge:
+    image: phntm/bridge-dev:humble
+    container_name: phntm-bridge
+    hostname: phntm-bridge.local
+    restart: unless-stopped
+    privileged: true
+    network_mode: host
+    # ipc: shareable
+    # pid: host
+    # extra_hosts:
+    #   - "webrtc-bridge.local:127.0.0.1"
+    #   - "gazebo.local:127.0.0.1"
+    # environment:
+      # - DISPLAY=192.168.5.87:0
+    volumes:
+      - ~/phntm_bridge:/ros2_ws/src/phntm_bridge
+      - ~/aioice:/ros2_ws/aioice
+      - ~/aiortc:/ros2_ws/aiortc
+      - ~/phntm_bridge_launch_params.yaml:/ros2_ws/phntm_bridge_params.yaml
+      # - /tmp/.X11-unix:/tmp/.X11-unix
+      # - ~/.Xauthority:/root/.Xauthority:rw
+    devices:
+      - /dev:/dev
+    command:
+      # ros2 launch phntm_webrtc_bridge bridge_launch.py
+      /bin/sh -c "while sleep 1000; do :; done"
+
+
+  gazebo:
+    image: phntm/ros-gazebo:humble
+    platform: linux/amd64
+    container_name: gazebo
+    hostname: gazebo.local
+    restart: unless-stopped
+    privileged: true
+    # network_mode: host
+    # ipc: host
+    # network_mode: host
+    # ipc: shareable
+    # pid: host
+    ports:
+      - 1234:8080 #gzweb
+      - 11345:11345 #gzserver
+    extra_hosts:
+      - "gazebo.local:127.0.0.1"
+    # - "webrtc-bridge.local:127.0.0.1"
+    environment:
+      - DISPLAY=:0 #xvfb
+      # - GAZEBO_MASTER_URI=http://gazebo.local:11345
+    volumes:
+      - ~/rosbot_description:/ros2_ws/src/rosbot_description
+      - ~/rplidar_ros:/ros2_ws/src/rplidar_ros
+      - ~/gazebo_models:/gazebo_models
+      - ~/gazebo_models_worlds_collection:/gazebo_models_worlds_collection
+      - ~/gzweb:/gzweb
+    devices:
+      - /dev:/dev
+      # - /dev/snd audio:0.0.1
+    command:
+      /bin/sh -c "/etc/init.d/xvfb start; while sleep 1000; do :; done"
+      # this desn't work yet probably:
+      # /bin/sh -c "/etc/init.d/xvfb start; ros2 launch rosbot_description rosbot_sim.launch.py world:=/ros2_ws/src/rosbot_description/worlds/barrels.world"
+      # also:
+      # cd /gzweb
+      # npm start
+
+  webots:
+    image: phntm/ros-webots:humble
+    platform: linux/amd64
+    container_name: webots
+    hostname: webots.local
+    restart: unless-stopped
+    privileged: true
+    # network_mode: host
+    # ipc: host
+    # network_mode: host
+    # ipc: shareable
+    # pid: host
+    # ports:
+      # - 2002:2000 #webots local server on host
+    #   - 11345:11345
+    extra_hosts:
+      - "webots.local:127.0.0.1"
+    # - "webrtc-bridge.local:127.0.0.1"
+    environment:
+      - DISPLAY=host.docker.internal:0
+      - WEBOTS_SHARED_FOLDER=/Users/mirek/webots/shared:/webots/shared
+      # - GAZEBO_MASTER_URI=http://gazebo.local:11345
+    volumes:
+      # - ~/rosbot_description:/ros2_ws/src/rosbot_description
+      # - ~/rplidar_ros:/ros2_ws/src/rplidar_ros
+      - ~/webots/shared:/webots/shared
+      - ~/webots_ros2:/ros2_ws/src/webots_ros2
+      # - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      # - ~/.Xauthority:/root/.Xauthority:rw
+    devices:
+      - /dev:/dev
+      # - /dev/snd audio:0.0.1
+    command:
+      # ros2 launch phntm_webrtc_bridge bridge_launch.py
+      /bin/sh -c "while sleep 1000; do :; done"
+
+  joy2twist:
+    image: husarion/joy2twist:humble
+    container_name: joy2twist
+    restart: unless-stopped
+    devices:
+       - /dev:/dev
+    volumes:
+      - ~/joy2twist.yaml:/joy2twist.yaml
+    command: >
+      ros2 launch joy2twist gamepad_controller.launch.py
+        joy2twist_params_file:=/joy2twist.yaml
+
+  # husarion_webots:
+  #   image: husarion/webots:humble
+  #   container_name: husarion-webots
+  #   hostname: webots-control.local
+  #   restart: unless-stopped
+  #   # privileged: true
+  #   # network_mode: host
+  #   # ports:
+  #   #    - 1234:1234
+  #   #    - 2000:2000
+  #   environment:
+  #     - DISPLAY
+  #     - LIBGL_ALWAYS_SOFTWARE=1
+  #     - DDS_CONFIG=DEFAULT
+  #     - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+  #   #  - WEBOTS_SHARED_FOLDER=/Users/mirek/webots/shared:/webots_shared
+  #   volumes:
+  #     - /tmp/.X11-unix:/tmp/.X11-unix
+  #     - /Users/mirek/webots/shared:/webots_shared
+  #   devices:
+  #     - /dev:/dev
+  #   command:
+  #     # ros2 launch phntm_webrtc_bridge bridge_launch.py
+  #     /bin/sh -c "while sleep 1000; do :; done"
+
+  # webots-control:
+  #   image: phntm/ros-webots-control:humble
+  #   container_name: webots-control
+  #   hostname: webots-control.local
+  #   restart: unless-stopped
+  #   # privileged: true
+  #   # network_mode: host
+  #   # ports:
+  #   #    - 1234:1234
+  #   #    - 2000:2000
+  #   environment:
+  #     - WEBOTS_SHARED_FOLDER=/Users/mirek/webots/shared:/webots_shared
+  #   volumes:
+  #     - /Users/mirek/webots/shared:/webots_shared
+  #   devices:
+  #     - /dev:/dev
+  #   command:
+  #     # ros2 launch phntm_webrtc_bridge bridge_launch.py
+  #     /bin/sh -c "while sleep 1000; do :; done"
+
+  # gazebo:
+  #   image: phntm/ros-gazebo:humble-11-arm64
+  #   container_name: gazebo
+  #   hostname: gazebo.local
+  #   restart: unless-stopped
+  #   privileged: true
+  #   # network_mode: host
+  #   # ipc: shareable
+  #   # pid: host
+  #   # extra_hosts:
+  #   #   - "gazebo.local:127.0.0.1"
+  #   #   - "webrtc-bridge.local:127.0.0.1"
+  #   # depends_on:
+  #   #   - webrtc_bridge
+  #     # - "otherhost:50.31.209.229"
+  #   # environment:
+  #     # - DISPLAY=mrkbk.local:0
+  #   ports:
+  #     - 11345:11345
+  #     - 8080:11346
+  #   volumes:
+  #     - ~/gzweb:/gzweb_ws
+  #     - ~/husarion_gazebo_worlds:/husarion_gazebo_worlds/
+  #   #  - ~/aioice:/ros2_ws/src/aioice
+  #   #  - ~/aiortc:/ros2_ws/src/aiortc
+  #   #  - ~/phntm_webrtc_bridge_launch_params.yaml:/ros2_ws/webrtc_bridge_params.yaml
+  #   devices:
+  #     - /dev:/dev
+  #   command:
+  #     # ros2 launch phntm_webrtc_bridge bridge_launch.py
+  #     /bin/sh -c "while sleep 1000; do :; done"
+
+

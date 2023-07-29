@@ -8,15 +8,15 @@ def generate_launch_description():
 
     config = os.path.join(
         '/ros2_ws/',
-        'webrtc_bridge_params.yaml'
+        'phntm_bridge_params.yaml'
         )
 
     return LaunchDescription([
 
         Node(
-            package='webrtc_bridge',
+            package='phntm_bridge',
             executable='bridge',
-            name='webrtc_bridge',
+            name='phntm_bridge',
             output='screen',
             emulate_tty=True,
             parameters=[config]
