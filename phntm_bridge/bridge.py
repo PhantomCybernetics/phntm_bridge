@@ -14,6 +14,11 @@ import time
 import sys
 import traceback
 
+import cProfile
+import pstats
+
+print('Ohi!')
+
 from termcolor import colored
 
 import copy
@@ -446,7 +451,7 @@ class BridgeController(Node):
                             self.wrtc_nextChannelId += 1
                             self.get_logger().warn(f'Peer {id_peer} subscribing to {topic}/R (protocol={protocol}, ch_id={self.wrtc_nextChannelId})')
 
-                            dc = pc.createDataChannel(topic, id=self.wrtc_nextChannelId, protocol=protocol, negotiated=True) # negotiated doesn't work tho
+                            dc = pc.createDataChannel(topic, id=self.wrtc_nextChannelId, protocol=protocol, negotiated=True, ordered=False, maxRetransmits=0) # negotiated doesn't work tho
                             @dc.on('message')
                             async def on_channel_message(msg):
                                 self.get_logger().info(f' ⇣ {topic}/R got message: '+str(msg))
@@ -609,10 +614,9 @@ class BridgeController(Node):
 
                     if not topic in self.wrtc_peer_write_channels[id_peer]:
 
-
                         self.wrtc_nextChannelId += 1
                         self.get_logger().info(f'Peer {id_peer} subscribing to {topic}/W (protocol={protocol}, ch_id={self.wrtc_nextChannelId})')
-                        dc = pc.createDataChannel(topic, id=self.wrtc_nextChannelId, protocol=protocol, negotiated=True) # negotiated doesn't work tho
+                        dc = pc.createDataChannel(topic, id=self.wrtc_nextChannelId, protocol=protocol, negotiated=True, ordered=False, maxRetransmits=0) # negotiated doesn't work tho
 
                         self.wrtc_peer_write_channels[id_peer][topic] = dc
                         res_subscribed.append([topic, self.wrtc_nextChannelId, protocol])
@@ -908,6 +912,7 @@ class BridgeController(Node):
             self.get_logger().error(f'NOT creating publisher for topic {topic}, msg class {protocol} not loaded')
             return False
 
+        #reliable from here
         qos = QoSProfile(history=QoSHistoryPolicy.KEEP_LAST, \
                          depth=1, \
                          reliability=QoSReliabilityPolicy.RELIABLE \
@@ -1124,7 +1129,6 @@ class BridgeController(Node):
         async def on_iceconnectionstatechange():
             self.get_logger().info(f'WebRTC iceconnectionstatechange (peer={id_peer}) state is %s' % pc.iceConnectionState)
 
-
         answer = await pc.createAnswer()
         await pc.setLocalDescription(answer)
 
@@ -1285,5 +1289,10 @@ def main(args=None):
     asyncio.get_event_loop().close()
 
 if __name__ == '__main__':
-    mp.set_start_method('spawn')
-    main()
+    with cProfile.Profile() as profile:
+        mp.set_start_method('spawn')
+        main()
+
+    results = pstats.Stats(profile)
+    results.sort_stats(pstats.SortKey.TIME)
+    results.print_stats()
