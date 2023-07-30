@@ -39,7 +39,6 @@ def ROSFrameProcessor(topic:str, in_queue:mp.Queue, out_queue_rgb:mp.Queue, out_
 
     frame_num = 0
     _start = time.time()
-    _timestamp = 0
 
     logger.info(f'[FP {topic}] started')
 
@@ -77,21 +76,24 @@ def ROSFrameProcessor(topic:str, in_queue:mp.Queue, out_queue_rgb:mp.Queue, out_
                 np_array = np_array.reshape(im.height, im.width, channels)
             elif im.encoding == '16UC1':
                 # channels = 1  # 3 for RGB format
-                np_array = np_array = np.frombuffer(im.data, dtype=np.uint16)
+                np_array = np.frombuffer(im.data, dtype=np.uint16) * float(255.0/4000.0)
 
-                mask = np.zeros(np_array.shape, dtype=np.uint8)
-                mask = np.bitwise_or(np_array, mask)
+                np_array = np.uint8 (np_array)
 
-                np_array = cv2.cvtColor(np_array, cv2.COLOR_GRAY2RGB)
+                # mask = np.zeros(np_array.shape, dtype=np.uint8)
+                # mask = np.bitwise_or(np_array, mask)
 
-                np_array = cv2.convertScaleAbs(np_array, alpha=255/2000) # converts to 8 bit
-                mask = cv2.convertScaleAbs(mask) # converts to 8 bit
+                # np_array = cv2.cvtColor(np_array, cv2.COLOR_GRAY2RGB)
+                np_array = cv2.applyColorMap(np_array, cv2.COLORMAP_MAGMA)
+
+                # np_array = cv2.convertScaleAbs(np_array, alpha=255/2000) # converts to 8 bit
+                # mask = cv2.convertScaleAbs(mask) # converts to 8 bit
 
                 np_array = np_array.reshape(im.height, im.width, 3)
-                mask = mask.reshape(im.height, im.width, 1)
+                # mask = mask.reshape(im.height, im.width, 1)
 
-                np_array = (255-np_array)
-                np_array = np.bitwise_and(np_array, mask)
+                # np_array = (255-np_array)
+                # np_array = np.bitwise_and(np_array, mask)
             elif im.encoding == '32FC1':
                 # channels = 1  # 3 for RGB format
                 np_array = np.frombuffer(im.data, dtype=np.float32) * (255.0 * (1.0 / 2.0)) #;).astype(np.uint16)
@@ -102,7 +104,7 @@ def ROSFrameProcessor(topic:str, in_queue:mp.Queue, out_queue_rgb:mp.Queue, out_
                 # mask = np.bitwise_or(np_array, mask)
 
                 # np_array = np_array * (255.0 / 2000.0)
-                np_array = cv2.applyColorMap(np_array, cv2.COLORMAP_MAGMA);
+                np_array = cv2.applyColorMap(np_array, cv2.COLORMAP_MAGMA)
 
                 # np_array = cv2.cvtColor(np_array, cv2.COLOR_GRAY2RGB) #still
 
@@ -123,9 +125,6 @@ def ROSFrameProcessor(topic:str, in_queue:mp.Queue, out_queue_rgb:mp.Queue, out_
             frame = av.VideoFrame.from_ndarray(np_array, format='rgb24')
 
             # pts, time_base = self.next_timestamp()
-            _timestamp = 0
-            frame.pts = _timestamp
-            frame.time_base = VIDEO_TIME_BASE
 
             yuv420p = last_frame_data["yuv420p"]
             rgb = last_frame_data["rgb"]
@@ -246,6 +245,7 @@ class ROSVideoStreamTrack(MediaStreamTrack):
     # f:VideoFrame = None
     # encodedFrame:RTCEncodedFrame = None
     # frame_msg_bytes = None
+    _timestamp = 0
 
     # _start: float
     # _timestamp: int
@@ -326,7 +326,8 @@ class ROSVideoStreamTrack(MediaStreamTrack):
             return None
 
         frame = av.VideoFrame.from_ndarray(last_fbytes, format="rgb24")
-        frame.pts = 0
+        self._timestamp = self._timestamp + int(VIDEO_PTIME * VIDEO_CLOCK_RATE)
+        frame.pts = self._timestamp
         frame.time_base = VIDEO_TIME_BASE
 
         self._total_processed += 1

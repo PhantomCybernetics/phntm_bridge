@@ -1,14 +1,14 @@
 {
     "python.autoComplete.extraPaths": [
-        "/ros2_ws/src/webrtc_bridge",
-        "/ros2_ws/src/aiortc",
-        "/ros2_ws/install/webrtc_bridge/lib/python3.10/site-packages",
+        "/ros2_ws/src/phntm_bridge",
+        "/ros2_ws/aiortc",
+        "/ros2_ws/install/phntm_bridge/lib/python3.10/site-packages",
         "/opt/ros/humble/lib/python3.10/site-packages",
         "/opt/ros/humble/local/lib/python3.10/dist-packages"
     ],
     "python.analysis.extraPaths": [
-        "/ros2_ws/src/webrtc_bridge",
-        "/ros2_ws/install/webrtc_bridge/lib/python3.10/site-packages",
+        "/ros2_ws/src/phntm_bridge",
+        "/ros2_ws/install/phntm_bridge/lib/python3.10/site-packages",
         "/opt/ros/humble/lib/python3.10/site-packages",
         "/opt/ros/humble/local/lib/python3.10/dist-packages"
     ]
