@@ -18,6 +18,7 @@ services:
       - ~/aioice:/ros2_ws/aioice
       - ~/aiortc:/ros2_ws/aiortc
       - ~/phntm_bridge_launch_params.yaml:/ros2_ws/phntm_bridge_params.yaml
+      - ~/ros_bags:/ros_bags
       # - /tmp/.X11-unix:/tmp/.X11-unix
       # - ~/.Xauthority:/root/.Xauthority:rw
     devices:
@@ -26,6 +27,19 @@ services:
       # ros2 launch phntm_webrtc_bridge bridge_launch.py
       /bin/sh -c "while sleep 1000; do :; done"
 
+  rviz:
+    image: husarion/rviz2:humble
+    network_mode: host
+    ipc: host
+    runtime: nvidia
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ./rosbot_pro.rviz:/root/.rviz2/default.rviz
+    environment:
+      - ROS_DOMAIN_ID=2
+      - DISPLAY
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
 
   gazebo:
     image: phntm/ros-gazebo:humble

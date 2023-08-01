@@ -8,6 +8,8 @@ import asyncio
 import av
 import time
 import logging
+import traceback
+import sys
 
 import cv2
 from aiortc.codecs import Vp8Encoder
@@ -23,9 +25,9 @@ from rclpy.serialization import deserialize_message
 
 from aiortc.rtcrtpsender import RTCEncodedFrame
 
-AUDIO_PTIME = 0.020  # 20ms audio packetization
-VIDEO_CLOCK_RATE = 90000
-VIDEO_PTIME = 1 / 30  # 30fps
+# AUDIO_PTIME = 0.020  # 20ms audio packetization
+VIDEO_CLOCK_RATE = 1000000000 #ns to s
+# VIDEO_PTIME = 1 / 30  # 30fps
 VIDEO_TIME_BASE = fractions.Fraction(1, VIDEO_CLOCK_RATE)
 
 class MediaStreamError(Exception):
@@ -45,28 +47,31 @@ def ROSFrameProcessor(topic:str, in_queue:mp.Queue, out_queue_rgb:mp.Queue, out_
     try:
         while True:
 
-            last_frame_data = None
+            # last_frame_data = None
             skipped = -1
 
+            # fbytes = pipe_in.recv_bytes()
+            fbytes = None
+
             while True:
-                fdata = None
-                # fbytes = None
                 try:
-                    fdata = in_queue.get(block=False)
+                    fbytes = in_queue.get(block=(skipped==-1)) #blocking on first, then throws on Empty
                 except Empty:
                     break
                 skipped += 1
-                last_frame_data = fdata
+                # last_frame_data = fdata
 
-            if last_frame_data is None:
-                # print(colored(f'ROSFrameProcessor for {topic} empty', 'dark_grey'))
-                time.sleep(0.01)
-                continue
+            if fbytes is None:
+                logger.error(f'ROSFrameProcessor for {topic} empty! skipped={skipped}')
+                break
 
             frame_num += 1
-            im:Image = deserialize_message(last_frame_data['fbytes'], Image)
+            im:Image = deserialize_message(fbytes, Image)
 
-            # logger.debug(f'[FP {topic}] {im.header.stamp.sec}:{im.header.stamp.nanosec}: {im.width}x{im.height}, {len(last_frame_data["fbytes"])}B, enc={im.encoding}' + (f'(skipped {skipped} frames)' if skipped > 0 else ''))
+            if skipped > 0:
+                logger.warn(f'[FP {topic}] skipped {skipped} frames')
+
+            #logger.debug(f'[FP {topic}] {im.header.stamp.sec}:{im.header.stamp.nanosec}: {im.width}x{im.height}, {len(fbytes)}B, enc={im.encoding}' + (f'(skipped {skipped} frames)' if skipped > 0 else ''))
 
             if im.encoding == 'rgb8':
                 channels = 3  # 3 for RGB format
@@ -122,19 +127,27 @@ def ROSFrameProcessor(topic:str, in_queue:mp.Queue, out_queue_rgb:mp.Queue, out_
                 logger.error(f'[FP {topic}] Frame processor stopped')
                 break
 
-            frame = av.VideoFrame.from_ndarray(np_array, format='rgb24')
-
             # pts, time_base = self.next_timestamp()
 
-            yuv420p = last_frame_data["yuv420p"]
-            rgb = last_frame_data["rgb"]
+            yuv420p = False # last_frame_data["yuv420p"]
+            rgb = True # last_frame_data["rgb"]
 
             # logger.info(f'[FP {topic}] sending to yuv420p:{str(yuv420p)}, rgb:{str(rgb)}')
 
-            if yuv420p:
-                out_queue_yuv420p.put_nowait(frame.reformat(format="yuv420p").to_ndarray())
+            if yuv420p: #vp8 uses this
+                pass
+                # frame = av.VideoFrame.from_ndarray(np_array, format='rgb24')
+                # out_queue_yuv420p.put_nowait(frame.reformat(format="yuv420p").to_ndarray())
             if rgb:
-                out_queue_rgb.put_nowait(frame.to_ndarray())
+                try:
+                    out_queue_rgb.put_nowait({
+                        'np_array': np_array,
+                        'enc_in': im.encoding,
+                        'stamp_sec': im.header.stamp.sec,
+                        'stamp_nanosec': im.header.stamp.nanosec
+                    })
+                except Full:
+                    logger.error(f'[FP {topic}] output queue full!')
 
             #out_queue.put_nowait(resdata)
 
@@ -158,7 +171,8 @@ def ROSFrameProcessor(topic:str, in_queue:mp.Queue, out_queue_rgb:mp.Queue, out_
     #     # self.topic_read_frame_enc_[topic][codec] = frame
 
     except Exception as e:
-        logger.error(f'ROSFrameProcessor finished for {topic} {str(e)}')
+        logger.error(f'ROSFrameProcessor finished for {topic} {str(e)}\n{traceback.format_exc()}')
+
 
     # self.get_logger().info(f'Frame worker thread {topic} started')
 
@@ -246,6 +260,7 @@ class ROSVideoStreamTrack(MediaStreamTrack):
     # encodedFrame:RTCEncodedFrame = None
     # frame_msg_bytes = None
     _timestamp = 0
+    _first_frame_time = 0
 
     # _start: float
     # _timestamp: int
@@ -305,30 +320,46 @@ class ROSVideoStreamTrack(MediaStreamTrack):
         if isinstance(self._sender.encoder, Vp8Encoder):
             q = subs.processed_frames_yuv420p
         else:
-            q = subs.processed_frames_rgb
+            q = subs.processed_frames_rgb #ONLY THIS WORKS for H264 for now
 
-        last_fbytes = None
+        frame_data = None
         # last_frame_data = None
         skipped = -1
 
         while True:
-            fbytes = None
+            # fbytes = None
             # fbytes = None
             try:
-                fbytes = q.get(block=False)
+                frame_data = q.get(block=False)
             except Empty:
                 break
             skipped += 1
-            last_fbytes = fbytes
+            # last_fbytes = fbytes
 
         # print(str(last_fbytes))
-        if last_fbytes is None:
+        if frame_data is None:
+            # self.get_logger().error(f'{self._topic} recv nothing to return (skipped={skipped})')
             return None
 
-        frame = av.VideoFrame.from_ndarray(last_fbytes, format="rgb24")
-        self._timestamp = self._timestamp + int(VIDEO_PTIME * VIDEO_CLOCK_RATE)
-        frame.pts = self._timestamp
+        start_time = time.time()
+        frame = av.VideoFrame.from_ndarray(frame_data['np_array'], format="rgb24")
+
+        stamp = time.time_ns() #(frame_data['stamp_sec']*VIDEO_CLOCK_RATE + frame_data['stamp_nanosec']) - self._first_frame_time
+
+        if self._first_frame_time == 0:
+            self._first_frame_time = stamp # time.time_ns()
+
+        frame.pts = stamp - self._first_frame_time
+
+        # self.get_logger().info(f'{self._topic} recv sec:ns = {frame_data["stamp_sec"]}:{frame_data["stamp_nanosec"]} pts={frame.pts}')
+
+        #     # self._timestamp = self._timestamp + int(VIDEO_PTIME * VIDEO_CLOCK_RATE)
+        # else:
+        #     frame.pts = 0
         frame.time_base = VIDEO_TIME_BASE
+
+        if skipped > 0:
+            self.get_logger().warn(f'{self._topic} recv skipped {skipped} frames')
 
         self._total_processed += 1
 
