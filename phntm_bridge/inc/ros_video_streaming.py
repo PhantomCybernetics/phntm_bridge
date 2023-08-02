@@ -1,5 +1,6 @@
 
 from aiortc.contrib.media import MediaStreamTrack
+from typing import List
 
 import fractions
 from typing import Tuple, Union
@@ -13,6 +14,10 @@ import sys
 
 import cv2
 from aiortc.codecs import Vp8Encoder
+from aiortc.codecs import H264Encoder
+
+from aiortc.codecs.h264 import DEFAULT_BITRATE, MIN_BITRATE, MAX_BITRATE
+DEFAULT_BITRATE = MAX_BITRATE
 
 from termcolor import colored
 
@@ -23,7 +28,7 @@ import numpy as np
 from sensor_msgs.msg import Image
 from rclpy.serialization import deserialize_message
 
-from aiortc.rtcrtpsender import RTCEncodedFrame
+# from aiortc.rtcrtpsender import RTCEncodedFrame
 
 # AUDIO_PTIME = 0.020  # 20ms audio packetization
 VIDEO_CLOCK_RATE = 1000000000 #ns to s
@@ -37,12 +42,19 @@ import multiprocessing as mp
 from queue import Empty, Full
 
 # runs as a separate process for each subscribed image topic
-def ROSFrameProcessor(topic:str, in_queue:mp.Queue, out_queue_rgb:mp.Queue, out_queue_yuv420p:mp.Queue, logger:logging.Logger):
+def ROSFrameProcessor(topic:str, in_queue:mp.Queue, out_queue_h264:mp.Queue, out_queue_v8:mp.Queue,
+                      make_keyframe_shared:mp.Value, make_h264_shared:mp.Value, make_v8_shared:mp.Value,
+                      logger:logging.Logger, log_message_every_sec:float=5.0):
 
     frame_num = 0
-    _start = time.time()
+    _first_frame_time = 0
+    _last_log_time = -1
+
+    _log_cum_time = 0.0
+    _log_processed = 0
 
     logger.info(f'[FP {topic}] started')
+    encoder_h264 = H264Encoder()
 
     try:
         while True:
@@ -55,18 +67,24 @@ def ROSFrameProcessor(topic:str, in_queue:mp.Queue, out_queue_rgb:mp.Queue, out_
 
             while True:
                 try:
-                    fbytes = in_queue.get(block=(skipped==-1)) #blocking on first, then throws on Empty
+                    fbytes = in_queue.get(block=False) #blocking on first, then throws on Empty
                 except Empty:
                     break
                 skipped += 1
                 # last_frame_data = fdata
 
             if fbytes is None:
-                logger.error(f'ROSFrameProcessor for {topic} empty! skipped={skipped}')
-                break
+                # logger.error(f'ROSFrameProcessor for {topic} empty! skipped={skipped}')
+                time.sleep(0.001)
+                continue
+
+            _fp_start = time.time()
+            # _fp_start = time.time()
 
             frame_num += 1
             im:Image = deserialize_message(fbytes, Image)
+
+            # _fp_1 = time.time()
 
             if skipped > 0:
                 logger.warn(f'[FP {topic}] skipped {skipped} frames')
@@ -129,25 +147,55 @@ def ROSFrameProcessor(topic:str, in_queue:mp.Queue, out_queue_rgb:mp.Queue, out_
 
             # pts, time_base = self.next_timestamp()
 
-            yuv420p = False # last_frame_data["yuv420p"]
-            rgb = True # last_frame_data["rgb"]
+            # yuv420p = False # last_frame_data["yuv420p"]
+            # rgb = True # last_frame_data["rgb"]
 
             # logger.info(f'[FP {topic}] sending to yuv420p:{str(yuv420p)}, rgb:{str(rgb)}')
 
-            if yuv420p: #vp8 uses this
+            # _fp_2 = time.time()
+
+            if make_v8_shared.value > 0: #vp8 uses this
+                logger.error(f'[FP {topic}] NOT making v8 yet')
                 pass
                 # frame = av.VideoFrame.from_ndarray(np_array, format='rgb24')
                 # out_queue_yuv420p.put_nowait(frame.reformat(format="yuv420p").to_ndarray())
-            if rgb:
+            if make_h264_shared.value > 0:
+
+                frame = av.VideoFrame.from_ndarray(np_array, format="rgb24")
+
+                # _fp_3 = time.time()
+
+                stamp = time.time_ns() #(frame_data['stamp_sec']*VIDEO_CLOCK_RATE + frame_data['stamp_nanosec']) - self._first_frame_time
+                if _first_frame_time == 0:
+                    _first_frame_time = stamp # time.time_ns()
+                frame.pts = stamp - _first_frame_time
+                frame.time_base = VIDEO_TIME_BASE
+
+                keyframe = make_keyframe_shared.value > 0
+                if keyframe:
+                    make_keyframe_shared.value = 0 #reset
+                packet, timestamp = encoder_h264.encode(frame=frame, force_keyframe=keyframe) # -> Tuple[List[bytes], int]
+
+                # _fp_4 = time.time()
+                _log_processed += 1
+                _log_cum_time += time.time() - _fp_start
+
+                if keyframe or _last_log_time < 0 or time.time()-_last_log_time > log_message_every_sec:
+                    _last_log_time = time.time() #last logged now
+                    # debug_times = f'Total: {"{:.5f}".format(_fp_4-_fp_start)}s\nIM: {"{:.5f}".format(_fp_1-_fp_start)}s\nConv: {"{:.5f}".format(_fp_2-_fp_1)}s\nVideoFrame {"{:.5f}".format(_fp_3-_fp_2)}s\nH264: {"{:.5f}".format(_fp_4-_fp_3)}s'
+                    debug_times = f'{_log_processed} in avg {"{:.5f}".format(_log_cum_time/_log_processed)}s'
+                    logger.info(f'[FP {topic}] {im.encoding}>H264 {im.width}x{im.height} {len(fbytes)}B > {len(packet)} pkts, t={timestamp}' + (colored(' [KF]', 'magenta') if keyframe else '') + ' '+colored(debug_times, 'yellow'))
+                    _log_processed = 0;
+                    _log_cum_time = 0.0
+
                 try:
-                    out_queue_rgb.put_nowait({
-                        'np_array': np_array,
-                        'enc_in': im.encoding,
-                        'stamp_sec': im.header.stamp.sec,
-                        'stamp_nanosec': im.header.stamp.nanosec
-                    })
+                    out_queue_h264.put_nowait((
+                        packet,
+                        timestamp,
+                        keyframe #don't skip keyframes
+                    ))
                 except Full:
-                    logger.error(f'[FP {topic}] output queue full!')
+                    logger.error(f'[FP {topic}] h264 output queue full!')
 
             #out_queue.put_nowait(resdata)
 
@@ -174,85 +222,6 @@ def ROSFrameProcessor(topic:str, in_queue:mp.Queue, out_queue_rgb:mp.Queue, out_
         logger.error(f'ROSFrameProcessor finished for {topic} {str(e)}\n{traceback.format_exc()}')
 
 
-    # self.get_logger().info(f'Frame worker thread {topic} started')
-
-    # # vp8_encoder = Vp8Encoder()
-
-    # while not self.shutting_down_ and topic in self.topic_read_subscriptions_.keys():
-
-    #     _timestamp += int(VIDEO_PTIME * VIDEO_CLOCK_RATE)
-    #     if not topic in self.topic_read_frame_raw_.keys() or not self.topic_read_frame_raw_[topic]:
-    #         # self.get_logger().info(f' ... Frame worker thread {topic} input empty')
-    #         time.sleep(.001)
-    #         continue
-
-    #     src_msg = self.topic_read_frame_raw_[topic]
-    #     self.topic_read_frame_raw_[topic] = None # don't encode again
-
-    #     im:Image = deserialize_message(src_msg, Image)
-
-    #     # self.get_logger().warn(f' ... >> F{im.header.stamp.sec}:{im.header.stamp.nanosec} {im.width}x{im.height} data={len(im.data)}B enc={im.encoding} is_bigendian={im.is_bigendian} step={im.step}')
-
-    #     if im.encoding == 'rgb8':
-    #         channels = 3  # 3 for RGB format
-    #         # Convert the image data to a NumPy array
-    #         np_array = np.frombuffer(im.data, dtype=np.uint8)
-    #         # Reshape the array based on the image dimensions
-    #         np_array = np_array.reshape(im.height, im.width, channels)
-    #         format = 'rgb24'
-    #     elif im.encoding == '16UC1':
-    #         # channels = 1  # 3 for RGB format
-    #         np_array = np.frombuffer(im.data, dtype=np.uint16)
-
-    #         mask = np.zeros(np_array.shape, dtype=np.uint8)
-    #         mask = np.bitwise_or(np_array, mask)
-
-    #         np_array = cv2.cvtColor(np_array, cv2.COLOR_GRAY2RGB)
-
-    #         np_array = cv2.convertScaleAbs(np_array, alpha=255/2000) # converts to 8 bit
-    #         mask = cv2.convertScaleAbs(mask) # converts to 8 bit
-
-    #         np_array = np_array.reshape(im.height, im.width, 3)
-    #         mask = mask.reshape(im.height, im.width, 1)
-
-    #         np_array = (255-np_array)
-    #         np_array = np.bitwise_and(np_array, mask)
-
-    #         format = 'rgb24'
-    #     else:
-    #         self.get_logger().error(f' >> Unsupported frame type: F{im.header.stamp.sec}:{im.header.stamp.nanosec} {im.width}x{im.height} data={len(im.data)}B enc={im.encoding} is_bigendian={im.is_bigendian} step={im.step}')
-    #         self.get_logger().error(f' >> Frame processor stopping for {topic}')
-    #         break
-
-    #     frame = av.VideoFrame.from_ndarray(np_array, format=format)
-
-    #     # pts, time_base = self.next_timestamp()
-    #     frame.pts = _timestamp
-    #     frame.time_base = VIDEO_TIME_BASE
-    #     frame_num += 1
-
-    #     # self.get_logger().info(f'Frame worker thread {topic} frame no:{frame_num} threads={active_count()}')
-
-    #     receivers_yuv420p = []
-    #     for id_peer in self.wrtc_peer_video_tracks.keys():
-    #         if topic in self.wrtc_peer_video_tracks[id_peer].keys():
-    #             if self.wrtc_peer_video_tracks[id_peer][topic].track != None:
-    #                 sender = self.wrtc_peer_video_tracks[id_peer][topic]
-    #                 if isinstance(sender.encoder, Vp8Encoder):
-    #                     receivers_yuv420p.append(sender)
-    #                 else:
-    #                     sender.track.set_frame(frame)
-
-    #     if len(receivers_yuv420p): # preprocess here for all subscribers
-    #         frame_yuv420p = frame.reformat(format="yuv420p")
-    #         for sender in receivers_yuv420p:
-    #             sender.track.set_frame(frame_yuv420p)
-
-    #     # self.topic_read_frame_enc_[topic][codec] = frame
-
-    # self.get_logger().warn(f'Frame worker for {topic} finished')
-
-
 class ROSVideoStreamTrack(MediaStreamTrack):
 
     kind = "video"
@@ -260,7 +229,6 @@ class ROSVideoStreamTrack(MediaStreamTrack):
     # encodedFrame:RTCEncodedFrame = None
     # frame_msg_bytes = None
     _timestamp = 0
-    _first_frame_time = 0
 
     # _start: float
     # _timestamp: int
@@ -291,80 +259,41 @@ class ROSVideoStreamTrack(MediaStreamTrack):
     def get_logger(self):
         return self._logger
 
-    # def set_frame(self, frame:VideoFrame):
-    #     # print(f'<< setting frame {frame.width}x{frame.height}')
-    #     self.f = frame
-    #     self._total_received += 1
-
-    # def set_encoded_frame(self, frame:RTCEncodedFrame):
-    #     # print(f'<< setting frame {frame.width}x{frame.height}')
-
-    #     self.f = None
-    #     self.encodedFrame = frame
-
-    # async def next_timestamp(self) -> Tuple[int, fractions.Fraction]:
-    #     if hasattr(self, "_timestamp"):
-    #         self._timestamp += int(VIDEO_PTIME * VIDEO_CLOCK_RATE)
-    #         wait = self._start + (self._timestamp / VIDEO_CLOCK_RATE) - time.time()
-    #         await asyncio.sleep(wait)
-    #     else:
-    #         self._start = time.time()
-    #         self._timestamp = 0
-    #     return self._timestamp, VIDEO_TIME_BASE
-
-    async def recv(self) -> VideoFrame|None:
+    async def recv(self) -> Tuple[List[bytes], int]: #returning what the worker therad alerady encoded and packetized
 
         subs = self._topic_read_subscriptions[self._topic]
 
         q = None
         if isinstance(self._sender.encoder, Vp8Encoder):
-            q = subs.processed_frames_yuv420p
+            q = subs.processed_frames_v8
         else:
-            q = subs.processed_frames_rgb #ONLY THIS WORKS for H264 for now
+            q = subs.processed_frames_h264 #ONLY THIS WORKS for H264 for now
 
-        frame_data = None
-        # last_frame_data = None
+        packet_data = None
         skipped = -1
 
         while True:
-            # fbytes = None
-            # fbytes = None
             try:
-                frame_data = q.get(block=False)
+                packet_data = q.get(block=False)
             except Empty:
                 break
             skipped += 1
-            # last_fbytes = fbytes
+            if packet_data[2]:
+                break #keyframe
 
-        # print(str(last_fbytes))
-        if frame_data is None:
+        if packet_data is None:
             # self.get_logger().error(f'{self._topic} recv nothing to return (skipped={skipped})')
             return None
-
-        start_time = time.time()
-        frame = av.VideoFrame.from_ndarray(frame_data['np_array'], format="rgb24")
-
-        stamp = time.time_ns() #(frame_data['stamp_sec']*VIDEO_CLOCK_RATE + frame_data['stamp_nanosec']) - self._first_frame_time
-
-        if self._first_frame_time == 0:
-            self._first_frame_time = stamp # time.time_ns()
-
-        frame.pts = stamp - self._first_frame_time
-
-        # self.get_logger().info(f'{self._topic} recv sec:ns = {frame_data["stamp_sec"]}:{frame_data["stamp_nanosec"]} pts={frame.pts}')
-
-        #     # self._timestamp = self._timestamp + int(VIDEO_PTIME * VIDEO_CLOCK_RATE)
-        # else:
-        #     frame.pts = 0
-        frame.time_base = VIDEO_TIME_BASE
 
         if skipped > 0:
             self.get_logger().warn(f'{self._topic} recv skipped {skipped} frames')
 
         self._total_processed += 1
 
-        if frame and (self._last_log_time < 0 or time.time()-self._last_log_time > self._log_message_every_sec):
+        if self._last_log_time < 0 or time.time()-self._last_log_time > self._log_message_every_sec:
             self._last_log_time = time.time() #last logged now
-            self.get_logger().debug(f'△ {self._topic} {frame.width}x{frame.height} peer={self._id_peer}, f:{self._total_processed}/{self._total_received}')
+            self.get_logger().debug(f'△ {self._topic} peer={self._id_peer}, f:{self._total_processed}/{self._total_received}')
 
-        return frame
+        # self.get_logger().error(f'{self._topic} recv returning packet data')
+
+        return packet_data # Tuple[List[bytes], int]

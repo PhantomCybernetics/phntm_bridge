@@ -90,21 +90,29 @@ class TopicReadSubscription:
     # raw_pipe_in: any
     frame_processor:mp.Process
     raw_frames:mp.Queue
-    processed_frames_rgb:mp.Queue
-    processed_frames_yuv420p:mp.Queue
+    make_keyframe:mp.Value
+    make_h264:mp.Value
+    make_v8:mp.Value
+    processed_frames_h264:mp.Queue
+    processed_frames_v8:mp.Queue
 
-    def __init__(self, sub:Subscription, peers:list[str], frame_processor, raw_pipe_in:any, raw_frames:mp.Queue, processed_frames_rgb:mp.Queue, processed_frames_yuv420p:mp.Queue):
+    def __init__(self, sub:Subscription, peers:list[str], frame_processor, raw_frames:mp.Queue, processed_frames_h264:mp.Queue, processed_frames_v8:mp.Queue, make_keyframe_shared:mp.Value, make_h264_shared:mp.Value, make_v8_shared:mp.Value):
         self.sub = sub
         self.num_received = 0
         self.last_msg = -1.0
         self.last_msg_time = -1.0
         self.peers = peers
         self.last_log = -1.0
+
         self.frame_processor = frame_processor
-        # self.raw_pipe_in = raw_pipe_in
+
         self.raw_frames = raw_frames
-        self.processed_frames_rgb = processed_frames_rgb
-        self.processed_frames_yuv420p = processed_frames_yuv420p
+        self.make_keyframe = make_keyframe_shared
+        self.make_h264 = make_h264_shared
+        self.make_v8 = make_v8_shared
+
+        self.processed_frames_h264 = processed_frames_h264
+        self.processed_frames_v8 = processed_frames_v8
 
 
 class BridgeController(Node):
@@ -298,27 +306,34 @@ class BridgeController(Node):
                         self.data_led.once()
 
     def report_frame(self, topic:str, frame_msg_bytes:any, total_sent:int):
-        gen_yuv420p = False
-        gen_rgb = True
+        make_h264 = True #TODO detetct without encoder
+        make_v8 = False
+        make_keyframe = False
 
-        # for id_peer in self.wrtc_peer_video_tracks.keys():
-        #     if topic in self.wrtc_peer_video_tracks[id_peer].keys():
-        #         if self.wrtc_peer_video_tracks[id_peer][topic].track != None:
-        #             sender = self.wrtc_peer_video_tracks[id_peer][topic]
-        #             if isinstance(sender.encoder, Vp8Encoder):
-        #                 gen_yuv420p = True
-        #             else:
-        #                 gen_rgb = True
-        #         else:
-        #             self.get_logger().warn(f'No track for {topic} for id_peer={id_peer}, self.wrtc_peer_video_tracks[id_peer][topic]={str(self.wrtc_peer_video_tracks[id_peer][topic])} track={str(self.wrtc_peer_video_tracks[id_peer][topic].track)}')
+        loopin_start = time.time()
+        for id_peer in self.wrtc_peer_video_tracks.keys():
+            if topic in self.wrtc_peer_video_tracks[id_peer].keys():
+                if self.wrtc_peer_video_tracks[id_peer][topic].track != None:
+                    sender = self.wrtc_peer_video_tracks[id_peer][topic]
+                    if (sender.get_send_keyframe(True)): # copy & reset for each sender obj
+                        make_keyframe = True
+                    # if isinstance(sender.encoder, Vp8Encoder):
+                    #     gen_yuv420p = True
+                    # else:
+                    #     gen_rgb = True
+                else:
+                    self.get_logger().warn(f'No track for {topic} for id_peer={id_peer}, self.wrtc_peer_video_tracks[id_peer][topic]={str(self.wrtc_peer_video_tracks[id_peer][topic])} track={str(self.wrtc_peer_video_tracks[id_peer][topic].track)}')
 
+        if make_keyframe:
+            self.topic_read_subscriptions_[topic].make_keyframe.value = 1
+
+        # self.get_logger().debug(f'report_frame: Loopin\' took {"{:.5f}".format(time.time() - loopin_start)}s')
         # self.get_logger().debug(f'Putting frame into raw_frames of {topic} gen_yuv420p={str(gen_yuv420p)}  gen_rgb={str(gen_rgb)}')
-        raw_queue:mp.Queue = self.topic_read_subscriptions_[topic].raw_frames
         # self.get_logger().info(f'sending frame {str(type(frame_msg_bytes))}')
         # raw_pipe = self.topic_read_subscriptions_[topic].raw_pipe_in
         try:
             #raw_pipe.send_bytes(frame_msg_bytes)
-            raw_queue.put_nowait(frame_msg_bytes)
+            self.topic_read_subscriptions_[topic].raw_frames.put_nowait(frame_msg_bytes)
 
             # {
             #     'fbytes': frame_msg_bytes,
@@ -840,26 +855,34 @@ class BridgeController(Node):
 
         frame_processor = None
         raw_frames_queue = None
-        processed_frames_queue_rgb = None
-        processed_frames_queue_yuv420p = None
-        raw_pipe_in_worker = None
-        raw_pipe_in = None
+        make_keyframe_shared = None
+        make_h264_shared = None
+        make_v8_shared = None
+        processed_frames_queue_h264 = None
+        processed_frames_queue_v8 = None
 
         if is_image: # init topic frame processor thread here
             raw_pipe_in_worker, raw_pipe_in = mp.Pipe(duplex=False)
             raw_frames_queue = mp.Queue(maxsize=5) #queues start throwimg when not consumed
-            processed_frames_queue_rgb = mp.Queue(5)
-            processed_frames_queue_yuv420p = mp.Queue(5)
-            frame_processor = mp.Process(target=ROSFrameProcessor, args=(topic, raw_frames_queue, processed_frames_queue_rgb, processed_frames_queue_yuv420p, self.get_logger()))
+            processed_frames_queue_h264 = mp.Queue(5)
+            processed_frames_queue_v8 = mp.Queue(5)
+            make_keyframe_shared = mp.Value('b', 1, lock=False)
+            make_h264_shared = mp.Value('b', 1, lock=False)
+            make_v8_shared = mp.Value('b', 0, lock=False)
+            frame_processor = mp.Process(target=ROSFrameProcessor,
+                                         args=(topic, raw_frames_queue, processed_frames_queue_h264, processed_frames_queue_v8,
+                                               make_keyframe_shared, make_h264_shared, make_v8_shared, self.get_logger()))
 
         self.topic_read_subscriptions_[topic] = TopicReadSubscription(
             sub = sub,
             peers = [ id_peer ],
             frame_processor = frame_processor,
-            raw_pipe_in = raw_pipe_in,
             raw_frames = raw_frames_queue,
-            processed_frames_rgb = processed_frames_queue_rgb,
-            processed_frames_yuv420p = processed_frames_queue_yuv420p
+            make_keyframe_shared = make_keyframe_shared,
+            make_h264_shared = make_h264_shared,
+            make_v8_shared = make_v8_shared,
+            processed_frames_h264 = processed_frames_queue_h264,
+            processed_frames_v8 = processed_frames_queue_v8,
         )
 
         if frame_processor:
