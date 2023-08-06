@@ -7,9 +7,10 @@ from std_msgs.msg import String, Int32, Bool
 import time
 from typing import Union
 from rclpy.qos import QoSProfile
+from rclpy.callback_groups import CallbackGroup
 from enum import Enum
 
-class StatusLED(Node):
+class StatusLED():
 
     class Mode(Enum):
         OFF = 0
@@ -17,11 +18,11 @@ class StatusLED(Node):
         BLINK_ONCE = 2
         BLINKING   = 3
 
-    def __init__(self, name:str, mode:Mode, topic:str, qos: Union[QoSProfile, int]):
-        super().__init__('webrtc_bridge_led_blinker_'+name)
+    def __init__(self, name:str, node:Node, cbg:CallbackGroup, mode:Mode, topic:str, qos: Union[QoSProfile, int]):
+        # super().__init__('webrtc_bridge_led_blinker_'+name)
         self.name = name
         self.topic = topic
-        self.publisher_ = self.create_publisher(Bool, self.topic, qos)
+        self.publisher_ = node.create_publisher(Bool, self.topic, qos, callback_group=cbg)
 
         self.msg_off = Bool(data=False)
         self.msg_on = Bool(data=True)
@@ -73,7 +74,6 @@ class StatusLED(Node):
             await asyncio.sleep(.001) # 1ms loop
 
         print(">>> ... _blinker stopped")
-
 
 
     def off(self):

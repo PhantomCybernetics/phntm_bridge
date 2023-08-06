@@ -27,7 +27,7 @@ import numpy as np
 
 from sensor_msgs.msg import Image
 from rclpy.serialization import deserialize_message
-
+from sensor_msgs.msg import Image
 # from aiortc.rtcrtpsender import RTCEncodedFrame
 
 # AUDIO_PTIME = 0.020  # 20ms audio packetization
@@ -38,16 +38,59 @@ VIDEO_TIME_BASE = fractions.Fraction(1, VIDEO_CLOCK_RATE)
 class MediaStreamError(Exception):
     pass
 
+import rclpy
+from rclpy.node import Node, Parameter, Subscription, QoSProfile, Publisher
+
+from rclpy.qos import QoSHistoryPolicy, QoSReliabilityPolicy, DurabilityPolicy
+from rclpy.duration import Duration, Infinite
+
 import multiprocessing as mp
 from queue import Empty, Full
 
+class ImageNode(Node):
+
+    topic:str
+    last_message:bytes = None
+    subscription = None
+
+    def __init__(self, image_topic:str, context:rclpy.context.Context, cbg:rclpy.callback_groups.CallbackGroup):
+        super().__init__('phntm_bridge_img', context=context)
+        self.topic = image_topic
+
+        self.get_logger().info(f'[ImNode {self.topic}] subscribing to {image_topic}')
+
+        qosProfile = QoSProfile(history=QoSHistoryPolicy.KEEP_LAST, \
+                        depth=1, \
+                        reliability=QoSReliabilityPolicy.BEST_EFFORT, \
+                        durability=DurabilityPolicy.VOLATILE, \
+                        lifespan=Infinite \
+                        )
+
+        self.subscription = self.create_subscription(
+            msg_type=Image,
+            topic=image_topic,
+            callback=self.listener_callback,
+            qos_profile=qosProfile,
+            raw=True,
+            callback_group=cbg
+        )
+        self.subscription  # prevent unused variable warning
+        self.get_logger().info(f'[ImNode {self.topic}] init done')
+
+
+    def listener_callback(self, msg):
+        self.get_logger().info(f'[ImNode {self.topic}] for msg {len(msg)} B')
+        self.last_message = msg
+
+
+
 # runs as a separate process for each subscribed image topic
-def ROSFrameProcessor(topic:str, in_queue:mp.Queue, out_queue_h264:mp.Queue, out_queue_v8:mp.Queue,
+def ROSFrameProcessor(topic:str, out_queue_h264:mp.Queue, out_queue_v8:mp.Queue,
                       make_keyframe_shared:mp.Value, make_h264_shared:mp.Value, make_v8_shared:mp.Value,
                       logger:logging.Logger, log_message_every_sec:float=5.0):
 
     frame_num = 0
-    _first_frame_time = 0
+    _first_frame_time_ns = 0
     _last_log_time = -1
 
     _log_cum_time = 0.0
@@ -56,27 +99,56 @@ def ROSFrameProcessor(topic:str, in_queue:mp.Queue, out_queue_h264:mp.Queue, out
     logger.info(f'[FP {topic}] started')
     encoder_h264 = H264Encoder()
 
+    # rclpy.init(signal_handler_options=rclpy.SignalHandlerOptions.NO)
+    # rclpy.uninstall_signal_handlers() #duplicate?
+    ctx = rclpy.context.Context()
+    ctx.init()
+
+    cbg = rclpy.callback_groups.MutuallyExclusiveCallbackGroup()
+
+    executor = rclpy.executors.MultiThreadedExecutor(context=ctx)
+    image_node = ImageNode(topic, context=ctx, cbg=cbg)
+    executor.add_node(image_node)
+    cbg.add_entity(image_node)
+    cbg.add_entity(ctx)
+    cbg.add_entity(executor)
+    # cbg.beginning_execution(image_node)
+
     try:
         while True:
 
             # last_frame_data = None
-            skipped = -1
+            # skipped = -1
 
             # fbytes = pipe_in.recv_bytes()
             fbytes = None
 
-            while True:
-                try:
-                    fbytes = in_queue.get(block=False) #blocking on first, then throws on Empty
-                except Empty:
-                    break
-                skipped += 1
-                # last_frame_data = fdata
+            # rclpy.spin_once(image_node, executor=executor)
+            # logger.info(f'ROSFrameProcessor {topic} spinning once...')
+            executor.spin_once()
+
+            fbytes = image_node.last_message
+            image_node.last_message = None
 
             if fbytes is None:
-                # logger.error(f'ROSFrameProcessor for {topic} empty! skipped={skipped}')
+                logger.error(f'ROSFrameProcessor for {topic} empty!')
                 time.sleep(0.001)
                 continue
+
+            # logger.debug(f'ROSFrameProcessor for {topic} can haz frame!')
+
+            # while True:
+            #     try:
+            #         fbytes = in_queue.get(block=False) #blocking on first, then throws on Empty
+            #     except Empty:
+            #         break
+            #     skipped += 1
+            #     # last_frame_data = fdata
+
+            # if fbytes is None:
+            #     # logger.error(f'ROSFrameProcessor for {topic} empty! skipped={skipped}')
+            #     time.sleep(0.001)
+            #     continue
 
             _fp_start = time.time()
             # _fp_start = time.time()
@@ -86,8 +158,8 @@ def ROSFrameProcessor(topic:str, in_queue:mp.Queue, out_queue_h264:mp.Queue, out
 
             # _fp_1 = time.time()
 
-            if skipped > 0:
-                logger.warn(f'[FP {topic}] skipped {skipped} frames')
+            # if skipped > 0:
+            #     logger.warn(f'[FP {topic}] skipped {skipped} frames')
 
             #logger.debug(f'[FP {topic}] {im.header.stamp.sec}:{im.header.stamp.nanosec}: {im.width}x{im.height}, {len(fbytes)}B, enc={im.encoding}' + (f'(skipped {skipped} frames)' if skipped > 0 else ''))
 
@@ -165,10 +237,12 @@ def ROSFrameProcessor(topic:str, in_queue:mp.Queue, out_queue_h264:mp.Queue, out
 
                 # _fp_3 = time.time()
 
-                stamp = time.time_ns() #(frame_data['stamp_sec']*VIDEO_CLOCK_RATE + frame_data['stamp_nanosec']) - self._first_frame_time
-                if _first_frame_time == 0:
-                    _first_frame_time = stamp # time.time_ns()
-                frame.pts = stamp - _first_frame_time
+                # stamp = time.time_ns() #(frame_data['stamp_sec']*VIDEO_CLOCK_RATE + frame_data['stamp_nanosec']) - self._first_frame_time
+                stamp = (im.header.stamp.sec*VIDEO_CLOCK_RATE + im.header.stamp.nanosec) - _first_frame_time_ns
+                if _first_frame_time_ns == 0:
+                    _first_frame_time_ns = stamp # time.time_ns()
+                    stamp = 0
+                frame.pts = stamp
                 frame.time_base = VIDEO_TIME_BASE
 
                 keyframe = make_keyframe_shared.value > 0
@@ -184,7 +258,7 @@ def ROSFrameProcessor(topic:str, in_queue:mp.Queue, out_queue_h264:mp.Queue, out
                     _last_log_time = time.time() #last logged now
                     # debug_times = f'Total: {"{:.5f}".format(_fp_4-_fp_start)}s\nIM: {"{:.5f}".format(_fp_1-_fp_start)}s\nConv: {"{:.5f}".format(_fp_2-_fp_1)}s\nVideoFrame {"{:.5f}".format(_fp_3-_fp_2)}s\nH264: {"{:.5f}".format(_fp_4-_fp_3)}s'
                     debug_times = f'{_log_processed} in avg {"{:.5f}".format(_log_cum_time/_log_processed)}s'
-                    logger.info(f'[FP {topic}] {im.encoding}>H264 {im.width}x{im.height} {len(fbytes)}B > {len(packet)} pkts, t={timestamp}' + (colored(' [KF]', 'magenta') if keyframe else '') + ' '+colored(debug_times, 'yellow'))
+                    logger.info(f'[FP {topic}] {im.encoding}>H264 {im.width}x{im.height} {len(fbytes)}B > {len(packet)} pkts ' + (colored(' [KF]', 'magenta') if keyframe else '') + ' '+colored(debug_times, 'yellow'))
                     _log_processed = 0;
                     _log_cum_time = 0.0
 
@@ -195,7 +269,9 @@ def ROSFrameProcessor(topic:str, in_queue:mp.Queue, out_queue_h264:mp.Queue, out
                         keyframe #don't skip keyframes
                     ))
                 except Full:
-                    logger.error(f'[FP {topic}] h264 output queue full!')
+                    logger.warn(f'[FP {topic}] h264 output queue full (reading slow)')
+
+            time.sleep(0.01)
 
             #out_queue.put_nowait(resdata)
 
@@ -220,6 +296,9 @@ def ROSFrameProcessor(topic:str, in_queue:mp.Queue, out_queue_h264:mp.Queue, out
 
     except Exception as e:
         logger.error(f'ROSFrameProcessor finished for {topic} {str(e)}\n{traceback.format_exc()}')
+
+    image_node.destroy_node()
+    executor.shutdown()
 
 
 class ROSVideoStreamTrack(MediaStreamTrack):
@@ -270,16 +349,22 @@ class ROSVideoStreamTrack(MediaStreamTrack):
             q = subs.processed_frames_h264 #ONLY THIS WORKS for H264 for now
 
         packet_data = None
+        last_kf_packet_data = None
         skipped = -1
+        is_keyframe = False
 
         while True:
             try:
                 packet_data = q.get(block=False)
+                is_keyframe = packet_data[2]
+                if is_keyframe:
+                    last_kf_packet_data = packet_data
             except Empty:
                 break
             skipped += 1
-            if packet_data[2]:
-                break #keyframe
+
+        if last_kf_packet_data != None:
+            packet_data = last_kf_packet_data
 
         if packet_data is None:
             # self.get_logger().error(f'{self._topic} recv nothing to return (skipped={skipped})')
@@ -290,7 +375,7 @@ class ROSVideoStreamTrack(MediaStreamTrack):
 
         self._total_processed += 1
 
-        if self._last_log_time < 0 or time.time()-self._last_log_time > self._log_message_every_sec:
+        if is_keyframe or self._last_log_time < 0 or time.time()-self._last_log_time > self._log_message_every_sec:
             self._last_log_time = time.time() #last logged now
             self.get_logger().debug(f'△ {self._topic} peer={self._id_peer}, f:{self._total_processed}/{self._total_received}')
 

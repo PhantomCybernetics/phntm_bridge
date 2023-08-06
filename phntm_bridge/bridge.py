@@ -14,6 +14,8 @@ import time
 import sys
 import traceback
 
+from picamera2 import PiCamera
+
 # import cProfile, pstats, io
 # from pstats import SortKey
 
@@ -89,14 +91,14 @@ class TopicReadSubscription:
     last_log:float
     # raw_pipe_in: any
     frame_processor:mp.Process
-    raw_frames:mp.Queue
+    # raw_frames:mp.Queue
     make_keyframe:mp.Value
     make_h264:mp.Value
     make_v8:mp.Value
     processed_frames_h264:mp.Queue
     processed_frames_v8:mp.Queue
 
-    def __init__(self, sub:Subscription, peers:list[str], frame_processor, raw_frames:mp.Queue, processed_frames_h264:mp.Queue, processed_frames_v8:mp.Queue, make_keyframe_shared:mp.Value, make_h264_shared:mp.Value, make_v8_shared:mp.Value):
+    def __init__(self, sub:Subscription, peers:list[str], frame_processor, processed_frames_h264:mp.Queue, processed_frames_v8:mp.Queue, make_keyframe_shared:mp.Value, make_h264_shared:mp.Value, make_v8_shared:mp.Value):
         self.sub = sub
         self.num_received = 0
         self.last_msg = -1.0
@@ -106,7 +108,7 @@ class TopicReadSubscription:
 
         self.frame_processor = frame_processor
 
-        self.raw_frames = raw_frames
+        # self.raw_frames = raw_frames
         self.make_keyframe = make_keyframe_shared
         self.make_h264 = make_h264_shared
         self.make_v8 = make_v8_shared
@@ -118,9 +120,10 @@ class TopicReadSubscription:
 class BridgeController(Node):
 
     topic_read_subscriptions_:dict[str: TopicReadSubscription]
+    callback_group:rclpy.callback_groups.CallbackGroup
 
-    def __init__(self):
-        super().__init__('webrtc_bridge')
+    def __init__(self, context:rclpy.context.Context, cbg:rclpy.callback_groups.CallbackGroup):
+        super().__init__('phntm_bridge', context=context)
 
         self.get_logger().set_level(rclpy.logging.LoggingSeverity.DEBUG)
 
@@ -128,6 +131,8 @@ class BridgeController(Node):
         self.shutting_down_ = False
 
         self.event_loop = asyncio.get_event_loop()
+
+        self.callback_group = cbg
 
         # ID ROBOT
         self.declare_parameter('id_robot', '')
@@ -179,7 +184,7 @@ class BridgeController(Node):
         self.conn_led = None
         if (self.conn_led_topic != None and self.conn_led_topic != ''):
             self.get_logger().info(f'CONN Led uses {self.conn_led_topic}')
-            self.conn_led = StatusLED('conn', StatusLED.Mode.OFF, self.conn_led_topic, QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT))
+            self.conn_led = StatusLED('conn', node=self, cbg=cbg, mode=StatusLED.Mode.OFF, topic=self.conn_led_topic, qos=QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT))
             self.conn_led.set_fast_pulse()
             #self.led_spinner = self.create_timer(0.1, lambda: rclpy.spin_once(self.status_led))
 
@@ -189,7 +194,7 @@ class BridgeController(Node):
         self.data_led = None
         if (self.data_led_topic != None and self.data_led_topic != ''):
             self.get_logger().info(f'DATA Led uses {self.data_led_topic}')
-            self.data_led = StatusLED('data', StatusLED.Mode.OFF, self.data_led_topic, QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT))
+            self.data_led = StatusLED('data', node=self, cbg=cbg, mode=StatusLED.Mode.OFF, topic=self.data_led_topic, qos=QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT))
             #self.data_led.off()
 
         # TOPIC DICOVERY
@@ -234,7 +239,7 @@ class BridgeController(Node):
         # self.wrtc_webcam:MediaPlayer = None
         # self.data_sender:RTCDataChannel = None
 
-        self.get_logger().info(f'Phntm WebRTC Bridge started, idRobot={self.id_robot}')
+        self.get_logger().info(f'Phntm Bridge started, idRobot={self.id_robot}')
 
     def start_discovery(self):
         # run now
@@ -305,45 +310,45 @@ class BridgeController(Node):
                     if self.data_led != None:
                         self.data_led.once()
 
-    def report_frame(self, topic:str, frame_msg_bytes:any, total_sent:int):
-        make_h264 = True #TODO detetct without encoder
-        make_v8 = False
-        make_keyframe = False
+    # def report_frame(self, topic:str, frame_msg_bytes:any, total_sent:int):
+    #     make_h264 = True #TODO detetct without encoder
+    #     make_v8 = False
+    #     make_keyframe = False
 
-        loopin_start = time.time()
-        for id_peer in self.wrtc_peer_video_tracks.keys():
-            if topic in self.wrtc_peer_video_tracks[id_peer].keys():
-                if self.wrtc_peer_video_tracks[id_peer][topic].track != None:
-                    sender = self.wrtc_peer_video_tracks[id_peer][topic]
-                    if (sender.get_send_keyframe(True)): # copy & reset for each sender obj
-                        make_keyframe = True
-                    # if isinstance(sender.encoder, Vp8Encoder):
-                    #     gen_yuv420p = True
-                    # else:
-                    #     gen_rgb = True
-                else:
-                    self.get_logger().warn(f'No track for {topic} for id_peer={id_peer}, self.wrtc_peer_video_tracks[id_peer][topic]={str(self.wrtc_peer_video_tracks[id_peer][topic])} track={str(self.wrtc_peer_video_tracks[id_peer][topic].track)}')
+    #     loopin_start = time.time()
+    #     for id_peer in self.wrtc_peer_video_tracks.keys():
+    #         if topic in self.wrtc_peer_video_tracks[id_peer].keys():
+    #             if self.wrtc_peer_video_tracks[id_peer][topic].track != None:
+    #                 sender = self.wrtc_peer_video_tracks[id_peer][topic]
+    #                 if (sender.get_send_keyframe(True)): # copy & reset for each sender obj
+    #                     make_keyframe = True
+    #                 # if isinstance(sender.encoder, Vp8Encoder):
+    #                 #     gen_yuv420p = True
+    #                 # else:
+    #                 #     gen_rgb = True
+    #             else:
+    #                 self.get_logger().warn(f'No track for {topic} for id_peer={id_peer}, self.wrtc_peer_video_tracks[id_peer][topic]={str(self.wrtc_peer_video_tracks[id_peer][topic])} track={str(self.wrtc_peer_video_tracks[id_peer][topic].track)}')
 
-        if make_keyframe:
-            self.topic_read_subscriptions_[topic].make_keyframe.value = 1
+    #     if make_keyframe:
+    #         self.topic_read_subscriptions_[topic].make_keyframe.value = 1
 
-        # self.get_logger().debug(f'report_frame: Loopin\' took {"{:.5f}".format(time.time() - loopin_start)}s')
-        # self.get_logger().debug(f'Putting frame into raw_frames of {topic} gen_yuv420p={str(gen_yuv420p)}  gen_rgb={str(gen_rgb)}')
-        # self.get_logger().info(f'sending frame {str(type(frame_msg_bytes))}')
-        # raw_pipe = self.topic_read_subscriptions_[topic].raw_pipe_in
-        try:
-            #raw_pipe.send_bytes(frame_msg_bytes)
-            self.topic_read_subscriptions_[topic].raw_frames.put_nowait(frame_msg_bytes)
+    #     # self.get_logger().debug(f'report_frame: Loopin\' took {"{:.5f}".format(time.time() - loopin_start)}s')
+    #     # self.get_logger().debug(f'Putting frame into raw_frames of {topic} gen_yuv420p={str(gen_yuv420p)}  gen_rgb={str(gen_rgb)}')
+    #     # self.get_logger().info(f'sending frame {str(type(frame_msg_bytes))}')
+    #     # raw_pipe = self.topic_read_subscriptions_[topic].raw_pipe_in
+    #     try:
+    #         #raw_pipe.send_bytes(frame_msg_bytes)
+    #         self.topic_read_subscriptions_[topic].raw_frames.put_nowait(frame_msg_bytes)
 
-            # {
-            #     'fbytes': frame_msg_bytes,
-            #     'yuv420p': gen_yuv420p,
-            #     'rgb': gen_rgb
-            # })
-            # self.get_logger().info(f'Frame in pipe')
-        except Full:
-            self.get_logger().error(f'Frame queue full for {topic}!')
-        # self.get_logger().debug(f'Frame added into raw_frames queue of {topic}')
+    #         # {
+    #         #     'fbytes': frame_msg_bytes,
+    #         #     'yuv420p': gen_yuv420p,
+    #         #     'rgb': gen_rgb
+    #         # })
+    #         # self.get_logger().info(f'Frame in pipe')
+    #     except Full:
+    #         self.get_logger().warn(f'Frame processor queue full for {topic} (processing slow)')
+    #     # self.get_logger().debug(f'Frame added into raw_frames queue of {topic}')
 
     async def report_latest_when_ready(self, id_peer:str, topic:str):
 
@@ -825,36 +830,37 @@ class BridgeController(Node):
             return False
 
         is_image = msg_type == 'sensor_msgs/msg/Image'
-
+        sub = None
         #is_text = msg_type == 'std_msgs/msg/String'
-        raw = self.get_parameter_or(f'{topic}.raw', Parameter(name='', value=True)).get_parameter_value().bool_value
-        if is_image:
-            raw = True
-        reliability = self.get_parameter_or(f'{topic}.reliability', Parameter(name='', value=QoSReliabilityPolicy.BEST_EFFORT)).get_parameter_value().integer_value
-        durability = self.get_parameter_or(f'{topic}.durability', Parameter(name='', value=DurabilityPolicy.VOLATILE)).get_parameter_value().integer_value
+        # raw = self.get_parameter_or(f'{topic}.raw', Parameter(name='', value=True)).get_parameter_value().bool_value
+        if not is_image: #images gave their own node started by FP
+            # raw = True
+            reliability = self.get_parameter_or(f'{topic}.reliability', Parameter(name='', value=QoSReliabilityPolicy.BEST_EFFORT)).get_parameter_value().integer_value
+            durability = self.get_parameter_or(f'{topic}.durability', Parameter(name='', value=DurabilityPolicy.VOLATILE)).get_parameter_value().integer_value
 
-        qosProfile = QoSProfile(history=QoSHistoryPolicy.KEEP_LAST, \
-                                depth=1, \
-                                reliability=reliability, \
-                                durability=durability, \
-                                lifespan=Infinite \
-                                )
+            qosProfile = QoSProfile(history=QoSHistoryPolicy.KEEP_LAST, \
+                                    depth=1, \
+                                    reliability=reliability, \
+                                    durability=durability, \
+                                    lifespan=Infinite \
+                                    )
 
-        self.get_logger().warn(f'Subscribing to topic {topic} {msg_type} {"IMAGE" if is_image else "raw={raw}"}')
+            self.get_logger().warn(f'Subscribing to topic {topic} {msg_type} {"IMAGE" if is_image else "raw={raw}"}')
 
-        sub = self.create_subscription(
-            msg_type=message_class,
-            topic=topic,
-            callback=lambda msg: self.topic_subscriber_callback(topic, is_image, msg),
-            qos_profile=qosProfile,
-            raw=raw
-        )
-        if sub == None:
-            self.get_logger().error(f'Failed subscribing to topic {topic}, msg class={msg_type} (all={", ".join(topic_info["msg_types"])} )')
-            return False
+            sub = self.create_subscription(
+                msg_type=message_class,
+                topic=topic,
+                callback=lambda msg: self.topic_subscriber_callback(topic, is_image, msg),
+                qos_profile=qosProfile,
+                raw=True,
+                callback_group=self.callback_group
+            )
+            if sub == None:
+                self.get_logger().error(f'Failed subscribing to topic {topic}, msg class={msg_type} (all={", ".join(topic_info["msg_types"])} )')
+                return False
 
         frame_processor = None
-        raw_frames_queue = None
+        # raw_frames_queue = None
         make_keyframe_shared = None
         make_h264_shared = None
         make_v8_shared = None
@@ -862,22 +868,22 @@ class BridgeController(Node):
         processed_frames_queue_v8 = None
 
         if is_image: # init topic frame processor thread here
-            raw_pipe_in_worker, raw_pipe_in = mp.Pipe(duplex=False)
-            raw_frames_queue = mp.Queue(maxsize=5) #queues start throwimg when not consumed
+            # raw_pipe_in_worker, raw_pipe_in = mp.Pipe(duplex=False)
+            # raw_frames_queue = mp.Queue(maxsize=20) #queues start throwimg when not consumed
             processed_frames_queue_h264 = mp.Queue(5)
             processed_frames_queue_v8 = mp.Queue(5)
             make_keyframe_shared = mp.Value('b', 1, lock=False)
             make_h264_shared = mp.Value('b', 1, lock=False)
             make_v8_shared = mp.Value('b', 0, lock=False)
             frame_processor = mp.Process(target=ROSFrameProcessor,
-                                         args=(topic, raw_frames_queue, processed_frames_queue_h264, processed_frames_queue_v8,
+                                         args=(topic, processed_frames_queue_h264, processed_frames_queue_v8,
                                                make_keyframe_shared, make_h264_shared, make_v8_shared, self.get_logger()))
 
         self.topic_read_subscriptions_[topic] = TopicReadSubscription(
             sub = sub,
             peers = [ id_peer ],
             frame_processor = frame_processor,
-            raw_frames = raw_frames_queue,
+            # raw_frames = raw_frames_queue,
             make_keyframe_shared = make_keyframe_shared,
             make_h264_shared = make_h264_shared,
             make_v8_shared = make_v8_shared,
@@ -937,7 +943,9 @@ class BridgeController(Node):
         if not is_image:
             self.event_loop.create_task(self.report_data(topic, msg, log=log_msg, total_sent=self.topic_read_subscriptions_[topic].num_received))
         else:
-            self.report_frame(topic, msg, total_sent=self.topic_read_subscriptions_[topic].num_received)
+            self.get_logger().error(f'NOT reporting frames for topic {topic} in main proc!')
+
+        #     self.report_frame(topic, msg, total_sent=self.topic_read_subscriptions_[topic].num_received)
             # self.event_loop.create_task(self.report_frame(topic, msg, total_sent=self.topic_read_subscriptions_[topic].num_received))
 
     def start_topic_publisher(self, topic:str, id_peer:str, protocol:str) -> bool:
@@ -958,7 +966,7 @@ class BridgeController(Node):
                          reliability=QoSReliabilityPolicy.RELIABLE \
                          )
 
-        pub = self.create_publisher(message_class, topic, qos)
+        pub = self.create_publisher(message_class, topic, qos, callback_group=self.callback_group)
         if pub == None:
             self.get_logger().error(f'Failed creating publisher for topic {topic}, msg class={protocol}')
             return False
@@ -1259,16 +1267,16 @@ def matches_param_filters(key:str, param:Parameter):
             return True
     return False
 
-async def spin_async(node: BridgeController):
+async def spin_async(node: BridgeController, executor:rclpy.executors.Executor, ctx:rclpy.context.Context, cbg:rclpy.callback_groups.CallbackGroup):
 
     cancel = node.create_guard_condition(lambda: None)
 
     def _spin(node: Node,
               future: asyncio.Future,
               event_loop: asyncio.AbstractEventLoop):
-        while rclpy.ok and not future.cancelled() and not node.shutting_down_:
+        while ctx.ok() and not future.cancelled() and not node.shutting_down_:
             try:
-                rclpy.spin_once(node)
+                executor.spin_once()
             except:
                 pass
         if not future.cancelled():
@@ -1287,12 +1295,11 @@ async def spin_async(node: BridgeController):
     node.spin_thread.join()
     node.destroy_guard_condition(cancel)
 
-
-async def main_async(bridge_node:BridgeController):
+async def main_async(bridge_node:BridgeController, executor:rclpy.executors.Executor, ctx:rclpy.context.Context, cbg:rclpy.callback_groups.CallbackGroup):
     # create a node without any work to do
 
     # create tasks for spinning and sleeping
-    spin_task = asyncio.get_event_loop().create_task(spin_async(bridge_node))
+    spin_task = asyncio.get_event_loop().create_task(spin_async(bridge_node, executor, ctx, cbg))
     connect_task = asyncio.get_event_loop().create_task(bridge_node.start_sio_client(addr=bridge_node.sio_address, port=bridge_node.sio_port, path=bridge_node.sio_path))
 
     # concurrently execute both tasks
@@ -1304,17 +1311,30 @@ async def main_async(bridge_node:BridgeController):
     if connect_task.cancel():
         await connect_task
 
-
 def main(args=None):
 
-    rclpy.init(signal_handler_options=rclpy.SignalHandlerOptions.NO)
-    rclpy.uninstall_signal_handlers() #duplicate?
+    ctx = rclpy.context.Context()
 
-    bridge_node = BridgeController()
+    rclpy.init(context=ctx)
+    # rclpy.uninstall_signal_handlers() #duplicate?
+
+    # ctx.init()
+
+    cbg = rclpy.callback_groups.MutuallyExclusiveCallbackGroup()
+
+    executor = rclpy.executors.MultiThreadedExecutor(context=ctx)
+
+    bridge_node = BridgeController(context=ctx, cbg=cbg)
+
+    executor.add_node(bridge_node)
+    cbg.add_entity(bridge_node)
+    cbg.add_entity(ctx)
+    cbg.add_entity(executor)
+
     bridge_node.start_discovery()
 
     try:
-        asyncio.get_event_loop().run_until_complete(main_async(bridge_node))
+        asyncio.get_event_loop().run_until_complete(main_async(bridge_node, executor, ctx, cbg))
     except:
         pass
 
@@ -1322,12 +1342,12 @@ def main(args=None):
 
     try:
         bridge_node.destroy_node()
+        executor.shutdown()
         rclpy.shutdown()
     except:
         pass
 
     asyncio.get_event_loop().close()
-
 
 
 if __name__ == '__main__':

@@ -75,6 +75,19 @@ RUN --mount=type=bind,source=./phntm_bridge,target=/ros2_ws/src/phntm_bridge \
 # RUN . install/local_setup.bash
 # RUN ros2 run phntm_bridge phntm_bridge
 
+# modprobe bcm2835-v4l2 on host!!, then start container
+
+WORKDIR /root/
+RUN git clone https://github.com/raspberrypi/userland.git
+WORKDIR /root/userland
+RUN ./buildme --aarch64
+RUN echo "export LD_LIBRARY_PATH=/opt/vc/lib:$LD_LIBRARY_PATH" >> /root/.bashrc
+
+RUN apt-get install -y libcap-dev python3-prctl libcamera-dev
+# RUN pip install picamera2
+# RUN apt-get install -y libbcm2835-dev
+
+
 # pimp up prompt with hostame and color
 RUN echo "PS1='\${debian_chroot:+(\$debian_chroot)}\\[\\033[01;35m\\]\\u@\\h\\[\\033[00m\\] \\[\\033[01;34m\\]\\w\\[\\033[00m\\] 🦄 '"  >> /root/.bashrc
 
