@@ -1,21 +1,87 @@
 #!/usr/bin/python3
 
 from picamera2.encoders import H264Encoder
+from picamera2.outputs import FileOutput
 from picamera2 import Picamera2
 import time
 import libcamera
+import io
+import av
+from termcolor import colored
 
 picam2 = Picamera2()
-video_config = picam2.create_video_configuration(display=None, transform=libcamera.Transform(hflip=1, vflip=1))
+print (colored(f'Picamera2 info: {picam2.global_camera_info()}', 'yellow'))
+video_config = picam2.create_preview_configuration(display='main',
+                                                 encode='main',
+                                                 transform=libcamera.Transform(hflip=1, vflip=1),
+                                                 queue=True
+                                                 )
 picam2.configure(video_config)
 encoder = H264Encoder(bitrate=10000000)
 length=25
-output = f'test-docker.{length}s-{time.time()}.h264'
-picam2.start_recording(encoder, output)
-time.sleep(length)
+# output = f'test-docker.{length}s-{time.time()}.h264'
+
+class PacketsOutput(FileOutput):
+    def outputframe(self, frame, keyframe=True, timestamp=None):
+        """Outputs frame from encoder
+
+        :param frame: Frame
+        :type frame: bytes
+        :param keyframe: Whether frame is a keyframe, defaults to True
+        :type keyframe: bool, optional
+        :param timestamp: Timestamp of frame
+        :type timestamp: int
+        """
+        if self.recording:
+            if self._firstframe:
+                if not keyframe:
+                    return
+                else:
+                    self._firstframe = False
+            print(f'Got frame: {len(frame)} B{" KEYFRAME" if keyframe else ""}')
+            # self._write(frame, timestamp)
+
+# buffer = PiCameraH264Buffer()
+output = PacketsOutput()
+
+# pts_buffer = io.BytesIO()
+# pts_output = FileOutput(pts_buffer)
+
+time.sleep(2)
+
+print (f'Picam2 ready')
+
+# picam2.start_recording()
+picam2.start_encoder(encoder=encoder, output=output)
+picam2.start()
+
+print (f'Picam2 running (Ctr-C to stop)')
+
+while True:
+    pass
+
+# try:
+#     frame = bytes(65507)
+#     keyframe = True
+#     while True:
+#         array = encoder.capture_array('main')
+#         # output.outputframe(frame, keyframe=keyframe)
+#         print(f'captured {len(array)}x{len(array[0])} array')
+#         # print (f'Buffer has {len(buffer.getbuffer())} B{" [REC]" if output.recording else ""}{" [DEAD]" if output.dead else ""}')
+#         # output.outputframe(frame, keyframe=keyframe)
+#         # buffer.flush()
+#         # picam2.capture_buffers()
+#         time.sleep(1)
+
+# except Exception as e:
+#     print (f'Exception: {e}')
+#     pass
+
+# picam2.start()
+# time.sleep(length)
 picam2.stop_recording()
 
-print (f'Written output: {output}')
+# print (f'Written output: {output}')
 
 # import av
 
