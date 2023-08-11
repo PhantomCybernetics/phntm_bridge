@@ -14,6 +14,28 @@ import time
 import sys
 import traceback
 
+from termcolor import colored as c
+
+try:
+    from picamera2 import Picamera2
+    from picamera2.encoders import H264Encoder
+    from picamera2.outputs import FileOutput
+    from picamera2 import Picamera2
+    import time
+    import libcamera
+    from .inc.camera import get_camera_info
+    print('Picamera imported ok')
+except Exception as e:
+    print(c('Failed to import picamera2', 'red'), e)
+    pass
+
+picam2 = None
+try:
+    picam2 = Picamera2()
+    print (c(f'Picamera2 global info: ', 'cyan') + str(picam2.global_camera_info()))
+except Exception as e:
+    print(c('Failed to start picamera2', 'red'), e)
+
 #from picamera2 import PiCamera
 
 # import cProfile, pstats, io
@@ -23,8 +45,6 @@ import traceback
 # pr.enable()
 
 print('Ohi!')
-
-from termcolor import colored
 
 import copy
 
@@ -292,6 +312,18 @@ class BridgeController(Node):
             callback=None
             )
 
+    async def report_cameras(self):
+        if not self.is_connected_:
+            return
+        data = []
+        if picam2 is not None:
+            data = get_camera_info(picam2)
+        await self.sio.emit(
+            event='cameras',
+            data=data,
+            callback=None
+            )
+
     async def report_data(self, topic:str, payload:any, log:bool, total_sent:int):
 
         for id_peer in self.wrtc_peer_read_channels.keys():
@@ -395,6 +427,7 @@ class BridgeController(Node):
             if self.conn_led != None:
                 self.conn_led.on()
 
+            await asyncio.get_event_loop().create_task(self.report_cameras())
             await asyncio.get_event_loop().create_task(self.report_topics())
             await asyncio.get_event_loop().create_task(self.report_services())
 
@@ -1095,7 +1128,7 @@ class BridgeController(Node):
             return { 'err': 2, 'msg': 'No valid peer id provided' }
 
         self.get_logger().debug('Got offer from '+id_peer+' SDP:')
-        print(colored(str(offer.sdp), 'dark_grey'))
+        print(c(str(offer.sdp), 'dark_grey'))
 
         if id_peer in self.wrtc_peer_pcs.keys():
             pc = self.wrtc_peer_pcs[id_peer]
@@ -1197,7 +1230,7 @@ class BridgeController(Node):
         #await pc.setLocalDescription(answer)
 
         self.get_logger().debug('Generated answer, SDP:')
-        print(colored(str(pc.localDescription.sdp), 'cyan'))
+        print(c(str(pc.localDescription.sdp), 'cyan'))
 
         return { 'sdp': pc.localDescription.sdp, 'type':pc.localDescription.type }
 

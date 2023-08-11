@@ -38,7 +38,8 @@ class PacketsOutput(FileOutput):
                     return
                 else:
                     self._firstframe = False
-            print(f'Got frame: {len(frame)} B{" KEYFRAME" if keyframe else ""}')
+            # pass
+            print(f'Got frame {timestamp}: {len(frame)} B{" KEYFRAME" if keyframe else ""}')
             # self._write(frame, timestamp)
 
 # buffer = PiCameraH264Buffer()
@@ -58,6 +59,7 @@ picam2.start()
 print (f'Picam2 running (Ctr-C to stop)')
 
 while True:
+    time.sleep(10)
     pass
 
 # try:
