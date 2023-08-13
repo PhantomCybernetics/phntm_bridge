@@ -23,7 +23,7 @@ try:
     from picamera2 import Picamera2
     import time
     import libcamera
-    from .inc.camera import get_camera_info
+    from .inc.camera import get_camera_info, picam2_has_camera, CameraVideoStreamTrack, PacketsOutput
     print('Picamera imported ok')
 except Exception as e:
     print(c('Failed to import picamera2', 'red'), e)
@@ -136,10 +136,26 @@ class TopicReadSubscription:
         self.processed_frames_h264 = processed_frames_h264
         self.processed_frames_v8 = processed_frames_v8
 
+class CameraSubscription:
+    camera:any
+    encoder: any
+    output:FileOutput
+    num_received:int
+    peers: list[ str ]
+    last_log:float
+
+    def __init__(self, camera:any, encoder:any, output:FileOutput, peers:list[str]):
+        self.camera = camera
+        self.encoder = encoder
+        self.output = output
+        self.num_received = 0
+        self.peers = peers
+        self.last_log = -1.0
 
 class BridgeController(Node):
 
     topic_read_subscriptions_:dict[str: TopicReadSubscription]
+    camera_subscriptions_:dict[str: CameraSubscription]
     callback_group:rclpy.callback_groups.CallbackGroup
 
     def __init__(self, context:rclpy.context.Context, cbg:rclpy.callback_groups.CallbackGroup):
@@ -228,6 +244,7 @@ class BridgeController(Node):
         self.discovered_services_:dict[str: dict['msg_types':list[str]]] = {}
 
         self.topic_read_subscriptions_ = {}
+        self.camera_subscriptions_ = {}
         # self.topic_read_frame_raw_:dict[str:bytes] = {} # topic => frame bytes
         # self.topic_read_frame_enc_:dict[str:dict[str:VideoFrame]] = {} # topic => [ codec => encoded frame ]
 
@@ -788,6 +805,157 @@ class BridgeController(Node):
             await srv_finished_checker()
             return str(future.result())
 
+        # subscribe and unsubscribe camera streams
+        @sio.on('cameras:read')
+        async def on_cameras_subscription(data:dict):
+
+            id_peer:str = None
+            if 'id_app' in data:
+                id_peer = data['id_app']
+            if 'id_instance' in data:
+                id_peer = data['id_instance']
+            if id_peer == None:
+                return { 'err': 2, 'msg': 'No valid peer id provided' }
+
+            if not id_peer in self.wrtc_peer_pcs:
+                 return { 'err': 2, 'msg': 'Peer not connected' }
+
+            if not 'cameras' in data:
+                return { 'err': 2, 'msg': 'No cameras specified' }
+
+            self.get_logger().info(f'Peer {id_peer} subscriptoin change for cameras: {str(data["cameras"])}')
+
+            negotiation_needed = False
+            for camera_data in data['cameras']: # : [ topic, subscribe, ...]
+                if int(camera_data[1]) > 0: #subscribe
+                    negotiation_needed = True
+                    break
+
+            if negotiation_needed and not 'sdp_offer' in data:
+                return { 'err': 2, 'msg': 'Missing sdp_offer (negotiation needed on new camera subscriptions)' }
+
+            pc:RTCPeerConnection = self.wrtc_peer_pcs[id_peer]
+
+            async def signalling_stable_checker():
+                timeout_sec = 10.0
+                while pc.signalingState != 'stable' and timeout_sec > 0.0:
+                    await asyncio.sleep(.1)
+                    timeout_sec -= .1
+                if timeout_sec <= 0.0:
+                    return { 'err': 2, 'msg': 'Timed out waiting for stable signalling state' }
+
+            if negotiation_needed:
+                await signalling_stable_checker()
+                offer = RTCSessionDescription(sdp=data['sdp_offer'], type='offer')
+                self.get_logger().info(f'Setting new peer offer: {str(offer)}')
+                await pc.setRemoteDescription(offer)
+
+            res_subscribed:list[tuple[str,int]] = list() # [ cam, id_ch ]
+            res_unsubscribed:list[tuple[str,int]] = list()
+            res_err:list[tuple[str,str]] = list()
+
+            #  self.get_logger().warn(f'setRemoteDescription {data["offer"]}')
+
+            for camera_data in data['cameras']: # : [ cam, subscribe, ...]
+                id_cam:str = camera_data[0]
+                subscribe:bool = int(camera_data[1]) > 0
+
+                if subscribe:
+
+                    if id_cam.startswith('picam2'):
+                        if picam2 is None:
+                            res_err.append([id_cam, 'Picamera2 not available'])
+                            continue
+                        if not picam2_has_camera(picam2, id_cam):
+                            res_err.append([id_cam, 'Not available via Picamera2'])
+                            continue
+                    else:
+                        res_err.append([id_cam, 'Unsupported camera type'])
+                        continue
+
+                    [ cam, output ] = await self.subscribe_camera(id_cam, id_peer)
+                    if cam is None or output is None:
+                        res_err.append([id_cam, 'Camera failed to subscribe'])
+                        continue
+
+                    if not id_peer in self.wrtc_peer_video_tracks.keys():
+                        self.wrtc_peer_video_tracks[id_peer] = dict()
+
+                    sender:RTCRtpSender = None
+                    if id_cam in self.wrtc_peer_video_tracks[id_peer].keys(): # never destroyed during p2p session
+                        sender = self.wrtc_peer_video_tracks[id_peer][id_cam]
+                    else:
+                        track = CameraVideoStreamTrack(self.get_logger(), id_cam, cam, output, id_peer, self.log_message_every_sec)
+                        sender = pc.addTrack(track)
+                        track.set_sender(sender) # recv() needs to know the encoder class
+
+                        # sender.__logger = self.get_logger()
+                        # aiortc sets _stream_id to self.__stream_id in RTCPeerConnection.__createTransceiver
+                        # this makes it impossible to identify streams on received
+                        # this should fix it for now
+                        sender._stream_id = sender._track_id
+                        self.get_logger().warn(f'Created sender for id_peer={id_peer} {id_cam}, _stream_id={sender._stream_id} _track_id=={sender._track_id}, track={str(sender.track)}')
+
+                        @sender.track.on('ended')
+                        async def on_sender_track_ended():
+                            self.get_logger().warn(f'Sender track ended, _stream_id={str(sender._stream_id)} _track_id=={str(sender._track_id)}')
+                            # for line in traceback.format_stack():
+                            #     print(line.strip())
+                            # await pc.removeTrack(sender)
+                            # if topic in self.wrtc_peer_video_tracks[id_peer]:
+                            #     self.wrtc_peer_video_tracks[id_peer].pop(topic)
+
+                        self.wrtc_peer_video_tracks[id_peer][id_cam] = sender
+                        # await sender.track.set_frame(av.VideoFrame(width=640, height=480, format='rgb24'))
+                        self.get_logger().info(f'Sender capabilities: {str(sender.getCapabilities(kind="video"))}')
+
+                    # sender.pause(False);
+                    res_subscribed.append([id_cam, sender._track_id ]) #id is generated str
+
+                else: # unsubscribe
+                    pass
+                #     self.unsubscribe_topic(topic, id_peer)
+
+                #     if id_peer in self.wrtc_peer_read_channels and topic in self.wrtc_peer_read_channels[id_peer]:
+                #         self.get_logger().info(f'Peer {id_peer} unsubscribed from {topic} R')
+                #         id_closed_dc = self.wrtc_peer_read_channels[id_peer][topic].id
+                #         self.wrtc_peer_read_channels[id_peer][topic].close()
+                #         self.wrtc_peer_read_channels[id_peer].pop(topic)
+                #         res_unsubscribed.append([ topic, id_closed_dc ])
+
+                #     if id_peer in self.wrtc_peer_video_tracks and topic in self.wrtc_peer_video_tracks[id_peer]:
+                #         self.get_logger().info(f'Peer {id_peer} unsubscribed from {topic} /R IMG (NOT EVEN pausing stream)')
+                #         # self.wrtc_peer_video_tracks[id_peer][topic].pause()
+                #         # self.wrtc_peer_video_tracks[id_peer][topic].pause()
+                #         # id_closed_track = self.wrtc_peer_video_tracks[id_peer][topic].track.id # str generated
+                #         # if id_peer in self.wrtc_peer_video_tracks:
+                #         #     if topic in self.wrtc_peer_video_tracks[id_peer]:
+                #         #         if self.wrtc_peer_video_tracks[id_peer][topic].track:
+                #         #             self.get_logger().info(f'Peer {id_peer} stopping topic {topic}...')
+                #         #             await pc.removeTrack(self.wrtc_peer_video_tracks[id_peer][topic])
+                #         #             # await self.wrtc_peer_video_tracks[id_peer][topic].stop()
+                #         #             self.get_logger().info(f'Peer {id_peer} stopped topic {topic}...')
+                #         #         if topic in self.wrtc_peer_video_tracks[id_peer]:
+                #         #             self.wrtc_peer_video_tracks[id_peer].pop(topic)
+                #         res_unsubscribed.append([ topic ])
+
+            reply_data = {
+                'success': 1,
+                'subscribed': res_subscribed,
+                'unsubscribed': res_unsubscribed,
+                'err': res_err
+            }
+
+            if negotiation_needed:
+                self.get_logger().info(f'About to pc.createAnswer()...')
+                answer = await pc.createAnswer()
+                self.get_logger().info(f'About to pc.setLocalDescription(answer)...')
+                await pc.setLocalDescription(answer)
+                reply_data['answer_sdp'] = pc.localDescription.sdp
+
+            self.get_logger().info(f'Reply: {str(reply_data)}')
+            return reply_data
+
         @sio.event
         async def connect_error(data):
             self.get_logger().error('Socket.io connection failed: ' + str(data))
@@ -838,6 +1006,49 @@ class BridgeController(Node):
             except asyncio.CancelledError:
                 self.get_logger().info('CancelledError')
                 return
+
+    async def subscribe_camera(self, id_cam:str, id_peer:str) -> tuple():
+
+        if id_cam in self.camera_subscriptions_:
+            if not id_peer in self.camera_subscriptions_[id_cam].peers:
+                self.camera_subscriptions_[id_cam].peers.append(id_peer)
+            return [ self.camera_subscriptions_[id_cam].camera, self.camera_subscriptions_[id_cam].output ] # we cool here
+
+        cam = None
+        output = None
+        encoder = None
+
+        if id_cam.startswith('picam2'):
+            cam = picam2
+            if cam is not None:
+                video_config = picam2.create_preview_configuration(display='main',
+                                                    encode='main',
+                                                    transform=libcamera.Transform(hflip=1, vflip=1),
+                                                    queue=True
+                                                    )
+                picam2.configure(video_config)
+                encoder = H264Encoder(bitrate=10000000)
+                output = PacketsOutput()
+
+                asyncio.sleep(2) #camera setup time (here?)
+
+                print (f'Picam2 recording...')
+
+                # picam2.start_recording()
+                picam2.start_encoder(encoder=encoder, output=output)
+                picam2.start()
+
+        if cam is None or output is None:
+            return [ None , None ] #err
+
+        self.camera_subscriptions_[id_cam] = CameraSubscription(
+            camera = cam,
+            output = output,
+            encoder = encoder,
+            peers = [ id_peer ],
+        )
+
+        return [ cam, output ]
 
 
     def subscribe_topic(self, topic:str, id_peer:str) -> bool:
