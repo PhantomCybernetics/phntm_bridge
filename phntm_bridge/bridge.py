@@ -1,5 +1,16 @@
 #!/usr/bin/env python3
 
+# import logging
+# logging.basicConfig(filename='log-gws.txt',
+#                     filemode='a',
+#                     format='%(asctime)s,%(msecs)d %(name)s %(levelname)s %(message)s',
+#                     datefmt='%H:%M:%S',
+#                     level=logging.ERROR)
+
+# file_logger = logging.getLogger('PhntmBridge')
+
+# file_logger.error('hello')
+
 import rclpy
 from rclpy.node import Node, Parameter, Subscription, QoSProfile, Publisher
 from rclpy.qos import QoSHistoryPolicy, QoSReliabilityPolicy, DurabilityPolicy
@@ -13,6 +24,8 @@ import signal
 import time
 import sys
 import traceback
+
+import netifaces
 
 from termcolor import colored as c
 
@@ -45,6 +58,8 @@ except Exception as e:
 # pr.enable()
 
 print('Ohi!')
+
+
 
 import copy
 
@@ -341,10 +356,22 @@ class BridgeController(Node):
             callback=None
             )
 
+    def is_interface_up(self, interface):
+        #addr = netifaces.ifaddresses(interface)
+        gws = netifaces.gateways()
+        # file_logger.error(gws)
+        return True
+        # return netifaces.AF_INET in addr
+
     async def report_data(self, topic:str, payload:any, log:bool, total_sent:int):
 
         for id_peer in self.wrtc_peer_read_channels.keys():
             if topic in self.wrtc_peer_read_channels[id_peer].keys():
+                # interface_up = {self.is_interface_up('wlan0')}
+                # self.get_logger().debug(f'Wlan0: {str(interface_up)}')
+                # if not interface_up:
+                    # file_logger.error(f'wlan0 down, ignoring...')
+                    # return
                 dc = self.wrtc_peer_read_channels[id_peer][topic]
                 if dc.readyState == 'open':
                     if type(payload) is bytes:
@@ -1024,10 +1051,10 @@ class BridgeController(Node):
                 video_config = picam2.create_preview_configuration(display='main',
                                                     encode='main',
                                                     transform=libcamera.Transform(hflip=1, vflip=1),
-                                                    queue=True
+                                                    queue=False
                                                     )
                 picam2.configure(video_config)
-                encoder = H264Encoder(bitrate=10000000)
+                encoder = H264Encoder(bitrate=10000000, framerate=30)
                 output = PacketsOutput()
 
                 asyncio.sleep(2) #camera setup time (here?)
