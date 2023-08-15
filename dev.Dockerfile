@@ -91,17 +91,17 @@ RUN --mount=type=bind,source=./phntm_bridge,target=/ros2_ws/src/phntm_bridge \
 RUN apt install ffmpeg
 
 #raspi
-RUN apt-get install libraspberrypi0 libraspberrypi-dev libraspberrypi-bin
+RUN apt-get install -y libraspberrypi0 libraspberrypi-dev libraspberrypi-bin
 
 #libcamera deps
 RUN pip3 install --user meson
 RUN pip3 install --user --upgrade meson
-RUN apt-get install ninja-build pkg-config
-RUN apt-get install libyaml-dev python3-yaml python3-ply python3-jinja2
-RUN apt-get install libudev-dev
-RUN apt-get install libevent-dev
-RUN apt-get install libgstreamer1.0-dev libgstreamer-plugins-base1.0-de
-RUN echo "export PATH=$PATH:/root/.local/bin" >> /root/.bashrc
+RUN apt-get install -y ninja-build pkg-config
+RUN apt-get install -y libyaml-dev python3-yaml python3-ply python3-jinja2
+RUN apt-get install -y libudev-dev
+RUN apt-get install -y libevent-dev
+#RUN apt-get install -y libgstreamer1.0-dev libgstreamer-plugins-base1.0-de
+RUN echo "export PATH=\$PATH:/root/.local/bin" >> /root/.bashrc
 
 # libcamera from src
 WORKDIR $ROS_WS
@@ -109,21 +109,21 @@ RUN git clone https://git.libcamera.org/libcamera/libcamera.git
 WORKDIR $ROS_WS/libcamera
 RUN /root/.local/bin/meson setup build -D pycamera=enabled -D v4l2=True --reconfigure
 RUN ninja -C build install
-RUN echo "export PYTHONPATH=$PYTHONPATH:/ros2_ws/libcamera/build/src/py" >> /root/.bashrc
+RUN echo "export PYTHONPATH=\$PYTHONPATH:/ros2_ws/libcamera/build/src/py" >> /root/.bashrc
 
 # kms++ from source (for picamera2)
-RUN apt install libdrm-common libdrm-dev
+RUN apt install -y libdrm-common libdrm-dev
 WORKDIR $ROS_WS
 RUN git clone https://github.com/tomba/kmsxx.git
 WORKDIR $ROS_WS/kmsxx
 RUN git submodule update --init
 RUN /root/.local/bin/meson build
 RUN ninja -C build
-RUN echo "export PYTHONPATH=$PYTHONPATH:/ros2_ws/kmsxx/build/py" >> /root/.bashrc
-RUN echo "export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib/aarch64-linux-gnu" >> /root/.bashrc
+RUN echo "export PYTHONPATH=\$PYTHONPATH:/ros2_ws/kmsxx/build/py" >> /root/.bashrc
+RUN echo "export LD_LIBRARY_PATH=\$LD_LIBRARY_PATH:/usr/local/lib/aarch64-linux-gnu" >> /root/.bashrc
 
 # picamera2 (picamera seems to fail on libmmal.so which is not awailable for arm64 atm)
-RUN apt-get install libcap-dev
+RUN apt-get install -y libcap-dev
 RUN pip install picamera2
 
 # pimp up prompt with hostame and color

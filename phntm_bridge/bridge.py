@@ -29,8 +29,15 @@ import netifaces
 
 from termcolor import colored as c
 
+picam_detected = False
 try:
     from picamera2 import Picamera2
+    picam_detected = True
+except Exception as e:
+    print(c('Failed to import picamera2', 'red'), e)
+    pass
+
+if picam_detected:
     from picamera2.encoders import H264Encoder
     from picamera2.outputs import FileOutput
     from picamera2 import Picamera2
@@ -38,9 +45,6 @@ try:
     import libcamera
     from .inc.camera import get_camera_info, picam2_has_camera, CameraVideoStreamTrack, PacketsOutput
     print('Picamera imported ok')
-except Exception as e:
-    print(c('Failed to import picamera2', 'red'), e)
-    pass
 
 picam2 = None
 try:
@@ -154,12 +158,12 @@ class TopicReadSubscription:
 class CameraSubscription:
     camera:any
     encoder: any
-    output:FileOutput
+    output:any
     num_received:int
     peers: list[ str ]
     last_log:float
 
-    def __init__(self, camera:any, encoder:any, output:FileOutput, peers:list[str]):
+    def __init__(self, camera:any, encoder:any, output:any, peers:list[str]):
         self.camera = camera
         self.encoder = encoder
         self.output = output
