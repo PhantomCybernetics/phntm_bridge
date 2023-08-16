@@ -1,0 +1,141 @@
+version: "3.9"
+
+services:
+  astra:
+    image: husarion/astra:humble-1.0.2-20230427
+    container_name: astra
+    restart: unless-stopped
+    devices:
+      - /dev/bus/usb/
+    volumes:
+      - ./astra-params.yaml:/ros2_ws/install/astra_camera/share/astra_camera/params/astra_mini_params.yaml
+    command: ros2 launch astra_camera astra_mini.launch.py
+
+  rplidar:
+    image: husarion/rplidar:humble
+    container_name: rplidar
+    restart: unless-stopped
+    devices:
+      - /dev/ttySERIAL:/dev/ttyUSB0
+    command: >
+        ros2 launch sllidar_ros2 sllidar_launch.py
+        serial_baudrate:=${RPLIDAR_BAUDRATE:-255993}
+
+  microros:
+    image: husarion/micro-ros-agent:humble
+    container_name: microros
+    restart: unless-stopped
+    devices:
+      - /dev/ttyAMA0
+    command: ros2 run micro_ros_agent micro_ros_agent serial -D /dev/ttyAMA0 serial -b 576000 # -v6
+
+  rosbot:
+    image: husarion/rosbot:humble
+    container_name: rosbot
+    restart: unless-stopped
+    command: ros2 launch rosbot_bringup bringup.launch.py
+
+  joy2twist:
+    image: husarion/joy2twist:humble
+    container_name: joy2twist
+    restart: unless-stopped
+    devices:
+      - /dev/input
+    volumes:
+      - ./joy2twist.yaml:/joy2twist.yaml
+    command: >
+      ros2 launch joy2twist gamepad_controller.launch.py
+        joy2twist_params_file:=/joy2twist.yaml
+
+  phntm_bridge:
+    image: phntm-bridge:humble
+    container_name: phntm-bridge
+    hostname: phntm-bridge.local
+    restart: unless-stopped
+    privileged: true
+    network_mode: host
+    volumes:
+      - ~/phntm_bridge:/ros2_ws/src/phntm_bridge
+      - ~/aioice:/ros2_ws/aioice
+      - ~/aiortc:/ros2_ws/aiortc
+      - ~/phntm_bridge_launch_params.yaml:/ros2_ws/phntm_bridge_params.yaml
+    devices:
+      - /dev:/dev
+    command:
+      # ros2 launch phntm_bridge bridge_launch.py
+      /bin/sh -c "while sleep 1000; do :; done"
+
+
+      #  image_transport:
+      #    image: phntm/bridge:humble
+      #    container_name: image-transport
+      #    hostname: image-transport
+      #    restart: unless-stopped
+      #    privileged: true
+      #    network_mode: "host"
+      #    volumes:
+      #      - ~/ros2_ws/src/phntm_image_transport:/ros2_ws/src/image_transport
+      #      - ~/phntm_image_transport_launch_params.yaml:/ros2_ws/image_transport_params.yaml
+      #    devices:
+      #      - /dev:/dev
+      #    command:
+      # ros2 launch phntm_image_transport bridge_launch.py
+      #      /bin/sh -c "while sleep 1000; do :; done"
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      #image_transport:
+      # image: phntm/image-transport:iron
+      # container_name: image-transport
+      #network_mode: "host"
+      # privileged: true
+      #restart: unless-stopped
+      #devices:
+      # - /dev:/dev
+      #command:
+      #/bin/sh -c "while sleep 1000; do :; done"
+
+
+
+      #  webrtc:
+      #    image: webrtc:foxy
+      #    container_name: webrtc
+      #    network_mode: "host"
+      #    privileged: true
+      #    cap_add:
+      #      - SYS_PTRACE
+      #    security_opt:
+      #      - seccomp:unconfined   
+      #    volumes:
+      #      - ~/ros2_ws/src/webrtc_ros:/ws/src
+      #      - /etc/timezone:/etc/timezone:ro
+      #      - /etc/localtime:/etc/localtime:ro
+      #    devices:
+      #      - /dev:/dev
+      #    build:
+      #      context: .
+      #      dockerfile: ./Dockerfile
+      #    command: /bin/sh -c "while sleep 1000; do :; done"
+
+  #  rviz:
+  #    image: husarion/rviz2:humble
+  #    container_name: rviz
+  #    restart: unless-stopped
+  #    volumes:
+  #      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+  #      - ./default.rviz:/root/.rviz2/default.rviz
+  #    environment:
+  #      - DISPLAY=${DISPLAY:?err}
+  #      - LIBGL_ALWAYS_SOFTWARE=1

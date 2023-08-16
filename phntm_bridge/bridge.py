@@ -18,7 +18,6 @@ from rclpy.duration import Duration, Infinite
 from rclpy.serialization import deserialize_message
 
 from .inc.status_led import StatusLED
-from .inc.ros_video_streaming import ROSVideoStreamTrack, ROSFrameProcessor
 from rcl_interfaces.msg import ParameterDescriptor
 import signal
 import time
@@ -37,14 +36,14 @@ except Exception as e:
     print(c('Failed to import picamera2', 'red'), e)
     pass
 
-if picam_detected:
-    from picamera2.encoders import H264Encoder
-    from picamera2.outputs import FileOutput
-    from picamera2 import Picamera2
-    import time
-    import libcamera
-    from .inc.camera import get_camera_info, picam2_has_camera, CameraVideoStreamTrack, PacketsOutput
-    print('Picamera imported ok')
+# if picam_detected:
+from picamera2.encoders import H264Encoder
+from picamera2.outputs import FileOutput
+from picamera2 import Picamera2
+import time
+import libcamera
+from .inc.camera import get_camera_info, picam2_has_camera, CameraVideoStreamTrack, PacketsOutput
+print('Picamera imported ok')
 
 picam2 = None
 try:
@@ -52,6 +51,8 @@ try:
     print (c(f'Picamera2 global info: ', 'cyan') + str(picam2.global_camera_info()))
 except Exception as e:
     print(c('Failed to start picamera2', 'red'), e)
+
+from .inc.ros_video_streaming import ROSVideoStreamTrack, ROSFrameProcessor
 
 #from picamera2 import PiCamera
 

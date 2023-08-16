@@ -12,6 +12,7 @@ import logging
 import traceback
 import sys
 
+import numpy as np
 import cv2
 from aiortc.codecs import Vp8Encoder
 from aiortc.codecs import H264Encoder
@@ -23,7 +24,6 @@ from termcolor import colored
 
 from av.frame import Frame
 from av.video.frame import VideoFrame
-import numpy as np
 
 from sensor_msgs.msg import Image
 from rclpy.serialization import deserialize_message

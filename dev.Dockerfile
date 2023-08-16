@@ -100,7 +100,7 @@ RUN apt-get install -y ninja-build pkg-config
 RUN apt-get install -y libyaml-dev python3-yaml python3-ply python3-jinja2
 RUN apt-get install -y libudev-dev
 RUN apt-get install -y libevent-dev
-#RUN apt-get install -y libgstreamer1.0-dev libgstreamer-plugins-base1.0-de
+RUN apt-get install -y libgstreamer1.0-dev libgstreamer-plugins-base1.0-de
 RUN echo "export PATH=\$PATH:/root/.local/bin" >> /root/.bashrc
 
 # libcamera from src
@@ -128,6 +128,8 @@ RUN pip install picamera2
 
 # pimp up prompt with hostame and color
 RUN echo "PS1='\${debian_chroot:+(\$debian_chroot)}\\[\\033[01;35m\\]\\u@\\h\\[\\033[00m\\] \\[\\033[01;34m\\]\\w\\[\\033[00m\\] 🦄 '"  >> /root/.bashrc
+
+WORKDIR $ROS_WS/src/phntm_bridge
 
 ENTRYPOINT ["/ros_entrypoint.sh"]
 CMD [ "bash" ]
