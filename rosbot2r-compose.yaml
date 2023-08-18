@@ -26,13 +26,17 @@ services:
     container_name: microros
     restart: unless-stopped
     devices:
-      - /dev/ttyAMA0
-    command: ros2 run micro_ros_agent micro_ros_agent serial -D /dev/ttyAMA0 serial -b 576000 # -v6
+      - /dev/serial0
+    command: ros2 run micro_ros_agent micro_ros_agent serial -D /dev/serial0 serial -b 576000 # -v6
 
   rosbot:
     image: husarion/rosbot:humble
     container_name: rosbot
     restart: unless-stopped
+    environment:
+      - "SERIAL_PORT=/dev/serial0" # default: ttyS1 - rosbot2.0; ttyS4 - rosbot2.0 `pro
+    devices:
+      - "/dev/serial0"   # must match environment SERIAL_PORT
     command: ros2 launch rosbot_bringup bringup.launch.py
 
   joy2twist:
@@ -58,7 +62,7 @@ services:
       - ~/phntm_bridge:/ros2_ws/src/phntm_bridge
       - ~/aioice:/ros2_ws/aioice
       - ~/aiortc:/ros2_ws/aiortc
-      - ~/phntm_bridge_launch_params.yaml:/ros2_ws/phntm_bridge_params.yaml
+      - ~/marcel_launch_params.yaml:/ros2_ws/phntm_bridge_params.yaml
     devices:
       - /dev:/dev
     command:

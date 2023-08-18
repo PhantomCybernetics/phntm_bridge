@@ -88,10 +88,12 @@ RUN --mount=type=bind,source=./phntm_bridge,target=/ros2_ws/src/phntm_bridge \
 # RUN apt-get install -y libbcm2835-dev
 
 #
-RUN apt install ffmpeg
+RUN apt-get install -y ffmpeg
 
 #raspi
 RUN apt-get install -y libraspberrypi0 libraspberrypi-dev libraspberrypi-bin
+
+RUN apt-get install -y v4l-utils
 
 #libcamera deps
 RUN pip3 install --user meson
@@ -112,7 +114,7 @@ RUN ninja -C build install
 RUN echo "export PYTHONPATH=\$PYTHONPATH:/ros2_ws/libcamera/build/src/py" >> /root/.bashrc
 
 # kms++ from source (for picamera2)
-RUN apt install -y libdrm-common libdrm-dev
+RUN apt-get install -y libdrm-common libdrm-dev
 WORKDIR $ROS_WS
 RUN git clone https://github.com/tomba/kmsxx.git
 WORKDIR $ROS_WS/kmsxx
@@ -125,6 +127,12 @@ RUN echo "export LD_LIBRARY_PATH=\$LD_LIBRARY_PATH:/usr/local/lib/aarch64-linux-
 # picamera2 (picamera seems to fail on libmmal.so which is not awailable for arm64 atm)
 RUN apt-get install -y libcap-dev
 RUN pip install picamera2
+
+# needed by reload-devies.sh (reloads docker devices after the container has been created)
+RUN apt-get install -y udev
+
+# fix numpy version to >= 1.25.2
+RUN pip install numpy --force-reinstall
 
 # pimp up prompt with hostame and color
 RUN echo "PS1='\${debian_chroot:+(\$debian_chroot)}\\[\\033[01;35m\\]\\u@\\h\\[\\033[00m\\] \\[\\033[01;34m\\]\\w\\[\\033[00m\\] 🦄 '"  >> /root/.bashrc
