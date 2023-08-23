@@ -71,7 +71,7 @@ class BridgeController(Node):
     camera_subscriptions_:dict[str: CameraSubscription]
     service_clients_:dict[str: any]
     callback_group: CallbackGroup
-    wrtc_peers:dict[str,WRTCPeer]
+    wrtc_peers_:dict[str: WRTCPeer]
     discovery_timer_:Timer
 
     discovered_topics_:dict[str: dict['msg_types':list[str]]]
