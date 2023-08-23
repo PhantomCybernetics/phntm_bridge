@@ -13,6 +13,23 @@ VIDEO_CLOCK_RATE = 1000000000 #ns to s
 # VIDEO_PTIME = 1 / 30  # 30fps
 VIDEO_TIME_BASE = fractions.Fraction(1, VIDEO_CLOCK_RATE)
 
+class CameraSubscription:
+    camera:any
+    encoder: any
+    output:any
+    num_received:int
+    peers: list[ str ]
+    last_log:float
+
+    def __init__(self, camera:any, encoder:any, output:any, peers:list[str]):
+        self.camera = camera
+        self.encoder = encoder
+        self.output = output
+        self.num_received = 0
+        self.peers = peers
+        self.last_log = -1.0
+
+
 def get_camera_info(picam2:Picamera2) -> List[Tuple[str, dict]]:
     data = []
     info = picam2.global_camera_info()

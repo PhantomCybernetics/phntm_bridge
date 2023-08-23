@@ -16,7 +16,7 @@ services:
     container_name: rplidar
     restart: unless-stopped
     devices:
-      - /dev/ttySERIAL:/dev/ttyUSB0
+      - /dev/ttyUSB0:/dev/ttyUSB0
     command: >
         ros2 launch sllidar_ros2 sllidar_launch.py
         serial_baudrate:=${RPLIDAR_BAUDRATE:-255993}
