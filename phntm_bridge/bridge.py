@@ -8,7 +8,7 @@ from rclpy.context import Context
 from rclpy.timer import Timer
 
 from .inc.status_led import StatusLED
-from .inc.lib import TopicReadSubscription, TopicWritePublisher, WRTCPeer, get_peer_id
+from .inc.lib import TopicReadSubscription, TopicWritePublisher, WRTCPeer
 
 from rcl_interfaces.msg import ParameterDescriptor
 import signal
@@ -318,7 +318,7 @@ class BridgeController(Node):
 
         @sio.on('offer')
         async def on_offer(data):
-            id_peer:str = get_peer_id(data)
+            id_peer:str = WRTCPeer.GetId(data)
             if id_peer == None:
                 return { 'err': 2, 'msg': 'No valid peer id provided' }
             return await self.on_peer_wrtc_offer(id_peer, data)
@@ -328,7 +328,7 @@ class BridgeController(Node):
         # it's be nice to do thisvia webrtc tho
         @sio.on('subscription:read')
         async def on_read_subscription(data:dict):
-            id_peer:str = get_peer_id(data)
+            id_peer = WRTCPeer.GetId(data)
             if id_peer == None:
                 return { 'err': 2, 'msg': 'No valid peer id provided' }
             if not id_peer in self.wrtc_peers_.keys():
@@ -338,7 +338,7 @@ class BridgeController(Node):
         # WRITE SUBS
         @sio.on('subscription:write')
         async def on_write_subscription(data:dict):
-            id_peer:str = get_peer_id(data)
+            id_peer = WRTCPeer.GetId(data)
             if id_peer == None:
                 return { 'err': 2, 'msg': 'No valid peer id provided' }
             if not id_peer in self.wrtc_peers_.keys():
@@ -348,17 +348,17 @@ class BridgeController(Node):
         # SERVICE CALLS
         @sio.on('service')
         async def on_peer_service_call(data:dict):
-            id_peer:str = get_peer_id(data)
+            id_peer = WRTCPeer.GetId(data)
             if id_peer == None:
                 return { 'err': 2, 'msg': 'No valid peer id provided' }
             if not id_peer in self.wrtc_peers_.keys():
                 return { 'err': 2, 'msg': 'Peer not connected' }
             return await self.on_service_call(id_peer, data)
 
-         # subscribe and unsubscribe camera streams
+        # subscribe and unsubscribe camera streams
         @sio.on('cameras:read')
         async def on_cameras_subscription(data:dict):
-            id_peer:str = get_peer_id(data)
+            id_peer = WRTCPeer.GetId(data)
             if id_peer == None:
                 return { 'err': 2, 'msg': 'No valid peer id provided' }
             if not id_peer in self.wrtc_peers_.keys():
@@ -373,7 +373,7 @@ class BridgeController(Node):
 
         @sio.on('peer:disconnected')
         async def on_peer_disconnected(data:dict):
-            id_peer:str = get_peer_id(data)
+            id_peer = WRTCPeer.GetId(data)
             if id_peer == None:
                 return { 'err': 2, 'msg': 'No valid peer id provided' }
             if not id_peer in self.wrtc_peers_.keys():

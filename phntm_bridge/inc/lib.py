@@ -67,7 +67,6 @@ class WRTCPeer:
 
     # self.wrtc_peer_video_tracks:dict[str,dict[str,RTCRtpSender]] = dict() # id_peer => [ topic => peer read webrtc video track ]
     # self.video_track_tmp:ROSVideoStreamTrack = None
-
     def __init__(self, id_peer:str, node:BridgeController):
         self.id = id_peer
         self.node = node
@@ -115,13 +114,16 @@ class WRTCPeer:
             self.logger.info(f'WebRTC iceconnectionstatechange (peer={id_peer}) state is %s' % self.pc.iceConnectionState)
 
 
-def get_peer_id(data:dict) -> str:
-    id_peer:str = None
-    if 'id_app' in data:
-        id_peer = data['id_app']
-    if 'id_instance' in data:
-        id_peer = data['id_instance']
-    return id_peer
+    def GetId(data:dict) -> str:
+        id_peer:str = None
+        if 'id_app' in data:
+            id_peer = data['id_app']
+        if 'id_instance' in data:
+            id_peer = data['id_instance']
+        return id_peer
+
+
+
 
 # def key_in_tuple_list(key:str, search_list:list[tuple]):
 #     for item in search_list:
