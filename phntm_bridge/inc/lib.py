@@ -1,7 +1,11 @@
 from rclpy.node import Node, Parameter, Subscription, QoSProfile, Publisher
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCDataChannel, RTCConfiguration, RTCIceServer
 from rclpy.impl.rcutils_logger import RcutilsLogger
-from ..bridge import BridgeController
+from rosidl_runtime_py.utilities import get_message, get_interface
+from rclpy.callback_groups import CallbackGroup
+from rclpy.qos import QoSHistoryPolicy, QoSReliabilityPolicy, DurabilityPolicy
+
+import time
 
 class TopicReadSubscription:
     sub:Subscription
@@ -39,38 +43,112 @@ class TopicReadSubscription:
         # self.processed_frames_v8 = processed_frames_v8
 
 
+# one publisher for all peers
+# this can indeed lead for compeition
 class TopicWritePublisher:
 
-    pub:Publisher
-    num_written:int # num written msgs
-    last_msg:any # last msg
-    last_received_time:float # last msg received time(s)
-    peers:list[str] #publishing peers
-    last_time_logged:float #last time logged (s)
+    def __init__(self, node:Node, cbg:CallbackGroup, log_message_every_sec:float):
+        self.pub:Publisher = None
+        self.node:Node = node
+        self.callback_group:CallbackGroup=cbg
 
-    def __init__(self, pub:Publisher, peers:list[str]):
-        self.pub = pub
-        self.num_written = 0
-        self.last_msg = -1.0
-        self.last_received_time = -1.0
-        self.peers = peers
-        self.last_time_logged = -1.0
+        self.num_written:int = 0
+        self.last_msg:any = None
+        self.last_received_time:float = -1.0
+        self.peers:list[str] = []
+        self.last_time_logged:float = -1.0
+        self.log_message_every_sec:float = log_message_every_sec
+
+        self.topic:str = None
+        self.protocol:str = None
+
+    def start(self, id_peer:str, topic:str, protocol:str) -> bool:
+
+        if self.topic != None and self.topic != topic:
+            return False
+
+        if self.protocol != None and self.protocol != protocol:
+            return False
+
+        if self.pub != None:
+            if not id_peer in self.peers:
+                self.peers.append(id_peer)
+            return True #all done
+
+        self.topic = topic
+        self.protocol = protocol
+
+        message_class = None
+        try:
+            message_class = get_message(self.protocol)
+        except:
+            pass
+
+        if message_class == None:
+            self.node.get_logger().error(f'NOT creating publisher for topic {self.topic}, msg class {self.protocol} not loaded')
+            return False
+
+        # reliable from here
+        qos = QoSProfile(history=QoSHistoryPolicy.KEEP_LAST, \
+                         depth=1, \
+                         reliability=QoSReliabilityPolicy.BEST_EFFORT \
+                         )
+
+        self.pub = self.node.create_publisher(message_class, self.topic, qos, callback_group=self.callback_group)
+        if self.pub == None:
+            self.get_logger().error(f'Failed creating publisher for topic {topic}, protocol={protocol}, peer={id_peer}')
+            return False
+
+        if not id_peer in self.peers:
+            self.peers.append(id_peer)
+
+        return True
+
+    def publish(self, id_peer:str, msg:any):
+
+        self.num_written += 1
+        self.last_msg = msg
+        self.last_received_time = time.time()
+
+        if time.time()-self.last_time_logged > self.log_message_every_sec:
+            self.last_time_logged = time.time() #logged now
+            if type(msg) is bytes:
+                self.node.get_logger().info(f'▼ {self.topic}/W got message: {len(msg)}B from id_peer={id_peer}, total rcvd: {self.num_written}')
+            else:
+                self.node.get_logger().info(f'▼ {self.topic}/W got message: {len(msg)}, from id_peer={id_peer}, total rcvd: {self.num_written}')
+
+        self.pub.publish(msg);
+
+    def stop(self, id_peer:str) -> bool:
+        if id_peer in self.peers:
+            self.peers.remove(id_peer)
+
+        if self.peers.count == 0:
+            self.node.get_logger().info(f'Destroying local publisher for {self.topic}')
+
+            self.pub.destroy()
+            self.pub = None
+            self.topic = None
+
+            return True #destroyed
+        else:
+            return False
 
 
 class WRTCPeer:
-    id: str
-    pc: RTCPeerConnection
-    node:BridgeController
-    logger:RcutilsLogger
+
     # self.wrtc_peer_read_channels:dict[str,dict[str,RTCDataChannel]] = dict() # id_peer => [ topic => peer read webrtc channel ]
     # self.wrtc_peer_write_channels:dict[str,dict[str,RTCDataChannel]] = dict() # id_peer => [ topic => peer writen webrtc channel ]
 
     # self.wrtc_peer_video_tracks:dict[str,dict[str,RTCRtpSender]] = dict() # id_peer => [ topic => peer read webrtc video track ]
     # self.video_track_tmp:ROSVideoStreamTrack = None
-    def __init__(self, id_peer:str, node:BridgeController):
-        self.id = id_peer
-        self.node = node
-        self.logger = node.get_logger()
+    def __init__(self, id_peer:str, node:Node):
+        self.id:str = id_peer
+        self.node:Node = node
+        self.logger:RcutilsLogger = node.get_logger()
+        self.ros_publishers:list[str] = []
+        self.inbound_data_channels:dict[str:RTCDataChannel] = {}
+
         config = RTCConfiguration(
             iceServers=[
                 RTCIceServer( #TODO move this to server generated config
@@ -87,7 +165,7 @@ class WRTCPeer:
                 ),
             ]
         )
-        self.pc = RTCPeerConnection(config)
+        self.pc:RTCPeerConnection = RTCPeerConnection(config)
 
         self.logger.info(f'Initial IceConnectionState: {self.pc.iceConnectionState} IceGatheringState: {self.pc.iceGatheringState}')
 
@@ -95,23 +173,8 @@ class WRTCPeer:
             self.logger.error(f'Peer WebRTC Connection is closed for {id_peer}')
             return
 
-        @self.pc.on("connectionstatechange")
-        async def on_connectionstatechange():
-            self.logger.warn(f"WebRTC Connection (peer={id_peer}) state is %s" % self.pc.connectionState)
-            if self.pc.connectionState == "failed":
-               self.node.remove_peer()
-
-        @self.pc.on("icegatheringstatechange")
-        async def on_icegatheringstatechange():
-            self.logger.info(f'WebRTC icegatheringstatechange (peer={id_peer}) state is %s' % self.pc.iceGatheringState)
-
-        @self.pc.on("signalingstatechange")
-        async def on_signalingstatechange():
-            self.logger.info('signalingstatechange %s' % self.pc.signalingState)
-
-        @self.pc.on("iceconnectionstatechange")
-        async def on_iceconnectionstatechange():
-            self.logger.info(f'WebRTC iceconnectionstatechange (peer={id_peer}) state is %s' % self.pc.iceConnectionState)
+    def make_inbout_dc(self):
+        pass
 
 
     def GetId(data:dict) -> str:
@@ -141,3 +204,4 @@ class WRTCPeer:
 #         if test == '.*' or test == key[0:len(test)]:
 #             return True
 #     return False
+

@@ -8,7 +8,6 @@ from rclpy.context import Context
 from rclpy.timer import Timer
 
 from .inc.status_led import StatusLED
-from .inc.lib import TopicReadSubscription, TopicWritePublisher, WRTCPeer
 
 from rcl_interfaces.msg import ParameterDescriptor
 import signal
@@ -62,31 +61,24 @@ from aiortc.rtcrtpsender import RTCRtpSender
 import os
 import platform
 
+from .inc.lib import TopicReadSubscription, TopicWritePublisher, WRTCPeer
+from .inc.discovery import Discovery
+
 ROOT = os.path.dirname(__file__)
 
 class BridgeController(Node):
 
-    topic_read_subscriptions_:dict[str: TopicReadSubscription]
-    topic_write_publishers_:dict[str: TopicWritePublisher]
-    camera_subscriptions_:dict[str: CameraSubscription]
-    service_clients_:dict[str: any]
     callback_group: CallbackGroup
     wrtc_peers_:dict[str: WRTCPeer]
-    discovery_timer_:Timer
-
-    discovered_topics_:dict[str: dict['msg_types':list[str]]]
-    discovered_services_:dict[str: dict['msg_types':list[str]]]
-    discovered_cameras_:dict[str: any]
+    discovery:Discovery
+    paused:bool
 
     def __init__(self, context:Context, cbg:CallbackGroup):
         super().__init__('phntm_bridge', context=context)
 
         self.get_logger().set_level(rclpy.logging.LoggingSeverity.DEBUG)
 
-        self.is_sio_connected_ = False
         self.shutting_down_ = False
-
-        self.event_loop = asyncio.get_event_loop()
 
         self.callback_group = cbg
 
@@ -124,6 +116,9 @@ class BridgeController(Node):
             self.declare_parameter(f'{topic_override}.raw', True)
             self.declare_parameter(f'{topic_override}.reliability', 0)
 
+        self.declare_parameter('log_sdp', False)
+        self.log_sdp = self.get_parameter('log_sdp').get_parameter_value().bool_value
+
         print('Loaded config topic_overrides', self.topic_overrides)
 
         self.sio_address = self.get_parameter('sio_address').get_parameter_value().string_value
@@ -160,163 +155,51 @@ class BridgeController(Node):
         self.declare_parameter('param_whitelist', [ '.*' ])
         self.declare_parameter('param_blacklist', [ '' ])
 
-        self.discovered_topics_ =  {}
-        self.discovered_services_= {}
-        self.discovered_cameras_ = {}
-
-        self.topic_read_subscriptions_ = {}
-        self.topic_write_publishers_ = {}
-        self.camera_subscriptions_ = {}
-        self.service_clients_ = {} # service name => client
+        self.topic_read_subscriptions_:dict[str: TopicReadSubscription] = {}
+        self.topic_write_publishers_:dict[str: TopicWritePublisher] = {}
+        self.camera_subscriptions_:dict[str: CameraSubscription] = {}
+        self.service_clients_:dict[str: any] = {} # service name => client
 
         self.wrtc_nextChannelId = 1
         self.wrtc_peers_ = {}
+
+        self.paused = False
 
         self.spin_thread: threading.Thread = None
         self.spin_task: asyncio.Future[any] = None
         self.sio_wait_task: asyncio.Future[any] = None
         self.sio_reconnect_wait_task: asyncio.Future[any] = None
 
-        self.get_logger().info(f'Phntm Bridge started, idRobot={self.id_robot}')
+        self.create_sio_client()
+
+        self.discovery = Discovery(self.get_parameter('discovery_period_sec').get_parameter_value().double_value, self, cbg, picam2, self.sio)
+
+        self.get_logger().info(f'Phntm Bridge started, idRobot={c(self.id_robot, "cyan")}')
 
 
-    def start_discovery(self):
-        self.get_logger().info("Discovering every {discovery_period}s ...")
-        # first run now tho
-        asyncio.get_event_loop().create_task(self.run_discovery())
-        discovery_period = self.get_parameter('discovery_period_sec').get_parameter_value().double_value
-        self.discovery_timer_ = self.create_timer(discovery_period, self.run_discovery, self.callback_group)
+    # make socket.io instance
+    def create_sio_client(self):
 
+        self.sio = socketio.AsyncClient(handle_sigint=False,
+                                        logger=True,
+                                        ssl_verify=self.sio_ssl_verify
+                                        )
 
-    # spinned by timer
-    async def run_discovery(self):
-
-        #topics
-        topics_changed = False
-        new_topics = self.get_topic_names_and_types()
-
-        for topic_info in new_topics:
-            topic = topic_info[0]
-            # TODO: blacklist topics
-            if not topic in self.discovered_topics_:
-                self.get_logger().debug(f'Discovered topic {topic}')
-                self.discovered_topics_[topic] = { 'msg_types': topic_info[1] }
-                topics_changed = True
-        if topics_changed:
-            self.event_loop.create_task(self.report_topics())
-
-        #services
-        services_changed = False
-        new_services = self.get_service_names_and_types()
-
-        for service_info in new_services:
-            service = service_info[0]
-            # TODO: blacklist services
-            if not service in self.discovered_services_:
-                self.discovered_services_[service] = { 'msg_types': service_info[1] }
-                services_changed = True
-                self.get_logger().debug(f'Discovered service {service}')
-        if services_changed:
-            self.event_loop.create_task(self.report_services())
-
-        #cameras
-        cameras_changed = False
-        new_cameras = []
-        if picam2 is not None:
-            new_cameras = get_camera_info(picam2)
-            for cam_info in new_cameras:
-                cam = cam_info.Id
-                # TODO: blacklist cameras
-                if not cam in self.discovered_cameras_:
-                    self.discovered_cameras_[cam] = cam_info
-                    cameras_changed = True
-                    self.get_logger().debug(f'Discovered cameea {cam} {cam_info.Model}')
-        if cameras_changed:
-            self.event_loop.create_task(self.report_cameras())
-
-
-    async def report_topics(self):
-        if not self.is_sio_connected_:
-            return
-
-        data = []
-        for topic in self.discovered_topics_.keys():
-            topic_data = [
-                topic,
-                topic in self.topic_read_subscriptions_.keys(), # subsribed here
-                # msg types follow
-            ]
-            for msg_type in self.discovered_topics_[topic]['msg_types']:
-                topic_data.append(msg_type)
-            data.append(topic_data)
-
-        await self.sio.emit(
-            event='topics',
-            data=data,
-            callback=None
-            )
-
-
-    async def report_services(self):
-        if not self.is_sio_connected_:
-            return
-
-        data = []
-        for service in self.discovered_services_.keys():
-            service_data = [
-                service #,
-                # service in self.topic_read_subscriptions_.keys(), # subsribed here
-                # msg types follow
-            ]
-            for msg_type in self.discovered_services_[service]['msg_types']:
-                service_data.append(msg_type)
-            data.append(service_data)
-
-        await self.sio.emit(
-            event='services',
-            data=data,
-            callback=None
-            )
-
-
-    async def report_cameras(self):
-        if not self.is_sio_connected_:
-            return
-
-        data = []
-        for cam in self.discovered_cameras_.keys():
-            data.append(self.discovered_cameras_[cam])
-
-        await self.sio.emit(
-            event='cameras',
-            data=data,
-            callback=None
-            )
-
-
-    # socket.io
-    async def start_sio_client(self, addr:str, port:int, path:str):
-
-        sio = socketio.AsyncClient(handle_sigint=False,
-                                   logger=True,
-                                   ssl_verify=self.sio_ssl_verify
-                                   )
-
-        @sio.on('connect')
+        @self.sio.on('connect')
         async def on_connect():
-            self.get_logger().warn('Socket.io connection established, auth successful')
+            self.get_logger().info('Socket.io connection established, auth successful')
 
-            self.is_sio_connected_ = True
+            self.sio.connected = True #socket.io sets this after callback, makes report calls work immediately
 
             if self.conn_led != None:
                 self.conn_led.on()
 
             # TODO: maybe report to clients without server caching?
-            await asyncio.get_event_loop().create_task(self.report_cameras())
-            await asyncio.get_event_loop().create_task(self.report_topics())
-            await asyncio.get_event_loop().create_task(self.report_services())
+            await asyncio.get_event_loop().create_task(self.discovery.report_cameras())
+            await asyncio.get_event_loop().create_task(self.discovery.report_topics())
+            await asyncio.get_event_loop().create_task(self.discovery.report_services())
 
-        @sio.on('offer')
+        @self.sio.on('offer')
         async def on_offer(data):
             id_peer:str = WRTCPeer.GetId(data)
             if id_peer == None:
@@ -326,7 +209,7 @@ class BridgeController(Node):
         # subscribe and unsubscribe data channels
         # bcs the negotionation doesn't seem to be implemented well at the moment
         # it's be nice to do thisvia webrtc tho
-        @sio.on('subscription:read')
+        @self.sio.on('subscription:read')
         async def on_read_subscription(data:dict):
             id_peer = WRTCPeer.GetId(data)
             if id_peer == None:
@@ -336,7 +219,7 @@ class BridgeController(Node):
             return await self.on_subscription_read(id_peer, data)
 
         # WRITE SUBS
-        @sio.on('subscription:write')
+        @self.sio.on('subscription:write')
         async def on_write_subscription(data:dict):
             id_peer = WRTCPeer.GetId(data)
             if id_peer == None:
@@ -346,7 +229,7 @@ class BridgeController(Node):
             return await self.on_subscription_write(id_peer, data)
 
         # SERVICE CALLS
-        @sio.on('service')
+        @self.sio.on('service')
         async def on_peer_service_call(data:dict):
             id_peer = WRTCPeer.GetId(data)
             if id_peer == None:
@@ -356,7 +239,7 @@ class BridgeController(Node):
             return await self.on_service_call(id_peer, data)
 
         # subscribe and unsubscribe camera streams
-        @sio.on('cameras:read')
+        @self.sio.on('cameras:read')
         async def on_cameras_subscription(data:dict):
             id_peer = WRTCPeer.GetId(data)
             if id_peer == None:
@@ -367,40 +250,39 @@ class BridgeController(Node):
                 return { 'err': 2, 'msg': 'No cameras specified' }
             return await self.on_camera_subscription(id_peer, data)
 
-        @sio.event
+        @self.sio.event
         async def connect_error(data):
             self.get_logger().error('Socket.io connection failed: ' + str(data))
 
-        @sio.on('peer:disconnected')
+        @self.sio.on('peer:disconnected')
         async def on_peer_disconnected(data:dict):
             id_peer = WRTCPeer.GetId(data)
             if id_peer == None:
                 return { 'err': 2, 'msg': 'No valid peer id provided' }
             if not id_peer in self.wrtc_peers_.keys():
                 return { 'err': 2, 'msg': 'Peer not connected' }
-            self.get_logger().debug(f'Peer {id_peer} disconnected from SIO (ignoring)')
+            self.get_logger().debug(f'Peer {id_peer} disconnected from Socket.io server (ignoring)')
 
-        @sio.on('message')
+        @self.sio.on('message')
         async def on_message(data):
             self.get_logger().info('Socket.io message received with ' + str(data))
             self.sio.send({'response': 'my response'})
 
-        @sio.on('*')
+        @self.sio.on('*')
         async def catch_all(event, data):
             self.get_logger().warn('Socket.io event ' + str(event) + ' data: ' + str(data))
 
-        @sio.on('disconnect')
+        @self.sio.on('disconnect')
         async def on_disconnect():
             self.get_logger().warn('Socket.io disconnected from server')
             if self.conn_led != None:
-                self.is_sio_connected_ = False
                 if not self.shutting_down_:
                     self.conn_led.set_fast_pulse()
                 else:
                     self.conn_led.off()
 
-        self.sio = sio
-
+    # spin socket.io
+    async def spin_sio_client(self, addr:str, port:int, path:str):
         while not self.shutting_down_:
             try:
                 self.get_logger().info(f'Socket.io connecting to {addr}{path}:{port}')
@@ -434,16 +316,34 @@ class BridgeController(Node):
 
         offer = RTCSessionDescription(sdp=offerData["sdp"], type=offerData["type"])
 
-        self.get_logger().debug('Got offer from '+id_peer+' SDP:')
-        print(c(str(offer.sdp), 'dark_grey'))
+        self.get_logger().debug(c('Got SDP offer from '+id_peer, 'cyan'))
+        if self.log_sdp:
+            print(c(str(offer.sdp), 'dark_grey'))
 
         if id_peer in self.wrtc_peers_.keys():
             self.get_logger().debug(f'Peer {id_peer} was already connected, removing...')
-            self.remove_peer(id_peer)
+            await self.remove_peer(id_peer, wait=False)
 
         # pc.addTransceiver('video', direction='sendonly') #must have at least one
         peer = WRTCPeer(id_peer, self)
         self.wrtc_peers_[id_peer] = peer
+        @peer.pc.on("connectionstatechange")
+        async def on_connectionstatechange():
+            self.get_logger().warn(f"WebRTC Connection (peer={id_peer}) state is %s" % peer.pc.connectionState)
+            if peer.pc.connectionState == "failed":
+               await self.remove_peer(peer.id, wait=True)
+
+        @peer.pc.on("icegatheringstatechange")
+        async def on_icegatheringstatechange():
+            self.get_logger().info(f'WebRTC icegatheringstatechange (peer={id_peer}) state is %s' % peer.pc.iceGatheringState)
+
+        @peer.pc.on("signalingstatechange")
+        async def on_signalingstatechange():
+            self.get_logger().info('signalingstatechange %s' % peer.pc.signalingState)
+
+        @peer.pc.on("iceconnectionstatechange")
+        async def on_iceconnectionstatechange():
+            self.get_logger().info(f'WebRTC iceconnectionstatechange (peer={id_peer}) state is %s' % peer.pc.iceConnectionState)
 
         await peer.pc.setRemoteDescription(offer)
 
@@ -457,20 +357,106 @@ class BridgeController(Node):
 
         await ice_checker()
 
-        self.get_logger().debug('Generated answer, SDP:')
-        print(c(str(peer.pc.localDescription.sdp), 'cyan'))
+        self.get_logger().debug(c('Generated answer', 'cyan'))
+        if self.log_sdp:
+            print(c(str(peer.pc.localDescription.sdp), 'dark_grey'))
 
         return { 'sdp': peer.pc.localDescription.sdp, 'type':peer.pc.localDescription.type }
 
 
-    async def remove_peer(self, id_peer:str):
+    # not tested nor called anywhere
+    async def remove_peer(self, id_peer:str, wait:bool=True):
         if not id_peer in self.wrtc_peers_.keys():
             return
 
-        self.get_logger().error(f'Removing peer {id_peer}')
-        await self.wrtc_peers_[id_peer].pc.close()
-        self.wrtc_peers_.pop(id_peer)
+        if wait:
+            self.get_logger().info(f'Peer {id_peer} seems to be disconnected (waiting 10s...)')
 
+            self.paused = True
+            await asyncio.sleep(10.0) #wait a bit for reconnects
+
+            if not id_peer in self.wrtc_peers_.keys():
+                return
+
+            if self.wrtc_peers_[id_peer].pc.connectionState in []:
+                self.get_logger().info(f'Peer {id_peer} recovered, we good')
+                return
+
+        self.get_logger().error(f'Peer {id_peer} disconnected, cleaning up')
+
+        # data["topics"] = [];
+        for topic in self.topic_read_subscriptions_.keys():
+            self.unsubscribe_topic(topic, id_peer)
+
+        for topic in self.topic_write_publishers_.keys():
+            if self.topic_write_publishers_[topic].stop(id_peer): #destroyed
+                self.topic_write_publishers_.pop(topic)
+
+        for cam in self.camera_subscriptions_.keys():
+            self.stop_camera_subscription(cam, id_peer)
+
+        if id_peer in self.wrtc_peers_.keys():
+            try:
+                await self.wrtc_peers_[id_peer].pc.close() #pops itself from  wrtc_peer_pcs
+            except Exception as e:
+                pass
+            self.wrtc_peers_.pop(id_peer)
+
+    # write subscription request
+    async def on_subscription_write(self, id_peer:str, data:dict) -> {}:
+        peer:WRTCPeer = self.wrtc_peers_[id_peer]
+
+        if not 'topics' in data:
+            return { 'err': 2, 'msg': 'No topics specified' }
+
+        if not peer:
+            return { 'err': 2, 'msg': 'Peer not connected' }
+
+        res_subscribed:list[tuple[str,int]] = list() # [ topic, id_ch ]
+        res_unsubscribed:list[tuple[str,int]] = list()
+
+        for topic_data in data['topics']: # : [ topic, subscribe, ...]
+            topic:str = topic_data[0]
+            subscribe:bool = int(topic_data[1]) > 0
+            protocol:str = topic_data[2]
+
+            if protocol == None:
+                return { 'err': 2, 'msg': f'Protocol not specified for {topic}' }
+
+            if subscribe:
+
+                if not topic in self.topic_write_publishers_:
+                    self.topic_write_publishers_[topic] = TopicWritePublisher(self, self.callback_group, self.log_message_every_sec)
+
+                if not self.topic_write_publishers_[topic].start(id_peer, topic, protocol):
+                    return { 'err': 2, 'msg': f'Topic {topic} failed to create publisher'}
+
+                if not topic in peer.inbound_data_channels.keys():
+                    self.wrtc_nextChannelId += 1
+                    dc:RTCDataChannel = peer.pc.createDataChannel(topic, id=self.wrtc_nextChannelId, protocol=protocol, negotiated=True, ordered=False, maxRetransmits=0) # negotiated doesn't work tho
+                    peer.inbound_data_channels[topic] = dc
+                    self.get_logger().info(f'Peer {id_peer} publishing into {topic} (protocol={protocol}, ch_id={dc.id})')
+
+                    @dc.on('message')
+                    async def on_inbount_channel_message(msg):
+                        self.topic_write_publishers_[topic].publish(id_peer, msg)
+
+                res_subscribed.append([topic, peer.inbound_data_channels[topic].id, protocol])
+
+            else: # unsubscribe
+
+                if topic in peer.inbound_data_channels.keys():
+                    self.get_logger().info(f'Peer {id_peer} no longer publishing into {topic}')
+                    id_closed_dc = peer.inbound_data_channels[topic].id
+                    peer.inbound_data_channels[topic].close()
+                    peer.inbound_data_channels.pop(topic)
+                    res_unsubscribed.append([ topic, id_closed_dc ])
+
+                if topic in self.topic_write_publishers_:
+                    if self.topic_write_publishers_[topic].stop(id_peer):
+                        self.topic_write_publishers_.pop(topic)
+
+        return { 'success': 1, 'subscribed': res_subscribed, 'unsubscribed': res_unsubscribed}
 
 
 
@@ -575,29 +561,7 @@ class BridgeController(Node):
             else:
                 await asyncio.sleep(1) #wait until dc opens
 
-    async def peer_disconnected(self, id_peer:str):
 
-        self.get_logger().info(f'Peer {id_peer} seems to be disconnected (waiting 10s...)')
-
-        self.paused = True
-        await asyncio.sleep(10.0) #wait a bit for reconnects
-
-        self.get_logger().errro(f'Peer {id_peer} disconnected, cleaning up')
-
-        # data["topics"] = [];
-        for topic in self.topic_read_subscriptions_.keys():
-            self.unsubscribe_topic(topic, id_peer)
-
-        if id_peer in self.wrtc_peer_video_tracks:
-
-            self.wrtc_peer_video_tracks.pop(id_peer)
-
-        if id_peer in self.wrtc_peer_pcs:
-            try:
-                await self.wrtc_peer_pcs[id_peer].close() #pops itself from  wrtc_peer_pcs
-            except Exception as e:
-                pass
-            self.wrtc_peer_pcs.pop(id_peer)
 
 
 
@@ -802,74 +766,19 @@ class BridgeController(Node):
             self.topic_read_subscriptions_[topic].last_log = time.time() #last logged now
 
         if not is_image:
-            self.event_loop.create_task(self.report_data(topic, msg, log=log_msg, total_sent=self.topic_read_subscriptions_[topic].num_received))
+            asyncio.get_event_loop().create_task(self.report_data(topic, msg, log=log_msg, total_sent=self.topic_read_subscriptions_[topic].num_received))
         else:
             self.get_logger().error(f'NOT reporting frames for topic {topic} in main proc!')
 
         #     self.report_frame(topic, msg, total_sent=self.topic_read_subscriptions_[topic].num_received)
             # self.event_loop.create_task(self.report_frame(topic, msg, total_sent=self.topic_read_subscriptions_[topic].num_received))
 
-    def start_topic_publisher(self, topic:str, id_peer:str, protocol:str) -> bool:
 
-        message_class = None
-        try:
-            message_class = get_message(protocol)
-        except:
-            pass
-
-        if message_class == None:
-            self.get_logger().error(f'NOT creating publisher for topic {topic}, msg class {protocol} not loaded')
-            return False
-
-        # reliable from here
-        qos = QoSProfile(history=QoSHistoryPolicy.KEEP_LAST, \
-                         depth=1, \
-                         reliability=QoSReliabilityPolicy.BEST_EFFORT \
-                         )
-
-        pub = self.create_publisher(message_class, topic, qos, callback_group=self.callback_group)
-        if pub == None:
-            self.get_logger().error(f'Failed creating publisher for topic {topic}, msg class={protocol}')
-            return False
-
-        self.topic_publishers_[topic] = [
-            pub,
-            0, # num sent msgs
-            None, # last msg
-            -1.0, # last timestamp
-            [ id_peer ], # publisher peers
-            -1.0 # last logged never
-        ]
-
-        return True
-
-    def stop_topic_publisher(self, topic:str, id_peer:str):
+    def stop_camera_subscription(self, topic:str, id_peer:str):
+        xx
         pass
 
 
-    async def shutdown_cleanup(self):
-        self.get_logger().warn('SHUTTING DOWN')
-        self.shutting_down_ = True
-
-        # close peer connections
-        coros = [pc.close() for pc in self.wrtc_peer_pcs.values()]
-        await asyncio.gather(*coros)
-        self.wrtc_peer_pcs.clear()
-
-        await self.sio.disconnect()
-        self.spin_task.cancel()
-
-        if self.sio_wait_task != None:
-            self.sio_wait_task.cancel()
-            await self.sio_wait_task
-
-        if self.sio_reconnect_wait_task != None:
-            await self.sio_reconnect_wait_task
-
-        if self.conn_led != None:
-            self.conn_led.clear()
-        if self.data_led != None:
-            self.data_led.clear()
 
 
     def create_local_webrtc_track(self, topic:str):
@@ -1039,69 +948,7 @@ class BridgeController(Node):
         self.get_logger().info(f'Reply: {str(reply_data)}')
         return reply_data
 
-    async def on_subscription_write(self, id_peer:str, data:dict):
-        pc = self.wrtc_peer_pcs[id_peer]
 
-        if not 'topics' in data:
-            return { 'err': 2, 'msg': 'No topics specified' }
-
-        res_subscribed:list[tuple[str,int]] = list() # [ topic, id_ch ]
-        res_unsubscribed:list[tuple[str,int]] = list()
-
-        for topic_data in data['topics']: # : [ topic, subscribe, ...]
-            topic:str = topic_data[0]
-            subscribe:bool = int(topic_data[1]) > 0
-            protocol:str = topic_data[2]
-
-            if protocol == None:
-                return { 'err': 2, 'msg': f'Protocol not specified for {topic}' }
-
-            if subscribe:
-                # if not topic in self.discovered_topics_.keys():
-                #    return { 'err': 2, 'msg': f'Topic {topic} not discovered yet'}
-
-                if not id_peer in self.wrtc_peer_write_channels:
-                    self.wrtc_peer_write_channels[id_peer] = dict()
-
-                if not topic in self.wrtc_peer_write_channels[id_peer]:
-
-                    self.wrtc_nextChannelId += 1
-                    self.get_logger().info(f'Peer {id_peer} subscribing to {topic}/W (protocol={protocol}, ch_id={self.wrtc_nextChannelId})')
-                    dc = pc.createDataChannel(topic, id=self.wrtc_nextChannelId, protocol=protocol, negotiated=True, ordered=False, maxRetransmits=0) # negotiated doesn't work tho
-
-                    self.wrtc_peer_write_channels[id_peer][topic] = dc
-                    res_subscribed.append([topic, self.wrtc_nextChannelId, protocol])
-
-                    if not self.start_topic_publisher(topic, id_peer, protocol):
-                        return { 'err': 2, 'msg': f'Topic {topic} failed to create publisher'}
-
-                    @dc.on('message')
-                    async def on_channel_message(msg):
-
-                        self.topic_publishers_[topic][1] += 1
-                        self.topic_publishers_[topic][2] = msg
-                        self.topic_publishers_[topic][3] = time.time()
-
-                        if time.time()-self.topic_publishers_[topic][5] > self.log_message_every_sec:
-                            self.topic_publishers_[topic][5] = time.time() #logged now
-                            if type(msg) is bytes:
-                                self.get_logger().info(f'▼ {topic}/W got message: {len(msg)}B from id_peer={id_peer}, total rcvd: {self.topic_publishers_[topic][1]}')
-                            else:
-                                self.get_logger().info(f'▼ {topic}/W got message: {len(msg)}, from id_peer={id_peer}, total rcvd: {self.topic_publishers_[topic][1]}')
-
-                        self.topic_publishers_[topic][0].publish(msg);
-
-            else: # unsubscribe
-                if id_peer in self.wrtc_peer_write_channels and topic in self.wrtc_peer_write_channels[id_peer]:
-                    self.get_logger().info(f'Peer {id_peer} unsubscribed from {topic}/W')
-                    id_closed_dc = self.wrtc_peer_write_channels[id_peer][topic].id
-                    self.wrtc_peer_write_channels[id_peer][topic].close()
-                    self.wrtc_peer_write_channels[id_peer].pop(topic)
-                    res_unsubscribed.append([ topic, id_closed_dc ])
-
-                self.stop_topic_publisher(topic, id_peer)
-
-        return { 'success': 1, 'subscribed': res_subscribed, 'unsubscribed': res_unsubscribed}
 
     async def on_service_call(self, id_peer:str, data:dict):
         service = data['service']
@@ -1319,6 +1166,32 @@ class BridgeController(Node):
     #     await self.wrtc_peer_pcs[id_peer].setRemoteDescription(answer)
     #     return { 'success': 1 }
 
+    async def shutdown_cleanup(self):
+        self.get_logger().warn('SHUTTING DOWN')
+        self.shutting_down_ = True
+
+        # close peer connections
+        coros = [peer.pc.close() for peer in self.wrtc_peers_.values()]
+        await asyncio.gather(*coros)
+        self.wrtc_peers_.clear()
+
+        await self.sio.disconnect()
+        self.spin_task.cancel()
+
+        if self.sio_wait_task != None:
+            self.sio_wait_task.cancel()
+            await self.sio_wait_task
+
+        if self.sio_reconnect_wait_task != None:
+            await self.sio_reconnect_wait_task
+
+        if self.conn_led != None or self.data_led != None:
+            if self.conn_led != None:
+                self.conn_led.clear()
+            if self.data_led != None:
+                self.data_led.clear()
+            #TODO actually I should spin ros node some more here
+            await asyncio.sleep(1) # wait a bit
 
 async def spin_async(node: BridgeController, executor:rclpy.executors.Executor, ctx:rclpy.context.Context, cbg:rclpy.callback_groups.CallbackGroup):
 
@@ -1335,8 +1208,8 @@ async def spin_async(node: BridgeController, executor:rclpy.executors.Executor, 
         if not future.cancelled():
             event_loop.call_soon_threadsafe(future.set_result, None)
 
-    node.spin_task = node.event_loop.create_future()
-    node.spin_thread = threading.Thread(target=_spin, args=(node, node.spin_task, node.event_loop))
+    node.spin_task = asyncio.get_event_loop().create_future()
+    node.spin_thread = threading.Thread(target=_spin, args=(node, node.spin_task, asyncio.get_event_loop()))
     node.spin_thread.start()
     try:
         await node.spin_task
@@ -1353,16 +1226,16 @@ async def main_async(bridge_node:BridgeController, executor:rclpy.executors.Exec
 
     # create tasks for spinning and sleeping
     spin_task = asyncio.get_event_loop().create_task(spin_async(bridge_node, executor, ctx, cbg))
-    connect_task = asyncio.get_event_loop().create_task(bridge_node.start_sio_client(addr=bridge_node.sio_address, port=bridge_node.sio_port, path=bridge_node.sio_path))
+    sio_task = asyncio.get_event_loop().create_task(bridge_node.spin_sio_client(addr=bridge_node.sio_address, port=bridge_node.sio_port, path=bridge_node.sio_path))
 
     # concurrently execute both tasks
-    await asyncio.wait([spin_task, connect_task], return_when=asyncio.ALL_COMPLETED)
+    await asyncio.wait([spin_task, sio_task], return_when=asyncio.ALL_COMPLETED)
 
     # cancel tasks
     if spin_task.cancel():
         await spin_task
-    if connect_task.cancel():
-        await connect_task
+    if sio_task.cancel():
+        await sio_task
 
 def main(args=None):
 
@@ -1384,7 +1257,7 @@ def main(args=None):
     cbg.add_entity(ctx)
     cbg.add_entity(executor)
 
-    bridge_node.start_discovery()
+    bridge_node.discovery.start()
 
     try:
         asyncio.get_event_loop().run_until_complete(main_async(bridge_node, executor, ctx, cbg))
