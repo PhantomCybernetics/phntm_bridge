@@ -261,16 +261,16 @@ class BridgeController(Node):
                 return { 'err': 2, 'msg': 'No valid peer id provided' }
             if not id_peer in self.wrtc_peers_.keys():
                 return { 'err': 2, 'msg': 'Peer not connected' }
-            self.get_logger().debug(f'Peer {id_peer} disconnected from Socket.io server (ignoring)')
+            self.get_logger().warn(f'Peer {id_peer} disconnected from Socket.io server (fyi, ignoring)')
 
         @self.sio.on('message')
         async def on_message(data):
-            self.get_logger().info('Socket.io message received with ' + str(data))
-            self.sio.send({'response': 'my response'})
+            self.get_logger().warn('Unhandled: Socket.io message received with ' + str(data))
+            self.sio.send({'response': '?'})
 
         @self.sio.on('*')
         async def catch_all(event, data):
-            self.get_logger().warn('Socket.io event ' + str(event) + ' data: ' + str(data))
+            self.get_logger().warn('Unhandled: Socket.io event ' + str(event) + ' with ' + str(data))
 
         @self.sio.on('disconnect')
         async def on_disconnect():
@@ -329,21 +329,21 @@ class BridgeController(Node):
         self.wrtc_peers_[id_peer] = peer
         @peer.pc.on("connectionstatechange")
         async def on_connectionstatechange():
-            self.get_logger().warn(f"WebRTC Connection (peer={id_peer}) state is %s" % peer.pc.connectionState)
+            self.get_logger().warn(f"WebRTC (peer={id_peer}) Connection state: %s" % peer.pc.connectionState)
             if peer.pc.connectionState == "failed":
                await self.remove_peer(peer.id, wait=True)
 
         @peer.pc.on("icegatheringstatechange")
         async def on_icegatheringstatechange():
-            self.get_logger().info(f'WebRTC icegatheringstatechange (peer={id_peer}) state is %s' % peer.pc.iceGatheringState)
-
-        @peer.pc.on("signalingstatechange")
-        async def on_signalingstatechange():
-            self.get_logger().info('signalingstatechange %s' % peer.pc.signalingState)
+            self.get_logger().warn(f'WebRTC(peer={id_peer}) Ice Gathering State: %s' % peer.pc.iceGatheringState)
 
         @peer.pc.on("iceconnectionstatechange")
         async def on_iceconnectionstatechange():
-            self.get_logger().info(f'WebRTC iceconnectionstatechange (peer={id_peer}) state is %s' % peer.pc.iceConnectionState)
+            self.get_logger().warn(f'WebRTC (peer={id_peer}) Ice Connection State: %s' % peer.pc.iceConnectionState)
+
+        @peer.pc.on("signalingstatechange")
+        async def on_signalingstatechange():
+            self.get_logger().warn(f'WebRTC (peer={id_peer}) Signaling State: %s' % peer.pc.signalingState)
 
         await peer.pc.setRemoteDescription(offer)
 
@@ -353,7 +353,7 @@ class BridgeController(Node):
         async def ice_checker():
             while peer.pc.iceGatheringState != 'complete':
                 await asyncio.sleep(.1)
-            self.get_logger().info(f'Intial ICE gathering unlocked w state={peer.pc.iceGatheringState}')
+            self.get_logger().info(f'Intial Ice Gathering unlocked w State: {peer.pc.iceGatheringState}')
 
         await ice_checker()
 

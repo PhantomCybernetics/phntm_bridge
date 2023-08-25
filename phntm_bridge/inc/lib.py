@@ -113,9 +113,9 @@ class TopicWritePublisher:
         if time.time()-self.last_time_logged > self.log_message_every_sec:
             self.last_time_logged = time.time() #logged now
             if type(msg) is bytes:
-                self.node.get_logger().info(f'▼ {self.topic}/W got message: {len(msg)}B from id_peer={id_peer}, total rcvd: {self.num_written}')
+                self.node.get_logger().info(f'▼ {self.topic} got message: {len(msg)}B from id_peer={id_peer}, total rcvd: {self.num_written}')
             else:
-                self.node.get_logger().info(f'▼ {self.topic}/W got message: {len(msg)}, from id_peer={id_peer}, total rcvd: {self.num_written}')
+                self.node.get_logger().info(f'▼ {self.topic} got message: {len(msg)}, from id_peer={id_peer}, total rcvd: {self.num_written}')
 
         self.pub.publish(msg);
 
@@ -170,7 +170,7 @@ class WRTCPeer:
         self.logger.info(f'Initial IceConnectionState: {self.pc.iceConnectionState} IceGatheringState: {self.pc.iceGatheringState}')
 
         if self.pc.connectionState in ['closed', 'failed']:
-            self.logger.error(f'Peer WebRTC Connection is closed for {id_peer}')
+            self.logger.error(f'Peer WebRTC connection is closed or failed for {id_peer}')
             return
 
     def make_inbout_dc(self):

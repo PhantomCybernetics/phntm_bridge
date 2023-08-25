@@ -41,9 +41,12 @@ class Discovery:
         self.sio = sio
 
     def start(self):
-        self.logger.info(f"Discovering every {self.period}s ...")
         asyncio.get_event_loop().create_task(self.run_discovery())  # first run now
-        self.timer_ = self.node.create_timer(self.period, self.run_discovery, self.callback_group) #then every n ses
+        if self.period > 0:
+            self.logger.info(f"Discovering every {self.period}s ...")
+            self.timer_ = self.node.create_timer(self.period, self.run_discovery, self.callback_group) #then every n ses
+        else:
+            self.logger.info(f"Auto discovery is off")
 
     def stop(self):
         # TODO
@@ -109,7 +112,7 @@ class Discovery:
                 topic_data.append(msg_type)
             data.append(topic_data)
 
-        self.logger.warn(f'Reporting {len(data)} topics')
+        self.logger.info(f'Reporting {len(data)} topics')
 
         await self.sio.emit(
             event='topics',
@@ -129,7 +132,7 @@ class Discovery:
                 service_data.append(msg_type)
             data.append(service_data)
 
-        self.logger.warn(f'Reporting {len(data)} services')
+        self.logger.info(f'Reporting {len(data)} services')
 
         await self.sio.emit(
             event='services',
@@ -146,7 +149,7 @@ class Discovery:
         for cam in self.discovered_cameras_.keys():
             data.append(self.discovered_cameras_[cam])
 
-        self.logger.warn(f'Reporting {len(data)} cameras')
+        self.logger.info(f'Reporting {len(data)} cameras')
 
         await self.sio.emit(
             event='cameras',
