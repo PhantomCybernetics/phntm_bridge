@@ -7,6 +7,7 @@ from rclpy.node import Node, Parameter, QoSProfile, Publisher
 from picamera2 import Picamera2
 from .camera import get_camera_info, picam2_has_camera
 import socketio
+from termcolor import colored as c
 
 class Discovery:
 
@@ -51,7 +52,7 @@ class Discovery:
     # spinned by timer
     async def run_discovery(self):
 
-        self.logger.info(f'Discovering things...')
+        self.logger.info(c(f'Discovering things...', 'dark_grey'))
 
         #topics
         topics_changed = False
@@ -99,7 +100,6 @@ class Discovery:
 
     async def report_topics(self):
         if not self.sio or not self.sio.connected:
-            self.logger.error(f'Not reporting topics, {self.sio} connected={self.sio.connected}')
             return
 
         data = []
@@ -109,7 +109,7 @@ class Discovery:
                 topic_data.append(msg_type)
             data.append(topic_data)
 
-        self.logger.warn(f'Reporting topics {str(data)}')
+        self.logger.warn(f'Reporting {len(data)} topics')
 
         await self.sio.emit(
             event='topics',
@@ -129,7 +129,7 @@ class Discovery:
                 service_data.append(msg_type)
             data.append(service_data)
 
-        # self.logger.warn(f'Reporting services {str(data)}')
+        self.logger.warn(f'Reporting {len(data)} services')
 
         await self.sio.emit(
             event='services',
@@ -146,7 +146,7 @@ class Discovery:
         for cam in self.discovered_cameras_.keys():
             data.append(self.discovered_cameras_[cam])
 
-        # self.logger.warn(f'Reporting cameras {str(data)}')
+        self.logger.warn(f'Reporting {len(data)} cameras')
 
         await self.sio.emit(
             event='cameras',
