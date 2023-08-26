@@ -8,49 +8,48 @@ from picamera2 import Picamera2
 from .camera import get_camera_info, picam2_has_camera
 import socketio
 from termcolor import colored as c
+import time
 
 class Discovery:
 
-    node:Node
-    callback_group: CallbackGroup
+    def __init__(self, period:float, stop_after:float, node:Node, cbg:CallbackGroup, picam2:Picamera2, sio:socketio.AsyncClient):
+        self.period:float = period
+        self.stop_after:float = stop_after
 
-    timer_:Timer
-    period:float
-    logger:RcutilsLogger
-    discovered_topics_:dict[str: dict['msg_types':list[str]]]
-    discovered_services_:dict[str: dict['msg_types':list[str]]]
-    discovered_cameras_:dict[str: any]
+        self.node:Node = node
+        self.logger:RcutilsLogger = node.get_logger()
 
-    picam2:Picamera2
-    sio:socketio.AsyncClient
+        self.callback_group:CallbackGroup = cbg
 
-    def __init__(self, period:float, node:Node, cbg:CallbackGroup, picam2:Picamera2, sio:socketio.AsyncClient):
-        self.period = period
+        self.picam2:Picamera2 = picam2
 
-        self.node = node
-        self.logger = node.get_logger()
+        self.discovered_topics_:dict[str: dict['msg_types':list[str]]] =  {}
+        self.discovered_services_:dict[str: dict['msg_types':list[str]]] = {}
+        self.discovered_cameras_:dict[str: any] = {}
 
-        self.callback_group = cbg
+        self.sio:socketio.AsyncClient = sio
+        self.timer_:Timer = None
 
-        self.picam2 = picam2
+    async def start(self):
+        await self.stop()
 
-        self.discovered_topics_ =  {}
-        self.discovered_services_= {}
-        self.discovered_cameras_ = {}
-
-        self.sio = sio
-
-    def start(self):
         asyncio.get_event_loop().create_task(self.run_discovery())  # first run now
+        self.started_time = time.time()
+
         if self.period > 0:
             self.logger.info(f"Discovering every {self.period}s ...")
             self.timer_ = self.node.create_timer(self.period, self.run_discovery, self.callback_group) #then every n ses
         else:
             self.logger.info(f"Auto discovery is off")
 
-    def stop(self):
-        # TODO
-        pass
+        await self.report_discovery()
+
+    async def stop(self):
+        if self.timer_ is not None:
+            self.logger.info(f'Discovery stopped after {self.stop_after}s')
+            self.timer_.destroy()
+            self.timer_ = None
+            await self.report_discovery()
 
     # spinned by timer
     async def run_discovery(self):
@@ -100,6 +99,8 @@ class Discovery:
         if cameras_changed:
             await self.report_cameras()
 
+        if self.stop_after > 0.0 and self.started_time+self.stop_after < time.time():
+            await self.stop()
 
     async def report_topics(self):
         if not self.sio or not self.sio.connected:
@@ -153,6 +154,20 @@ class Discovery:
 
         await self.sio.emit(
             event='cameras',
+            data=data,
+            callback=None
+            )
+
+    async def report_discovery(self):
+        if not self.sio or not self.sio.connected:
+            return
+
+        data = True if self.timer_ is not None else False
+
+        self.logger.info(f'Reporting discovery={data}')
+
+        await self.sio.emit(
+            event='discovery',
             data=data,
             callback=None
             )

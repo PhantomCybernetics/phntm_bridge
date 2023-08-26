@@ -27,6 +27,18 @@ services:
       # ros2 launch phntm_webrtc_bridge bridge_launch.py
       /bin/sh -c "while sleep 1000; do :; done"
 
+  rosbag_player:
+    image: phntm/bridge-dev:humble
+    container_name: rosbag-player
+    hostname: rosbag-player.local
+    restart: unless-stopped
+    volumes:
+      - ~/ros_bags:/ros_bags
+    command:
+      # ros2 launch phntm_webrtc_bridge bridge_launch.py
+      /bin/sh -c "while sleep 1000; do :; done"
+
+
   rviz:
     image: husarion/rviz2:humble
     network_mode: host

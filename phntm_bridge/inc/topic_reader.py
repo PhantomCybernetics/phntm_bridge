@@ -1,0 +1,147 @@
+import asyncio
+
+from aiortc import RTCPeerConnection, RTCSessionDescription, RTCDataChannel, RTCConfiguration, RTCIceServer
+
+from rclpy.node import Node, Parameter, Subscription, QoSProfile, Publisher
+from rclpy.duration import Duration, Infinite
+from rclpy.impl.rcutils_logger import RcutilsLogger
+from rosidl_runtime_py.utilities import get_message, get_interface
+from rclpy.callback_groups import CallbackGroup
+from rclpy.qos import QoSHistoryPolicy, QoSReliabilityPolicy, DurabilityPolicy
+
+from typing import Callable
+import time
+
+import threading
+
+class TopicReadSubscription:
+
+    # def __init__(self, sub:Subscription, peers:list[str], frame_processor, processed_frames_h264:mp.Queue, processed_frames_v8:mp.Queue, make_keyframe_shared:mp.Value, make_h264_shared:mp.Value, make_v8_shared:mp.Value):
+    def __init__(self, node:Node, topic:str, protocol:str, reliability:QoSReliabilityPolicy, durability:DurabilityPolicy, cbg:CallbackGroup, event_loop:object, log_message_every_sec:float):
+        self.sub:Subscription = None
+        self.node:Node = node
+        self.callback_group:CallbackGroup=cbg
+        self.peers:{str:RTCDataChannel} = {} #target outbound dcs
+        self.topic:str = topic
+        self.protocol:str = protocol
+
+        self.num_received:int = 0
+        self.last_msg:any = None
+        self.last_msg_time:float = -1.0
+        self.last_log:float = -1.0
+        self.log_message_every_sec:float = log_message_every_sec
+
+        self.reliability:QoSReliabilityPolicy = reliability
+        self.durability:DurabilityPolicy = durability
+
+        self.on_msg_cb:Callable = None
+        self.event_loop = event_loop
+
+        #print(f'TopicReadSubscription:__init__() {threading.get_ident()}')
+
+    def start(self, id_peer:str, dc:RTCDataChannel) -> bool:
+
+        if self.sub != None:
+            self.peers[id_peer] = dc
+            return True #all done, one sub for all
+
+        #print(f'TopicReadSubscription:start() {threading.get_ident()}')
+
+        message_class = None
+        try:
+            message_class = get_message(self.protocol)
+        except:
+            pass
+        if message_class == None:
+            self.node.get_logger().error(f'NOT subscribing to topic {self.topic}, msg class {self.protocol} not loaded')
+            return False
+
+        # reliable from here
+        qosProfile = QoSProfile(history=QoSHistoryPolicy.KEEP_LAST, \
+                                depth=1, \
+                                reliability=self.reliability, \
+                                durability=self.durability, \
+                                lifespan=Infinite \
+                                )
+        self.node.get_logger().warn(f'Subscribing to topic {self.topic} {self.protocol}')
+        self.sub = self.node.create_subscription(
+                msg_type=message_class,
+                topic=self.topic,
+                callback=self.on_msg,
+                qos_profile=qosProfile,
+                raw=True,
+                callback_group=self.callback_group
+            )
+        if self.sub == None:
+            self.node.get_logger().error(f'Failed subscribing to topic {self.topic}, msg class={self.protocol}, peer={id_peer}')
+            return False
+
+        self.peers[id_peer] = dc
+
+        return True
+
+    async def on_msg(self, msg:any):
+        self.num_received += 1
+        self.last_msg = msg
+        self.last_msg_time = time.time()
+
+        #print(f'TopicReadSubscription:on_msg() {threading.get_ident()}')
+
+        log_msg = False
+        if self.num_received == 1: # first data in
+            self.node.get_logger().debug(f'Receiving {type(msg).__name__} from {self.topic}')
+
+        if self.last_log < 0 or self.last_msg_time-self.last_log > self.log_message_every_sec:
+            log_msg = True
+            self.last_log = self.last_msg_time #last logged now
+
+        for id_peer in self.peers.keys():
+            dc = self.peers[id_peer]
+            if dc.readyState == 'open':
+                if log_msg:
+                    self.node.get_logger().debug(f'△ Sending {len(msg)}B into {self.topic} for id_peer={id_peer}, total received: {self.num_received}')
+                # print(f' hello! {self.topic}')
+                try:
+                    # await self.event_loop.create_task(dc.send(msg)) #always raw bytes bcs fast
+                    self.event_loop.call_soon_threadsafe(dc.send, msg)
+                    # await dc.send(msg) #always raw bytes bcs fast
+                except Exception as e:
+                    print(f'Exception {e}')
+            else:
+                self.node.get_logger().debug(c(f'DC {self.topic} for id_peer={id_peer} not open, not sending', 'dark_grey'))
+
+        # print(f' hello? {self.topic}')
+
+        if self.on_msg_cb is not None:
+            self.on_msg_cb()
+        else:
+            self.node.get_logger().debug(f'on_msg_cb is {self.on_msg_cb}')
+
+
+    async def report_latest_when_ready(self, id_peer:str):
+        while True:
+            if not id_peer in self.peers.keys():
+                return
+            if self.last_msg == None:
+                return #nothing received yet, will report when we do
+            if self.peers[id_peer].readyState == 'open':
+                # asyncio.get_event_loop().create_task(self.peers[id_peer].send())
+                self.event_loop.call_soon_threadsafe(self.peers[id_peer].send, self.last_msg)
+                return #all done
+            else:
+                await asyncio.sleep(.5) #wait until dc opens
+
+    def stop(self, id_peer:str) -> bool:
+        if id_peer in self.peers.keys():
+            self.peers.pop(id_peer)
+
+        if len(self.peers) == 0:
+            self.node.get_logger().info(f'Destroying local subscriber for {self.topic}')
+
+            self.node.destroy_subscription(self.sub)
+            self.sub = None
+            self.topic = None
+
+            return True #destroyed
+        else:
+            return False
