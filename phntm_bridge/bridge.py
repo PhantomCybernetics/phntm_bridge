@@ -189,7 +189,7 @@ class BridgeController(Node):
     def create_sio_client(self):
 
         self.sio = socketio.AsyncClient(handle_sigint=False,
-                                        logger=True,
+                                        logger=False,
                                         ssl_verify=self.sio_ssl_verify
                                         )
 
@@ -508,7 +508,13 @@ class BridgeController(Node):
 
                     if not topic in peer.outbound_data_channels.keys():
                         self.wrtc_nextChannelId += 1
-                        dc:RTCDataChannel = peer.pc.createDataChannel(topic, id=self.wrtc_nextChannelId, protocol=protocol, negotiated=True, ordered=False, maxRetransmits=0) # negotiated doesn't work tho
+                        dc:RTCDataChannel = peer.pc.createDataChannel(topic,
+                                                                      id=self.wrtc_nextChannelId,
+                                                                      protocol=protocol,
+                                                                      negotiated=True,
+                                                                      ordered=False,
+                                                                      maxRetransmits=0
+                                                                      )
                         peer.outbound_data_channels[topic] = dc
                         self.get_logger().debug(f'Peer {id_peer} subscribed to {topic} (protocol={protocol}, ch_id={dc.id})')
 
@@ -638,7 +644,12 @@ class BridgeController(Node):
 
                 if not topic in peer.inbound_data_channels.keys():
                     self.wrtc_nextChannelId += 1
-                    dc:RTCDataChannel = peer.pc.createDataChannel(topic, id=self.wrtc_nextChannelId, protocol=protocol, negotiated=True, ordered=False, maxRetransmits=0) # negotiated doesn't work tho
+                    dc:RTCDataChannel = peer.pc.createDataChannel(topic,
+                                                                  id=self.wrtc_nextChannelId,
+                                                                  protocol=protocol,
+                                                                  negotiated=True,
+                                                                  ordered=False,
+                                                                  maxRetransmits=0)
                     peer.inbound_data_channels[topic] = dc
                     self.get_logger().debug(f'Peer {id_peer} publishing into {topic} (protocol={protocol}, ch_id={dc.id})')
 

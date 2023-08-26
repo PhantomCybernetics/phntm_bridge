@@ -1,4 +1,5 @@
 import asyncio
+import concurrent.futures
 
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCDataChannel, RTCConfiguration, RTCIceServer
 
@@ -8,6 +9,8 @@ from rclpy.impl.rcutils_logger import RcutilsLogger
 from rosidl_runtime_py.utilities import get_message, get_interface
 from rclpy.callback_groups import CallbackGroup
 from rclpy.qos import QoSHistoryPolicy, QoSReliabilityPolicy, DurabilityPolicy
+
+from termcolor import colored as c
 
 from typing import Callable
 import time
@@ -46,6 +49,7 @@ class TopicReadSubscription:
             return True #all done, one sub for all
 
         #print(f'TopicReadSubscription:start() {threading.get_ident()}')
+        self.executor = concurrent.futures.ThreadPoolExecutor()
 
         message_class = None
         try:
@@ -80,7 +84,7 @@ class TopicReadSubscription:
 
         return True
 
-    async def on_msg(self, msg:any):
+    def on_msg(self, msg:any):
         self.num_received += 1
         self.last_msg = msg
         self.last_msg_time = time.time()
@@ -99,16 +103,23 @@ class TopicReadSubscription:
             dc = self.peers[id_peer]
             if dc.readyState == 'open':
                 if log_msg:
-                    self.node.get_logger().debug(f'△ Sending {len(msg)}B into {self.topic} for id_peer={id_peer}, total received: {self.num_received}')
+                    self.node.get_logger().info(f'△ Sending {len(msg)}B into {self.topic} for id_peer={id_peer}, total received: {self.num_received}')
                 # print(f' hello! {self.topic}')
                 try:
                     # await self.event_loop.create_task(dc.send(msg)) #always raw bytes bcs fast
+                    # self.event_loop.call_soon_threadsafe(dc.send, msg)
+                    # def send_this(what):
+                        # self.event_loop.run_in_executor(self.executor, dc.send, what)
+                    # self.event_loop.call_soon_threadsafe(send_this, msg)
                     self.event_loop.call_soon_threadsafe(dc.send, msg)
                     # await dc.send(msg) #always raw bytes bcs fast
                 except Exception as e:
                     print(f'Exception {e}')
-            else:
-                self.node.get_logger().debug(c(f'DC {self.topic} for id_peer={id_peer} not open, not sending', 'dark_grey'))
+            # else:
+                # self.node.get_logger().info(c(f'DC {self.topic} for id_peer={id_peer} not open, not sending', 'dark_grey'))
+                # self.peers.pop(id_peer)
+                # dc.close()
+                # self.stop(id_peer)
 
         # print(f' hello? {self.topic}')
 
