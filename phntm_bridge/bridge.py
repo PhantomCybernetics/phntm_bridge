@@ -36,7 +36,7 @@ try:
     picam2 = Picamera2()
     print (c(f'Picamera2 global info: ', 'cyan') + str(picam2.global_camera_info()))
 except Exception as e:
-    print(c('Failed to start picamera2', 'red'), e)
+    print('Picamera2 not active')
 
 from .inc.ros_video_streaming import ROSVideoStreamTrack, ROSFrameProcessor
 
@@ -64,15 +64,11 @@ from .inc.topic_writer import TopicWritePublisher
 from .inc.peer import WRTCPeer
 
 from .inc.discovery import Discovery
+from .inc.config import BridgeControllerConfig
 
 ROOT = os.path.dirname(__file__)
 
-class BridgeController(Node):
-
-    callback_group: CallbackGroup
-    wrtc_peers_:dict[str: WRTCPeer]
-    discovery:Discovery
-    paused:bool
+class BridgeController(Node, BridgeControllerConfig):
 
     ##
     # node constructor
@@ -80,85 +76,13 @@ class BridgeController(Node):
     def __init__(self, context:Context, cbg:CallbackGroup):
         super().__init__('phntm_bridge', context=context)
 
+        self.shutting_down_:bool = False
+        self.paused:bool = False
+        self.callback_group:CallbackGroup = cbg
+
         self.get_logger().set_level(rclpy.logging.LoggingSeverity.DEBUG)
-        self.get_logger().info('Ohi! (phntm_bridge node)')
 
-        self.shutting_down_ = False
-        self.callback_group = cbg
-
-        # ID ROBOT
-        self.declare_parameter('id_robot', '')
-        self.declare_parameter('name', 'Unnamed Robot')
-        self.declare_parameter('key', '')
-        self.id_robot = self.get_parameter('id_robot').get_parameter_value().string_value
-        self.robot_name = self.get_parameter('name').get_parameter_value().string_value
-        self.auth_key = self.get_parameter('key').get_parameter_value().string_value
-        if (self.id_robot == None or self.id_robot == ''):
-            self.get_logger().error(f'Param id_robot not provided!')
-            exit(1)
-        if (self.auth_key == None or self.auth_key == ''):
-            self.get_logger().error(f'Param key not provided!')
-            exit(1)
-
-        # SOCKET.IO
-        self.declare_parameter('sio_address', 'https://api.phntm.io')
-        self.declare_parameter('sio_port', 1337)
-        self.declare_parameter('sio_path', '/robot/socket.io')
-        self.declare_parameter('sio_connection_retry_sec', 2.0)
-        self.declare_parameter('sio_ssl_verify', True)
-
-        self.declare_parameter('log_message_every_sec', 10.0)
-        self.log_message_every_sec = self.get_parameter('log_message_every_sec').get_parameter_value().double_value
-
-        self.declare_parameter('topic_overrides', [ '' ])
-        self.topic_overrides = self.get_parameter('topic_overrides').get_parameter_value().string_array_value
-        for topic_override in self.topic_overrides:
-            if topic_override == '':
-                continue
-            self.declare_parameter(f'{topic_override}.name', '')
-            self.declare_parameter(f'{topic_override}.durability', 0)
-            self.declare_parameter(f'{topic_override}.raw', True)
-            self.declare_parameter(f'{topic_override}.reliability', 0)
-
-        self.declare_parameter('log_sdp', False)
-        self.log_sdp = self.get_parameter('log_sdp').get_parameter_value().bool_value
-
-        print('Loaded config topic_overrides', self.topic_overrides)
-
-        self.sio_address = self.get_parameter('sio_address').get_parameter_value().string_value
-        self.sio_port = self.get_parameter('sio_port').get_parameter_value().integer_value
-        self.sio_path = self.get_parameter('sio_path').get_parameter_value().string_value
-        self.sio_ssl_verify = self.get_parameter('sio_ssl_verify').get_parameter_value().bool_value
-        self.sio_connection_retry_sec = self.get_parameter('sio_connection_retry_sec').get_parameter_value().double_value
-        if (self.sio_address == None or self.sio_address == ''): self.get_logger().error(f'Param sio_address not provided!')
-        if (self.sio_port == None): self.get_logger().error(f'Param sio_port not provided!')
-
-        # Comm LED
-        self.declare_parameter('conn_led_topic', '' )
-        self.conn_led_topic = self.get_parameter('conn_led_topic').get_parameter_value().string_value
-        self.conn_led = None
-        if (self.conn_led_topic != None and self.conn_led_topic != ''):
-            self.get_logger().info(f'CONN Led uses {self.conn_led_topic}')
-            self.conn_led = StatusLED('conn', node=self, cbg=cbg, mode=StatusLED.Mode.OFF, topic=self.conn_led_topic, qos=QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT))
-            self.conn_led.set_fast_pulse()
-            #self.led_spinner = self.create_timer(0.1, lambda: rclpy.spin_once(self.status_led))
-
-        # Net LED
-        self.declare_parameter('data_led_topic', '' )
-        self.data_led_topic = self.get_parameter('data_led_topic').get_parameter_value().string_value
-        self.data_led = None
-        if (self.data_led_topic != None and self.data_led_topic != ''):
-            self.get_logger().info(f'DATA Led uses {self.data_led_topic}')
-            self.data_led = StatusLED('data', node=self, cbg=cbg, mode=StatusLED.Mode.OFF, topic=self.data_led_topic, qos=QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT))
-            #self.data_led.off()
-
-        # TOPIC DICOVERY
-        self.declare_parameter('discovery_period_sec', 5.0)
-        self.declare_parameter('stop_discovery_after_sec', -1.0) # < 0 => never
-        self.declare_parameter('topic_whitelist', [ '.*' ])
-        self.declare_parameter('topic_blacklist', [ '/led/', '/_', '/rosout' ] )
-        self.declare_parameter('param_whitelist', [ '.*' ])
-        self.declare_parameter('param_blacklist', [ '' ])
+        self.load_config(self.get_logger())
 
         self.topic_read_subscriptions_:dict[str: TopicReadSubscription] = {}
         self.topic_write_publishers_:dict[str: TopicWritePublisher] = {}
@@ -166,9 +90,7 @@ class BridgeController(Node):
         self.service_clients_:dict[str: any] = {} # service name => client
 
         self.wrtc_nextChannelId = 1
-        self.wrtc_peers_ = {}
-
-        self.paused = False
+        self.wrtc_peers_:dict[str: WRTCPeer] = {}
 
         self.spin_thread: threading.Thread = None
         self.spin_task: asyncio.Future[any] = None
@@ -177,11 +99,23 @@ class BridgeController(Node):
 
         self.create_sio_client()
 
-        discovery_period = self.get_parameter('discovery_period_sec').get_parameter_value().double_value
-        stop_discovery_after = self.get_parameter('stop_discovery_after_sec').get_parameter_value().double_value
-        self.discovery = Discovery(discovery_period, stop_discovery_after, self, cbg, picam2, self.sio)
+        discovery_period:float = self.get_parameter('discovery_period_sec').get_parameter_value().double_value
+        stop_discovery_after:float = self.get_parameter('stop_discovery_after_sec').get_parameter_value().double_value
+        self.discovery:Discovery = Discovery(discovery_period, stop_discovery_after, self, cbg, picam2, self.sio)
 
-        self.get_logger().info(f'Phntm Bridge started, idRobot={c(self.id_robot, "cyan")}')
+        self.conn_led = None
+        if (self.conn_led_topic != None and self.conn_led_topic != ''):
+            self.get_logger().info(f'CONN Led uses {self.conn_led_topic}')
+            self.conn_led = StatusLED('conn', node=self, cbg=self.callback_group, mode=StatusLED.Mode.OFF, topic=self.conn_led_topic, qos=QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT))
+            self.conn_led.set_fast_pulse()
+            #self.led_spinner = self.create_timer(0.1, lambda: rclpy.spin_once(self.status_led))
+        self.data_led = None
+        if (self.data_led_topic != None and self.data_led_topic != ''):
+            self.get_logger().info(f'DATA Led uses {self.data_led_topic}')
+            self.data_led = StatusLED('data', node=self, cbg=self.callback_group, mode=StatusLED.Mode.OFF, topic=self.data_led_topic, qos=QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT))
+            #self.data_led.off()
+
+        self.get_logger().debug(f'Phntm Bridge started, idRobot={c(self.id_robot, "cyan")}')
 
     ##
     # make a socket.io instance
