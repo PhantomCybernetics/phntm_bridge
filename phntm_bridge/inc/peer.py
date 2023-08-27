@@ -1,6 +1,6 @@
 import asyncio
 
-from aiortc import RTCPeerConnection, RTCSessionDescription, RTCDataChannel, RTCConfiguration, RTCIceServer
+from aiortc import RTCPeerConnection, RTCRtpSender, RTCSessionDescription, RTCDataChannel, RTCConfiguration, RTCIceServer
 
 from rclpy.node import Node, Parameter, Subscription, QoSProfile, Publisher
 from rclpy.duration import Duration, Infinite
@@ -11,6 +11,8 @@ from rclpy.qos import QoSHistoryPolicy, QoSReliabilityPolicy, DurabilityPolicy
 
 from typing import Callable
 import time
+
+from .camera import CameraVideoStreamTrack
 
 import threading
 
@@ -25,9 +27,13 @@ class WRTCPeer:
         self.id:str = id_peer
         self.node:Node = node
         self.logger:RcutilsLogger = node.get_logger()
+
         self.ros_publishers:list[str] = []
+
         self.inbound_data_channels:dict[str:RTCDataChannel] = {}
         self.outbound_data_channels:dict[str:RTCDataChannel] = {}
+
+        self.video_tracks:dict[str:RTCRtpSender] = {}
 
         config = RTCConfiguration(
             iceServers=[
