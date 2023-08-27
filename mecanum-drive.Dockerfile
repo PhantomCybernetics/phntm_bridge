@@ -39,7 +39,7 @@ ENV ROS_WS /ros2_ws
 RUN mkdir -p $ROS_WS/src/ros2-mecanum-bot/src
 
 WORKDIR $ROS_WS/src/ros2-mecanum-bot/src
-RUN git clone https://github.com/deborggraever/ros2-mecanum-bot.git
+RUN git clone https://github.com/deborggraever/ros2-mecanum-bot.git .
 
 WORKDIR $ROS_WS
 
@@ -50,8 +50,6 @@ RUN  . /opt/ros/$ROS_DISTRO/setup.sh && \
 
 # pimp up prompt with hostame and color
 RUN echo "PS1='\${debian_chroot:+(\$debian_chroot)}\\[\\033[01;35m\\]\\u@\\h\\[\\033[00m\\] \\[\\033[01;34m\\]\\w\\[\\033[00m\\] 🦄 '"  >> /root/.bashrc
-
-WORKDIR $ROS_WS/src/phntm_bridge
 
 ENTRYPOINT ["/ros_entrypoint.sh"]
 CMD [ "bash" ]

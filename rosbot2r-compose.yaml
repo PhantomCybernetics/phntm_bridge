@@ -69,6 +69,20 @@ services:
       # ros2 launch phntm_bridge bridge_launch.py
       /bin/sh -c "while sleep 1000; do :; done"
 
+  mecanum_drive:
+    image: mecanum-bot:humble
+    container_name: mecanum-drive
+    hostname: mecanum-drive.local
+    restart: unless-stopped
+    privileged: true
+    devices:
+      - /dev:/dev
+    command:
+      # ros2 launch phntm_bridge bridge_launch.py
+      /bin/sh -c "while sleep 1000; do :; done"
+
+
+
 
       #  image_transport:
       #    image: phntm/bridge:humble
