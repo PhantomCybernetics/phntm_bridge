@@ -23,12 +23,12 @@ class Discovery:
 
         self.picam2:Picamera2 = picam2
 
-        self.discovered_topics_:dict[str: dict['msg_types':list[str]]] =  {}
-        self.discovered_services_:dict[str: dict['msg_types':list[str]]] = {}
-        self.discovered_cameras_:dict[str: any] = {}
+        self.discovered_topics:dict[str: dict['msg_types':list[str]]] =  {}
+        self.discovered_services:dict[str: dict['msg_types':list[str]]] = {}
+        self.discovered_cameras:dict[str: any] = {}
 
         self.sio:socketio.AsyncClient = sio
-        self.timer_:Timer = None
+        self.timer:Timer = None
 
     async def start(self):
         await self.stop()
@@ -37,18 +37,18 @@ class Discovery:
         self.started_time = time.time()
 
         if self.period > 0:
-            self.logger.info(f"Discovering every {self.period}s ...")
-            self.timer_ = self.node.create_timer(self.period, self.run_discovery, self.callback_group) #then every n ses
+            self.logger.info(c(f"Discovering every {self.period}s ...", 'dark_grey'))
+            self.timer = self.node.create_timer(self.period, self.run_discovery, self.callback_group) #then every n ses
         else:
-            self.logger.info(f"Auto discovery is off")
+            self.logger.info(c(f"Auto discovery is off", 'dark_grey'))
 
         await self.report_discovery()
 
     async def stop(self):
-        if self.timer_ is not None:
-            self.logger.info(f'Discovery stopped after {self.stop_after}s')
-            self.timer_.destroy()
-            self.timer_ = None
+        if self.timer is not None:
+            self.logger.info(c(f'Discovery stopped after {self.stop_after}s', 'dark_grey'))
+            self.timer.destroy()
+            self.timer = None
             await self.report_discovery()
 
     # spinned by timer
@@ -63,9 +63,9 @@ class Discovery:
         for topic_info in new_topics:
             topic = topic_info[0]
             # TODO: blacklist topics
-            if not topic in self.discovered_topics_:
+            if not topic in self.discovered_topics:
                 self.logger.debug(f'Discovered topic {topic}')
-                self.discovered_topics_[topic] = { 'msg_types': topic_info[1] }
+                self.discovered_topics[topic] = { 'msg_types': topic_info[1] }
                 topics_changed = True
         if topics_changed:
             await self.report_topics()
@@ -77,8 +77,8 @@ class Discovery:
         for service_info in new_services:
             service = service_info[0]
             # TODO: blacklist services
-            if not service in self.discovered_services_:
-                self.discovered_services_[service] = { 'msg_types': service_info[1] }
+            if not service in self.discovered_services:
+                self.discovered_services[service] = { 'msg_types': service_info[1] }
                 services_changed = True
                 self.logger.debug(f'Discovered service {service}')
         if services_changed:
@@ -92,8 +92,8 @@ class Discovery:
             for cam_info in new_cameras:
                 cam = cam_info.Id
                 # TODO: blacklist cameras
-                if not cam in self.discovered_cameras_:
-                    self.discovered_cameras_[cam] = cam_info
+                if not cam in self.discovered_cameras:
+                    self.discovered_cameras[cam] = cam_info
                     cameras_changed = True
                     self.logger.debug(f'Discovered cameea {cam} {cam_info.Model}')
         if cameras_changed:
@@ -107,9 +107,9 @@ class Discovery:
             return
 
         data = []
-        for topic in self.discovered_topics_.keys():
+        for topic in self.discovered_topics.keys():
             topic_data = [ topic ] # msg types follow
-            for msg_type in self.discovered_topics_[topic]['msg_types']:
+            for msg_type in self.discovered_topics[topic]['msg_types']:
                 topic_data.append(msg_type)
             data.append(topic_data)
 
@@ -127,9 +127,9 @@ class Discovery:
             return
 
         data = []
-        for service in self.discovered_services_.keys():
+        for service in self.discovered_services.keys():
             service_data = [ service ]  # msg types follow
-            for msg_type in self.discovered_services_[service]['msg_types']:
+            for msg_type in self.discovered_services[service]['msg_types']:
                 service_data.append(msg_type)
             data.append(service_data)
 
@@ -147,8 +147,8 @@ class Discovery:
             return
 
         data = []
-        for cam in self.discovered_cameras_.keys():
-            data.append(self.discovered_cameras_[cam])
+        for cam in self.discovered_cameras.keys():
+            data.append(self.discovered_cameras[cam])
 
         self.logger.info(f'Reporting {len(data)} cameras')
 
@@ -162,7 +162,7 @@ class Discovery:
         if not self.sio or not self.sio.connected:
             return
 
-        data = True if self.timer_ is not None else False
+        data = True if self.timer is not None else False
 
         self.logger.info(f'Reporting discovery={data}')
 

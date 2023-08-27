@@ -9,25 +9,77 @@ from termcolor import colored as c
 import av
 import fractions
 
+from rclpy.impl.rcutils_logger import RcutilsLogger
+
+from picamera2.outputs import FileOutput
+from picamera2 import Picamera2
+import libcamera
+
+from aiortc import RTCRtpSender
+import asyncio
+
 VIDEO_CLOCK_RATE = 1000000000 #ns to s
 # VIDEO_PTIME = 1 / 30  # 30fps
 VIDEO_TIME_BASE = fractions.Fraction(1, VIDEO_CLOCK_RATE)
 
-class CameraSubscription:
-    camera:any
-    encoder: any
-    output:any
-    num_received:int
-    peers: list[ str ]
-    last_log:float
+class Picamera2Subscription:
 
-    def __init__(self, camera:any, encoder:any, output:any, peers:list[str]):
-        self.camera = camera
-        self.encoder = encoder
-        self.output = output
-        self.num_received = 0
-        self.peers = peers
-        self.last_log = -1.0
+    def __init__(self, id_camera:str, picam2:Picamera2, logger:RcutilsLogger):
+        self.id_camera:str = id_camera
+        self.num_received:int = 0
+        self.peers:dict[str:RTCRtpSender] = {}
+        self.logger:RcutilsLogger = logger
+
+        self.picam2:Picamera2 = picam2;
+        self.encoder:H264Encoder = None
+        self.output:PacketsOutput = None
+
+    async def start(self, id_peer:str, sender:RTCRtpSender) -> bool:
+
+        if self.output != None:
+            self.peers[id_peer] = sender
+            sender.track.set_output(self.output)
+            return True #all done, one sub for all
+
+        video_config = self.picam2.create_preview_configuration(display='main',
+                                                                encode='main',
+                                                                transform=libcamera.Transform(hflip=1, vflip=1),
+                                                                queue=False
+                                                                )
+        self.picam2.configure(video_config)
+        self.encoder = H264Encoder(bitrate=10000000, framerate=30)
+        self.output = PacketsOutput()
+
+        self.peers[id_peer] = sender
+        self.peers[id_peer].track.set_output(self.output)
+
+        await asyncio.sleep(2.0) #camera setup time (here?)
+
+        self.logger.info(c(f'Picam2 recording...', 'magenta'))
+
+        # picam2.start_recording()
+        self.picam2.start_encoder(encoder=self.encoder, output=self.output)
+        self.picam2.start()
+
+        return True
+
+    def stop(self, id_peer:str):
+        if id_peer in self.peers.keys():
+            self.peers[id_peer].track.set_output(None)
+            self.peers.pop(id_peer)
+
+        if len(self.peers) == 0:
+            self.logger().info(c(f'Picam stopping', 'magenta'))
+
+            self.picam2.stop_encoder()
+            self.picam2.stop()
+
+            self.encoder = None
+            self.output = None
+
+            return True #destroyed
+        else:
+            return False
 
 
 def get_camera_info(picam2:Picamera2) -> List[Tuple[str, dict]]:
@@ -55,6 +107,7 @@ def picam2_has_camera(picam2:Picamera2, id_cam:str) -> bool:
     return False
 
 
+#shared camera frame output
 class PacketsOutput(FileOutput):
 
     last_frame = None
@@ -92,76 +145,45 @@ class PacketsOutput(FileOutput):
 class CameraVideoStreamTrack(MediaStreamTrack):
 
     kind = "video"
-    # f:VideoFrame = None
-    # encodedFrame:RTCEncodedFrame = None
-    # frame_msg_bytes = None
-    _timestamp = 0
 
-    # _start: float
-    # _timestamp: int
-    _logger = None
-    # _camera_subscriptions = None
-    _id_cam = None
-    _cam = None
-    _id_peer = None
-    _last_log_time = -1
-    _log_message_every_sec = -1
-
-    _total_processed = 0
-    _sender = None
-
-    _last_timestamp = -1
-    _output = None
-
-    # send_queue:mp.Queue = mp.Queue()
-
-    def __init__(self, logger, id_cam, camera, output:PacketsOutput, id_peer, log_message_every_sec) -> None:
+    def __init__(self, id_cam:str, id_peer:str, logger:RcutilsLogger, log_message_every_sec:float):
         super().__init__()
-        self._logger = logger
-        self._id_cam = id_cam
-        self._cam = camera
-        self._output = output
-        # self._topic_read_subscriptions = topic_read_subscriptions
-        self._id_peer = id_peer
-        self._log_message_every_sec = log_message_every_sec
-        self._last_timestamp = -1
-        # self._logger.error(f'All good  in {topic}, enc={str(self.encoder)}')
+
+        self.id_peer:str = id_peer
+        self.id_cam:str = id_cam
+        self.logger:RcutilsLogger = logger
+
+        self.output:PacketsOutput = None
+        self.last_output_timestamp:int = -1
+
+        self.total_processed:int = 0
+        self.log_message_every_sec:float = log_message_every_sec
+
+        self.last_log:float = -1.0
 
     def set_sender(self, sender):
         self._sender = sender
 
-    def get_logger(self):
-        return self._logger
+    def set_output(self, output:PacketsOutput):
+        self.output = output
 
-    async def recv(self) -> Tuple[List[bytes], int]: #returning what the worker therad alerady encoded and packetized
+    async def recv(self) -> av.Packet:
 
-        frame = self._output.last_frame
-
-        timestamp = self._output.last_timestamp
-        keyframe = self._output.last_keyframe
-
-        if frame is None:
+        if not self.output:
             return None
 
-        # print(c(f'I can has frame {len(frame) if frame is not None else "0"} B', 'cyan'))
-
-        if self._last_timestamp == timestamp: #no new frame
+        enncoded_frame = self.output.last_frame
+        if enncoded_frame is None:
             return None
 
-        self._last_timestamp = timestamp
+        if self.last_output_timestamp == self.output.last_timestamp: #no new frame
+            return None
+        self.last_output_timestamp = self.output.last_timestamp
 
-        self._total_processed += 1
+        self.total_processed += 1
 
-        packet = av.Packet(frame)
-        packet.pts = timestamp
+        packet = av.Packet(enncoded_frame)
+        packet.pts = self.output.last_timestamp
         packet.time_base = VIDEO_TIME_BASE
-
-        # print(f'Serving frame {timestamp}: {len(frame)} B{" KEYFRAME" if keyframe else ""}')
-
-        # if is_keyframe or self._last_log_time < 0 or time.time()-self._last_log_time > self._log_message_every_sec:
-        #     self._last_log_time = time.time() #last logged now
-        #     self.get_logger().debug(f'△ {self._topic} peer={self._id_peer}, f:{self._total_processed}/{self._total_received}')
-
-        # self.get_logger().error(f'{self._topic} recv returning packet data')
 
         return packet # Tuple[List[bytes], int]
