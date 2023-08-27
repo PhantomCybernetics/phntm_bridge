@@ -65,7 +65,8 @@ class Picamera2Subscription:
 
     def stop(self, id_peer:str):
         if id_peer in self.peers.keys():
-            self.peers[id_peer].track.set_output(None)
+            if self.peers[id_peer].track:
+                self.peers[id_peer].track.set_output(None)
             self.peers.pop(id_peer)
 
         if len(self.peers) == 0:

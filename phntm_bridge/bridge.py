@@ -332,17 +332,17 @@ class BridgeController(Node, BridgeControllerConfig):
         self.get_logger().info(c(f'Peer {id_peer} disconnected, cleaning up', 'red'))
 
         # read topics
-        for topic in self.topic_read_subscriptions.keys():
+        for topic in self.topic_read_subscriptions.keys().copy():
             if self.topic_read_subscriptions[topic].stop(id_peer): # subscriber destroyed
                 self.topic_read_subscriptions.pop(topic)
 
         # wite tpics
-        for topic in self.topic_write_publishers.keys():
+        for topic in self.topic_write_publishers.keys().copy():
             if self.topic_write_publishers[topic].stop(id_peer): # publisher destroyed
                 self.topic_write_publishers.pop(topic)
 
         # cameras
-        for cam in self.camera_subscriptions.keys():
+        for cam in self.camera_subscriptions.keys().copy():
             if self.camera_subscriptions[cam].stop(id_peer): # camera destroyed
                 self.camera_subscriptions.pop(cam)
 
