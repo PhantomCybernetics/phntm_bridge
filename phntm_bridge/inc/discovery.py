@@ -51,6 +51,11 @@ class Discovery:
             self.timer = None
             await self.report_discovery()
 
+    def running(self) -> bool:
+        if self.timer is not None:
+            return True
+        return False
+
     # spinned by timer
     async def run_discovery(self):
 

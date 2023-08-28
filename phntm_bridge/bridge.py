@@ -85,7 +85,7 @@ class BridgeController(Node, BridgeControllerConfig):
 
         self.topic_read_subscriptions:dict[str: TopicReadSubscription] = {}
         self.topic_write_publishers:dict[str: TopicWritePublisher] = {}
-        self.camera_subscriptions:dict[str: CameraSubscription] = {}
+        self.camera_subscriptions:dict[str: Picamera2Subscription] = {}
         self.service_clients:dict[str: any] = {} # service name => client
 
         self.wrtc_nextChannelId = 1
@@ -147,6 +147,20 @@ class BridgeController(Node, BridgeControllerConfig):
             if id_peer == None:
                 return { 'err': 2, 'msg': 'No valid peer id provided' }
             return await self.on_peer_wrtc_offer(id_peer, data)
+
+        @self.sio.on('discovery')
+        async def on_discovery(data):
+            id_peer:str = WRTCPeer.GetId(data)
+            if id_peer == None:
+                return { 'err': 2, 'msg': 'No valid peer id provided' }
+            if not id_peer in self.wrtc_peers.keys():
+                return { 'err': 2, 'msg': 'Peer not connected' }
+            new_state = True if data['state'] else False
+            if new_state:
+                await self.discovery.start()
+            else:
+                await self.discovery.stop()
+            return { 'success': 1, 'discovery': self.discovery.running() }
 
         # subscribe and unsubscribe data channels
         # bcs the negotionation doesn't seem to be implemented well at the moment
@@ -819,7 +833,6 @@ class BridgeController(Node, BridgeControllerConfig):
 
         return str(future.result())
 
-
     # def subscribe_topic(self, topic:str, id_peer:str) -> bool:
 
     #     if topic in self.topic_read_subscriptions:
@@ -909,7 +922,6 @@ class BridgeController(Node, BridgeControllerConfig):
 
     #     return True
 
-
     # def unsubscribe_topic(self, topic:str, id_peer:str, out_res_unsubscribed:list[tuple[str,int]]):
     #     if not topic in self.topic_read_subscriptions.keys():
     #         self.get_logger().error(f'{topic} not found in self.topic_read_subscriptions ({str(self.topic_read_subscriptions)})')
@@ -958,7 +970,6 @@ class BridgeController(Node, BridgeControllerConfig):
     #     #     #         if topic in self.wrtc_peer_video_tracks[id_peer]:
     #     #     #             self.wrtc_peer_video_tracks[id_peer].pop(topic)
     #     #     out_res_unsubscribed.append([ topic ])
-
 
     # def topic_subscriber_callback(self, topic, is_image, msg):
     #     self.topic_read_subscriptions[topic].num_received += 1 # num recieved
@@ -1149,40 +1160,74 @@ class BridgeController(Node, BridgeControllerConfig):
             #TODO actually I should spin ros node some more here
             await asyncio.sleep(1) # wait a bit
 
+    async def spin_async(self, rcl_executor:rclpy.executors.Executor, ctx:rclpy.context.Context, cbg:rclpy.callback_groups.CallbackGroup):
 
-async def spin_async(node: BridgeController, executor:rclpy.executors.Executor, ctx:rclpy.context.Context, cbg:rclpy.callback_groups.CallbackGroup):
+        # cancel = self.create_guard_condition(lambda: None)
 
-    cancel = node.create_guard_condition(lambda: None)
-
-    def _spin(node: Node,
-              future: asyncio.Future,
-              event_loop: asyncio.AbstractEventLoop):
-        while ctx.ok() and not future.cancelled() and not node.shutting_down:
+        while ctx.ok() and not self.shutting_down:
             try:
-                executor.spin_once()
-            except:
+                await asyncio.get_event_loop().run_in_executor(None, rcl_executor.spin_once)
+            except Exception as e:
+                print(f'**spin exception ** {str(e)}')
                 pass
-        if not future.cancelled():
-            event_loop.call_soon_threadsafe(future.set_result, None)
+        print('**spin ended**')
 
-    node.spin_task = asyncio.get_event_loop().create_future()
-    node.spin_thread = threading.Thread(target=_spin, args=(node, node.spin_task, asyncio.get_event_loop()))
-    node.spin_thread.start()
-    try:
-        await node.spin_task
-    except:
-        pass
+        # def _spin(future: asyncio.Future, event_loop: asyncio.AbstractEventLoop):
+        #     while ctx.ok() and not future.cancelled() and not self.shutting_down:
+        #         try:
+        #             print('**spin**')
+        #             executor.spin_once()
+        #         except:
+        #             pass
+        #     if not future.cancelled():
+        #         event_loop.call_soon_threadsafe(future.set_result, None)
 
-    cancel.trigger()
 
-    node.spin_thread.join()
-    node.destroy_guard_condition(cancel)
+        # print('**about to spin**')
+        # await _spin()
 
-async def main_async(bridge_node:BridgeController, executor:rclpy.executors.Executor, ctx:rclpy.context.Context, cbg:rclpy.callback_groups.CallbackGroup):
+        # node.spin_task = asyncio.get_event_loop().create_future()
+        # node.spin_thread = threading.Thread(target=_spin, args=(node, node.spin_task, asyncio.get_event_loop()))
+        # node.spin_thread.start()
+        # try:
+        #     await _spin()
+        # except:
+        #     pass
+
+        # cancel.trigger()
+
+        # node.spin_thread.join()
+        # node.destroy_guard_condition(cancel)
+
+# async def main_async(bridge_node:BridgeController, executor:rclpy.executors.Executor, ctx:rclpy.context.Context, cbg:rclpy.callback_groups.CallbackGroup):
     # create a node without any work to do
 
+async def main_async():
+
+    # mp.set_start_method('spawn')
+
+    rcl_ctx = Context()
+    rcl_ctx.init() # This must be done before any ROS nodes can be created.
+
+    # rclpy.init(context=rcl_ctx)
+    # rclpy.uninstall_signal_handlers() #duplicate?
+    # ctx.init()
+
+    rcl_cbg = MutuallyExclusiveCallbackGroup()
+
+    rcl_executor = rclpy.executors.MultiThreadedExecutor(context=rcl_ctx)
+
+    # rclpy.init(context=rcl_ctx)
+
+    bridge_node = BridgeController(context=rcl_ctx, cbg=rcl_cbg)
+
+    rcl_executor.add_node(bridge_node)
+    rcl_cbg.add_entity(bridge_node)
+    rcl_cbg.add_entity(rcl_ctx)
+    rcl_cbg.add_entity(rcl_executor)
+
     # create tasks for spinning and sleeping
-    spin_task = asyncio.get_event_loop().create_task(spin_async(bridge_node, executor, ctx, cbg))
+    spin_task = asyncio.get_event_loop().create_task(bridge_node.spin_async(rcl_executor, rcl_ctx, rcl_cbg))
     sio_task = asyncio.get_event_loop().create_task(bridge_node.spin_sio_client(addr=bridge_node.sio_address, port=bridge_node.sio_port, path=bridge_node.sio_path))
     discovery_task = asyncio.get_event_loop().create_task(bridge_node.discovery.start())
 
@@ -1195,55 +1240,24 @@ async def main_async(bridge_node:BridgeController, executor:rclpy.executors.Exec
     if sio_task.cancel():
         await sio_task
 
-def main(args=None):
-
-    ctx = Context()
-
-    rclpy.init(context=ctx)
-    # rclpy.uninstall_signal_handlers() #duplicate?
-
-    # ctx.init()
-
-    cbg = MutuallyExclusiveCallbackGroup()
-
-    executor = rclpy.executors.MultiThreadedExecutor(context=ctx)
-
-    bridge_node = BridgeController(context=ctx, cbg=cbg)
-
-    executor.add_node(bridge_node)
-    cbg.add_entity(bridge_node)
-    cbg.add_entity(ctx)
-    cbg.add_entity(executor)
-
-    try:
-        asyncio.get_event_loop().run_until_complete(main_async(bridge_node, executor, ctx, cbg))
-    except:
-        pass
+    # try:
+    #     asyncio.get_event_loop().run_until_complete(main_async(bridge_node, executor, ctx, cbg))
+    # except:
+    #     pass
 
     asyncio.get_event_loop().run_until_complete(bridge_node.shutdown_cleanup())
 
     try:
         bridge_node.destroy_node()
-        executor.shutdown()
+        rcl_executor.shutdown()
         rclpy.shutdown()
     except:
         pass
 
     asyncio.get_event_loop().close()
 
+def main(): # ros2 calls this, so init here
+    asyncio.run(main_async())
 
-if __name__ == '__main__':
-    # with cProfile.Profile() as profile:
-    mp.set_start_method('spawn')
+if __name__ == '__main__': #ignired by ros
     main()
-
-    # pr.disable()
-    # s = io.StringIO()
-    # sortby = SortKey.CUMULATIVE
-    # ps = pstats.Stats(pr, stream=s).sort_stats(sortby)
-    # ps.print_stats()
-    # print(s.getvalue())
-
-    # results = pstats.Stats(profile)
-    # results.sort_stats(pstats.SortKey.TIME)
-    # results.print_stats()
