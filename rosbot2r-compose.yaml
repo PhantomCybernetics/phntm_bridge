@@ -15,6 +15,7 @@ services:
     image: husarion/rplidar:humble
     container_name: rplidar
     restart: unless-stopped
+    cpu_count: 1
     devices:
       - /dev/ttyUSB0:/dev/ttyUSB0
     command: >
