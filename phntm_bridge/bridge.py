@@ -59,7 +59,7 @@ from aiortc.rtcrtpsender import RTCRtpSender
 import os
 import platform
 
-from .inc.topic_reader import TopicReadSubscription
+from .inc.topic_reader import TopicReadSubscription, TopicReadProcessor
 from .inc.topic_writer import TopicWritePublisher
 from .inc.peer import WRTCPeer
 
@@ -73,8 +73,8 @@ class BridgeController(Node, BridgeControllerConfig):
     ##
     # node constructor
     ##
-    def __init__(self, context:Context, cbg:CallbackGroup):
-        super().__init__('phntm_bridge', context=context)
+    def __init__(self, context:Context, cbg:CallbackGroup, reader_ctrl_queue:mp.Queue, reader_data_out_queue:mp.Queue):
+        super().__init__('phntm_bridge_ctrl', context=context)
 
         self.shutting_down:bool = False
         self.paused:bool = False
@@ -83,7 +83,10 @@ class BridgeController(Node, BridgeControllerConfig):
         self.get_logger().set_level(rclpy.logging.LoggingSeverity.DEBUG)
         self.load_config(self.get_logger())
 
+        # separate process
         self.topic_read_subscriptions:dict[str: TopicReadSubscription] = {}
+
+        # this process
         self.topic_write_publishers:dict[str: TopicWritePublisher] = {}
         self.camera_subscriptions:dict[str: Picamera2Subscription] = {}
         self.service_clients:dict[str: any] = {} # service name => client
@@ -113,6 +116,9 @@ class BridgeController(Node, BridgeControllerConfig):
             self.get_logger().info(f'DATA Led uses {self.data_led_topic}')
             self.data_led = StatusLED('data', node=self, cbg=self.callback_group, mode=StatusLED.Mode.OFF, topic=self.data_led_topic, qos=QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT))
             #self.data_led.off()
+
+        self.reader_ctrl_queue:mp.Queue = reader_ctrl_queue
+        self.reader_data_out_queue:mp.Queue = reader_data_out_queue
 
         self.get_logger().debug(f'Phntm Bridge started, idRobot={c(self.id_robot, "cyan")}')
 
@@ -435,9 +441,6 @@ class BridgeController(Node, BridgeControllerConfig):
                 if not is_image:
 
                     if not topic in self.topic_read_subscriptions:
-                        def on_msg_cb():
-                            if self.data_led != None:
-                                self.data_led.once() # blink when sending data to a peer
 
                         reliability = self.get_parameter_or(f'{topic}.reliability', Parameter(name='', value=QoSReliabilityPolicy.BEST_EFFORT)).get_parameter_value().integer_value
                         durability = self.get_parameter_or(f'{topic}.durability', Parameter(name='', value=DurabilityPolicy.VOLATILE)).get_parameter_value().integer_value
@@ -450,7 +453,12 @@ class BridgeController(Node, BridgeControllerConfig):
                                                                                       event_loop=asyncio.get_event_loop(),
                                                                                       log_message_every_sec=self.log_message_every_sec
                                                                                       )
+                        def on_msg_cb():
+                            if self.data_led != None:
+                                self.data_led.once() # blink when sending data to a peer
                         self.topic_read_subscriptions[topic].on_msg_cb = lambda: on_msg_cb() #blinker
+
+                        self.reader_ctrl_queue.put(['subscribe', topic, protocol, reliability, durability])
 
                     if not topic in peer.outbound_data_channels.keys():
                         self.wrtc_nextChannelId += 1
@@ -1204,7 +1212,14 @@ class BridgeController(Node, BridgeControllerConfig):
 
 async def main_async():
 
-    # mp.set_start_method('spawn')
+    # reader runs on a separate process
+    reader_on_flag = mp.Value('b', 1, lock=False)
+    reader_ctrl_queue = mp.Queue()
+    reader_data_out_queue = mp.Queue()
+    topic_read_processor = mp.Process(target=TopicReadProcessor,
+                                      args=(reader_on_flag, reader_ctrl_queue, reader_data_out_queue, None))
+    topic_read_processor.start()
+
 
     rcl_ctx = Context()
     rcl_ctx.init() # This must be done before any ROS nodes can be created.
@@ -1215,11 +1230,11 @@ async def main_async():
 
     rcl_cbg = MutuallyExclusiveCallbackGroup()
 
-    rcl_executor = rclpy.executors.MultiThreadedExecutor(context=rcl_ctx)
+    rcl_executor = rclpy.executors.SingleThreadedExecutor(context=rcl_ctx)
 
     # rclpy.init(context=rcl_ctx)
 
-    bridge_node = BridgeController(context=rcl_ctx, cbg=rcl_cbg)
+    bridge_node = BridgeController(context=rcl_ctx, cbg=rcl_cbg, reader_ctrl_queue=reader_ctrl_queue, reader_data_out_queue=reader_data_out_queue)
 
     rcl_executor.add_node(bridge_node)
     rcl_cbg.add_entity(bridge_node)
@@ -1231,7 +1246,7 @@ async def main_async():
     sio_task = asyncio.get_event_loop().create_task(bridge_node.spin_sio_client(addr=bridge_node.sio_address, port=bridge_node.sio_port, path=bridge_node.sio_path))
     discovery_task = asyncio.get_event_loop().create_task(bridge_node.discovery.start())
 
-    # concurrently execute both tasks
+    # concurrently execute both tasks on this process
     await asyncio.wait([spin_task, sio_task], return_when=asyncio.ALL_COMPLETED)
 
     # cancel tasks
@@ -1240,10 +1255,15 @@ async def main_async():
     if sio_task.cancel():
         await sio_task
 
+    reader_on_flag.value = 0
+
     # try:
     #     asyncio.get_event_loop().run_until_complete(main_async(bridge_node, executor, ctx, cbg))
     # except:
     #     pass
+
+    topic_read_processor.terminate()
+    topic_read_processor.join()
 
     asyncio.get_event_loop().run_until_complete(bridge_node.shutdown_cleanup())
 
@@ -1257,7 +1277,11 @@ async def main_async():
     asyncio.get_event_loop().close()
 
 def main(): # ros2 calls this, so init here
-    asyncio.run(main_async())
+    # print(f'mp.start_method={mp.get_start_method()}')
+    try:
+        asyncio.run(main_async())
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        pass
 
 if __name__ == '__main__': #ignired by ros
     main()
