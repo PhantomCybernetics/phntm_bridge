@@ -396,26 +396,35 @@ class BridgeController(Node, BridgeControllerConfig):
         self.get_logger().info(c(f'Peer {id_peer} disconnected, cleaning up', 'red'))
 
         # read topics
-        for topic in self.topic_read_subscriptions.keys().copy():
+        delete_topics = []
+        for topic in self.topic_read_subscriptions.keys():
             if self.topic_read_subscriptions[topic].stop(id_peer): # subscriber destroyed
-                self.topic_read_subscriptions.pop(topic)
+                delete_topics.append(topic)
+        for topic in delete_topics:
+            del self.topic_read_subscriptions[topic]
 
         # wite tpics
-        for topic in self.topic_write_publishers.keys().copy():
+        delete_topics = []
+        for topic in self.topic_write_publishers.keys():
             if self.topic_write_publishers[topic].stop(id_peer): # publisher destroyed
-                self.topic_write_publishers.pop(topic)
+                delete_topics.append(topic)
+        for topic in delete_topics:
+            del self.topic_write_publishers[topic]
 
         # cameras
-        for cam in self.camera_subscriptions.keys().copy():
+        delete_cams = []
+        for cam in self.camera_subscriptions.keys():
             if self.camera_subscriptions[cam].stop(id_peer): # camera destroyed
-                self.camera_subscriptions.pop(cam)
+                delete_cams.append(cam)
+        for cam in delete_cams:
+            del self.camera_subscriptions[cam]
 
         if id_peer in self.wrtc_peers.keys():
             try:
                 await self.wrtc_peers[id_peer].pc.close()
             except Exception as e:
                 pass
-            self.wrtc_peers.pop(id_peer)
+            del self.wrtc_peers[id_peer]
 
 
     ##
