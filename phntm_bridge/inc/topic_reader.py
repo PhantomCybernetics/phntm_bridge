@@ -47,7 +47,7 @@ def TopicReadProcessor(running_shared:mp.Value, ctrl_queue:mp.Queue, data_out_qu
 
     try:
         while running_shared.value > 0:
-            print(f'yellow! {reader_node}')
+            print(c(f'yellow! {reader_node}', 'yellow'))
 
             while True:
                 try:

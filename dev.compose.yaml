@@ -19,6 +19,7 @@ services:
       - ~/aiortc:/ros2_ws/aiortc
       - ~/phntm_bridge_launch_params.yaml:/ros2_ws/phntm_bridge_params.yaml
       - ~/ros_bags:/ros_bags
+      - /var/run:/host_run
       # - /tmp/.X11-unix:/tmp/.X11-unix
       # - ~/.Xauthority:/root/.Xauthority:rw
     devices:

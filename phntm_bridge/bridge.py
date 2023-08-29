@@ -8,6 +8,15 @@ from rclpy.context import Context
 from rclpy.timer import Timer
 
 from .inc.status_led import StatusLED
+from termcolor import colored as c
+
+import docker
+try:
+    host_docker_socket = 'unix:///host_run/docker.sock' # link /var/run/ to /host_run/ in docker-compose
+    docker_client = docker.DockerClient(base_url=host_docker_socket)
+except:
+    print(c(f'Failed to init docker client with {host_docker_socket}', 'red'))
+    pass
 
 from rcl_interfaces.msg import ParameterDescriptor
 import signal
@@ -15,7 +24,6 @@ import time
 import sys
 import traceback
 import netifaces
-from termcolor import colored as c
 
 try:
     from picamera2 import Picamera2
@@ -103,7 +111,7 @@ class BridgeController(Node, BridgeControllerConfig):
 
         discovery_period:float = self.get_parameter('discovery_period_sec').get_parameter_value().double_value
         stop_discovery_after:float = self.get_parameter('stop_discovery_after_sec').get_parameter_value().double_value
-        self.discovery:Discovery = Discovery(discovery_period, stop_discovery_after, self, cbg, picam2, self.sio)
+        self.discovery:Discovery = Discovery(discovery_period, stop_discovery_after, self, cbg, picam2, docker_client, self.sio)
 
         self.conn_led = None
         if (self.conn_led_topic != None and self.conn_led_topic != ''):
@@ -145,7 +153,10 @@ class BridgeController(Node, BridgeControllerConfig):
             await asyncio.get_event_loop().create_task(self.discovery.report_cameras())
             await asyncio.get_event_loop().create_task(self.discovery.report_topics())
             await asyncio.get_event_loop().create_task(self.discovery.report_services())
+            await asyncio.get_event_loop().create_task( self.discovery.report_docker())
             await asyncio.get_event_loop().create_task(self.discovery.report_discovery())
+
+        event_loop = asyncio.get_event_loop()
 
         @self.sio.on('offer')
         async def on_offer(data):
@@ -168,10 +179,43 @@ class BridgeController(Node, BridgeControllerConfig):
                 await self.discovery.stop()
             return { 'success': 1, 'discovery': self.discovery.running() }
 
+        @self.sio.on('docker')
+        async def on_docker_call(data):
+            id_peer:str = WRTCPeer.GetId(data)
+            if id_peer == None:
+                return { 'err': 2, 'msg': 'No valid peer id provided' }
+            if not id_peer in self.wrtc_peers.keys():
+                return { 'err': 2, 'msg': 'Peer not connected' }
+            id_container = data['container']
+            msg = data['msg']
+            if not id_container:
+                return { 'err': 2, 'msg': 'No container id provided' }
+            if not msg:
+                return { 'err': 2, 'msg': 'No container msg provided' }
+
+            cont = self.discovery.discovered_docker_containers[id_container]
+            if not cont:
+                return { 'err': 2, 'msg': 'Container not found here'}
+
+            self.get_logger().warn(f'Peer {id_peer} calling {msg} on docker container {cont[0].name} [{cont[0].status}]')
+
+            match msg:
+                case 'start':
+                    event_loop.run_in_executor(None, cont[0].start)
+                case 'stop':
+                    event_loop.run_in_executor(None, lambda: cont[0].stop(timeout=3)) # wait 3s then kill
+                case 'restart':
+                    event_loop.run_in_executor(None, lambda: cont[0].restart(timeout=3) ) # wait 3s then kill
+                case _:
+                   return { 'err': 2, 'msg': 'Invalid container action provided (start, stop or restart)'}
+
+            await self.discovery.start()
+
+            return { 'success': 1 }
+
         # subscribe and unsubscribe data channels
         # bcs the negotionation doesn't seem to be implemented well at the moment
         # it's be nice to do thisvia webrtc tho
-        event_loop = asyncio.get_event_loop()
         @self.sio.on('subscription:read')
         async def on_read_subscription(data:dict):
             id_peer = WRTCPeer.GetId(data)

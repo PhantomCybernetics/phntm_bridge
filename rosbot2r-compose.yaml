@@ -64,6 +64,7 @@ services:
       - ~/aioice:/ros2_ws/aioice
       - ~/aiortc:/ros2_ws/aiortc
       - ~/marcel_launch_params.yaml:/ros2_ws/phntm_bridge_params.yaml
+      - /var/run:/host_run
     devices:
       - /dev:/dev
     command:

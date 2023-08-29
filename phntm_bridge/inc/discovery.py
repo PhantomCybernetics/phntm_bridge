@@ -9,10 +9,12 @@ from .camera import get_camera_info, picam2_has_camera
 import socketio
 from termcolor import colored as c
 import time
+import docker
+import json
 
 class Discovery:
 
-    def __init__(self, period:float, stop_after:float, node:Node, cbg:CallbackGroup, picam2:Picamera2, sio:socketio.AsyncClient):
+    def __init__(self, period:float, stop_after:float, node:Node, cbg:CallbackGroup, picam2:Picamera2, docker_client:docker.DockerClient,  sio:socketio.AsyncClient):
         self.period:float = period
         self.stop_after:float = stop_after
 
@@ -22,10 +24,12 @@ class Discovery:
         self.callback_group:CallbackGroup = cbg
 
         self.picam2:Picamera2 = picam2
+        self.docker_client = docker_client
 
         self.discovered_topics:dict[str: dict['msg_types':list[str]]] =  {}
         self.discovered_services:dict[str: dict['msg_types':list[str]]] = {}
         self.discovered_cameras:dict[str: any] = {}
+        self.discovered_docker_containers:dict[str: [ docker.models.containers.Container, str ]] = {}
 
         self.sio:socketio.AsyncClient = sio
         self.timer:Timer = None
@@ -69,7 +73,7 @@ class Discovery:
             topic = topic_info[0]
             # TODO: blacklist topics
             if not topic in self.discovered_topics:
-                self.logger.debug(f'Discovered topic {topic}')
+                self.logger.info(c(f'Discovered topic {topic}', 'light_blue'))
                 self.discovered_topics[topic] = { 'msg_types': topic_info[1] }
                 topics_changed = True
         if topics_changed:
@@ -85,7 +89,7 @@ class Discovery:
             if not service in self.discovered_services:
                 self.discovered_services[service] = { 'msg_types': service_info[1] }
                 services_changed = True
-                self.logger.debug(f'Discovered service {service}')
+                self.logger.info(c(f'Discovered service {service}', 'magenta'))
         if services_changed:
             await self.report_services()
 
@@ -102,9 +106,28 @@ class Discovery:
                 if not id_cam in self.discovered_cameras.keys():
                     self.discovered_cameras[id_cam] = cam_info
                     cameras_changed = True
-                    self.logger.debug(f'Discovered camera {id_cam} model {cam_info["Model"]}')
+                    self.logger.info(c(f'Discovered camera {id_cam} model {cam_info["Model"]}', 'green'))
         if cameras_changed:
             await self.report_cameras()
+
+        #docker
+        docker_containers_changed = False
+        new_docker_containers = self.docker_client.containers.list(all=True)
+        for container in new_docker_containers:
+            # print (f'container "{container.id}" <<{container.name}>>')
+            # id_cam = cam_info[0]
+            # TODO: blacklist conainers?
+            if not container.id in self.discovered_docker_containers.keys():
+                self.discovered_docker_containers[container.id] = [ container, container.status ]
+                docker_containers_changed = True
+                self.logger.info(c(f'Discovered Docker container {container.name} aka {container.short_id} {container.status}', 'dark_grey'))
+            elif self.discovered_docker_containers[container.id][1] != container.status:
+                self.discovered_docker_containers[container.id][0] = container
+                self.discovered_docker_containers[container.id][1] = f'{container.status}' #copy
+                docker_containers_changed = True
+                self.logger.info(c(f'Docker container {container.name} aka {container.short_id} changed status to {container.status}', 'dark_grey'))
+        if docker_containers_changed:
+            await self.report_docker()
 
         if self.stop_after > 0.0 and self.started_time+self.stop_after < time.time():
             await self.stop()
@@ -120,7 +143,7 @@ class Discovery:
                 topic_data.append(msg_type)
             data.append(topic_data)
 
-        self.logger.debug(f'Reporting {len(data)} topics')
+        self.logger.info(f'Reporting {len(data)} topics')
 
         await self.sio.emit(
             event='topics',
@@ -140,7 +163,7 @@ class Discovery:
                 service_data.append(msg_type)
             data.append(service_data)
 
-        self.logger.debug(f'Reporting {len(data)} services')
+        self.logger.info(f'Reporting {len(data)} services')
 
         await self.sio.emit(
             event='services',
@@ -157,10 +180,34 @@ class Discovery:
         for id_cam in self.discovered_cameras.keys():
             data.append( [ id_cam,  self.discovered_cameras[id_cam] ])
 
-        self.logger.debug(f'Reporting {len(data)} cameras')
+        self.logger.info(f'Reporting {len(data)} cameras')
 
         await self.sio.emit(
             event='cameras',
+            data=data,
+            callback=None
+            )
+
+    async def report_docker(self):
+        if not self.sio or not self.sio.connected:
+            return
+
+        data = []
+        for id_container in self.discovered_docker_containers.keys():
+            cont = self.discovered_docker_containers[id_container][0]
+            cont_data = {
+                'id': id_container,
+                'name': cont.name,
+                'image': cont.image.id,
+                'short_id': cont.short_id,
+                'status': cont.status
+            }
+            data.append(cont_data)
+
+        self.logger.info(f'Reporting {len(data)} docker containers')
+
+        await self.sio.emit(
+            event='docker',
             data=data,
             callback=None
             )
@@ -171,7 +218,7 @@ class Discovery:
 
         data = True if self.timer is not None else False
 
-        self.logger.debug(f'Reporting discovery running: {data}')
+        self.logger.info(f'Reporting discovery running: {data}')
 
         await self.sio.emit(
             event='discovery',
