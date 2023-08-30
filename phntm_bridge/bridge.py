@@ -69,7 +69,8 @@ from aiortc.rtcrtpsender import RTCRtpSender
 import os
 import platform
 
-from .inc.topic_reader import TopicReadSubscription, TopicReadProcessor
+from .inc.topic_reader import TopicReadSubscription
+from .inc.topic_read_processor import TopicReadProcessor
 from .inc.topic_writer import TopicWritePublisher
 from .inc.peer import WRTCPeer
 
@@ -83,7 +84,7 @@ class BridgeController(Node, BridgeControllerConfig):
     ##
     # node constructor
     ##
-    def __init__(self, context:Context, cbg:CallbackGroup, reader_ctrl_queue:mp.Queue, reader_data_out_queue:mp.Queue):
+    def __init__(self, context:Context, cbg:CallbackGroup, reader_ctrl_queue:mp.Queue, reader_out_queue:mp.Queue):
         super().__init__('phntm_bridge_ctrl', context=context)
 
         self.shutting_down:bool = False
@@ -129,7 +130,7 @@ class BridgeController(Node, BridgeControllerConfig):
             #self.data_led.off()
 
         self.reader_ctrl_queue:mp.Queue = reader_ctrl_queue
-        self.reader_data_out_queue:mp.Queue = reader_data_out_queue
+        self.reader_out_queue:mp.Queue = reader_out_queue
 
         self.get_logger().debug(f'Phntm Bridge started, idRobot={c(self.id_robot, "cyan")}')
 
@@ -318,6 +319,31 @@ class BridgeController(Node, BridgeControllerConfig):
                 return
 
     ##
+    # read and disctribute queued ros data
+    ##
+    async def read_queued_data(self):
+        # newest:dict[str:any] = {}
+        while not self.shutting_down:
+            # while True:
+            try:
+                [topic, msg] = self.reader_out_queue.get_nowait()
+                if topic in self.topic_read_subscriptions.keys():
+                    self.topic_read_subscriptions[topic].on_msg(msg)
+                    await asyncio.sleep(.01)
+                # newest[topic] = msg
+                # self.get_logger().warn(f'[{topic}] has {len(msg)} B')
+            except Empty:
+                pass
+
+            # for topic in newest.keys():
+            #     if topic in self.topic_read_subscriptions.keys():
+            #         self.topic_read_subscriptions[topic].on_msg(msg)
+            #         # await asyncio.sleep(.01)
+
+            # newest.clear()
+            await asyncio.sleep(.01)
+
+    ##
     # init p2p connection with a peer sdp offer
     ##
     async def on_peer_wrtc_offer(self, id_peer:str, offerData:dict):
@@ -500,21 +526,20 @@ class BridgeController(Node, BridgeControllerConfig):
 
                         reliability = self.get_parameter_or(f'{topic}.reliability', Parameter(name='', value=QoSReliabilityPolicy.BEST_EFFORT)).get_parameter_value().integer_value
                         durability = self.get_parameter_or(f'{topic}.durability', Parameter(name='', value=DurabilityPolicy.VOLATILE)).get_parameter_value().integer_value
-                        self.topic_read_subscriptions[topic] = TopicReadSubscription(node=self,
-                                                                                      topic=topic,
-                                                                                      protocol=protocol,
-                                                                                      reliability=reliability,
-                                                                                      durability=durability,
-                                                                                      cbg=self.callback_group,
-                                                                                      event_loop=asyncio.get_event_loop(),
-                                                                                      log_message_every_sec=self.log_message_every_sec
-                                                                                      )
+                        self.topic_read_subscriptions[topic] = TopicReadSubscription(ctrl_node=self,
+                                                                                     reader_ctrl_queue=self.reader_ctrl_queue,
+                                                                                     topic=topic,
+                                                                                     protocol=protocol,
+                                                                                     reliability=reliability,
+                                                                                     durability=durability,
+                                                                                     cbg=self.callback_group,
+                                                                                     event_loop=asyncio.get_event_loop(),
+                                                                                     log_message_every_sec=self.log_message_every_sec
+                                                                                    )
                         def on_msg_cb():
                             if self.data_led != None:
                                 self.data_led.once() # blink when sending data to a peer
                         self.topic_read_subscriptions[topic].on_msg_cb = lambda: on_msg_cb() #blinker
-
-                        self.reader_ctrl_queue.put(['subscribe', topic, protocol, reliability, durability])
 
                     if not topic in peer.outbound_data_channels.keys():
                         self.wrtc_nextChannelId += 1
@@ -1235,6 +1260,7 @@ class BridgeController(Node, BridgeControllerConfig):
             except Exception as e:
                 print(f'**spin exception ** {str(e)}')
                 pass
+            await asyncio.sleep(1.0) #slow spin
         print('**spin ended**')
 
         # def _spin(future: asyncio.Future, event_loop: asyncio.AbstractEventLoop):
@@ -1272,9 +1298,9 @@ async def main_async():
     # reader runs on a separate process
     reader_on_flag = mp.Value('b', 1, lock=False)
     reader_ctrl_queue = mp.Queue()
-    reader_data_out_queue = mp.Queue()
+    reader_out_queue = mp.Queue()
     topic_read_processor = mp.Process(target=TopicReadProcessor,
-                                      args=(reader_on_flag, reader_ctrl_queue, reader_data_out_queue, None))
+                                      args=(reader_on_flag, reader_ctrl_queue, reader_out_queue, None))
     topic_read_processor.start()
 
 
@@ -1291,7 +1317,7 @@ async def main_async():
 
     # rclpy.init(context=rcl_ctx)
 
-    bridge_node = BridgeController(context=rcl_ctx, cbg=rcl_cbg, reader_ctrl_queue=reader_ctrl_queue, reader_data_out_queue=reader_data_out_queue)
+    bridge_node = BridgeController(context=rcl_ctx, cbg=rcl_cbg, reader_ctrl_queue=reader_ctrl_queue, reader_out_queue=reader_out_queue)
 
     rcl_executor.add_node(bridge_node)
     rcl_cbg.add_entity(bridge_node)
@@ -1301,6 +1327,7 @@ async def main_async():
     # create tasks for spinning and sleeping
     spin_task = asyncio.get_event_loop().create_task(bridge_node.spin_async(rcl_executor, rcl_ctx, rcl_cbg))
     sio_task = asyncio.get_event_loop().create_task(bridge_node.spin_sio_client(addr=bridge_node.sio_address, port=bridge_node.sio_port, path=bridge_node.sio_path))
+    read_task = asyncio.get_event_loop().create_task(bridge_node.read_queued_data())
     discovery_task = asyncio.get_event_loop().create_task(bridge_node.discovery.start())
 
     # concurrently execute both tasks on this process

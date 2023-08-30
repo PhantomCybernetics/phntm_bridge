@@ -50,7 +50,7 @@ class Picamera2Subscription:
         video_config = self.picam2.create_video_configuration(queue=False,
                                                               transform=libcamera.Transform(hflip=1, vflip=1))
         self.picam2.configure(video_config)
-        self.encoder = H264Encoder(bitrate=10000000, framerate=30)
+        self.encoder = H264Encoder(bitrate=5000000, framerate=30)
         self.output = PacketsOutput()
 
         self.peers[id_peer] = sender
