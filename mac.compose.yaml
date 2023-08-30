@@ -1,6 +1,6 @@
 services:
   phntm_bridge:
-    image: phntm/bridge-dev:humble
+    image: phntm/bridge:humble
     container_name: phntm-bridge
     hostname: phntm-bridge.local
     restart: unless-stopped
@@ -19,6 +19,8 @@ services:
       - ~/aiortc:/ros2_ws/aiortc
       - ~/phntm_bridge_launch_params.yaml:/ros2_ws/phntm_bridge_params.yaml
       - ~/ros_bags:/ros_bags
+      - /Users/mirek/.docker/run/docker.sock:/host_run/docker.sock #docker control
+
       # - /tmp/.X11-unix:/tmp/.X11-unix
       # - ~/.Xauthority:/root/.Xauthority:rw
     devices:
@@ -28,7 +30,7 @@ services:
       /bin/sh -c "while sleep 1000; do :; done"
 
   rosbag_player:
-    image: phntm/bridge-dev:humble
+    image: phntm/bridge:humble
     container_name: rosbag-player
     hostname: rosbag-player.local
     restart: unless-stopped
@@ -38,6 +40,18 @@ services:
       # ros2 launch phntm_webrtc_bridge bridge_launch.py
       /bin/sh -c "while sleep 1000; do :; done"
 
+
+  joy2twist:
+    image: husarion/joy2twist:humble
+    container_name: joy2twist
+    restart: unless-stopped
+    devices:
+       - /dev:/dev
+    volumes:
+      - ~/joy2twist.yaml:/joy2twist.yaml
+    command: >
+      ros2 launch joy2twist gamepad_controller.launch.py
+        joy2twist_params_file:=/joy2twist.yaml
 
   rviz:
     image: husarion/rviz2:humble
@@ -127,17 +141,7 @@ services:
       # ros2 launch phntm_webrtc_bridge bridge_launch.py
       /bin/sh -c "while sleep 1000; do :; done"
 
-  joy2twist:
-    image: husarion/joy2twist:humble
-    container_name: joy2twist
-    restart: unless-stopped
-    devices:
-       - /dev:/dev
-    volumes:
-      - ~/joy2twist.yaml:/joy2twist.yaml
-    command: >
-      ros2 launch joy2twist gamepad_controller.launch.py
-        joy2twist_params_file:=/joy2twist.yaml
+
 
   # husarion_webots:
   #   image: husarion/webots:humble

@@ -12,10 +12,63 @@ from rclpy.qos import QoSHistoryPolicy, QoSReliabilityPolicy, DurabilityPolicy
 
 from termcolor import colored as c
 
+import rclpy
+
 from typing import Callable
 import time
-
+from rclpy.callback_groups import CallbackGroup, MutuallyExclusiveCallbackGroup
+from rclpy.context import Context
+from rclpy.executors import Executor, MultiThreadedExecutor, SingleThreadedExecutor
 import threading
+
+import multiprocessing as mp
+from queue import Empty, Full
+
+# runs as a separate process for bette isolation and lower ctrl/cam latency
+def TopicReadProcessor(running_shared:mp.Value, ctrl_queue:mp.Queue, data_out_queue:mp.Queue,
+                        conf:any,
+                        log_message_every_sec:float=5.0):
+
+    print('TopicReadProcessor: starting')
+
+    rcl_ctx = Context()
+    rcl_ctx.init() # This must be done before any ROS nodes can be created.
+    # rcl_cbg = MutuallyExclusiveCallbackGroup()
+    rcl_executor = SingleThreadedExecutor(context=rcl_ctx)
+    reader_node = Node("phntm_bridge_reader", context=rcl_ctx, enable_rosout=False)
+
+    rcl_executor.add_node(reader_node)
+    # rcl_cbg.add_entity(reader_node)
+    # rcl_cbg.add_entity(rcl_ctx)
+    # rcl_cbg.add_entity(rcl_executor)
+
+    reader_node.get_logger().set_level(rclpy.logging.LoggingSeverity.DEBUG)
+    # reader_node.load_config(self.get_logger())
+
+    try:
+        while running_shared.value > 0:
+            print(c(f'yellow! {reader_node}', 'yellow'))
+
+            while True:
+                try:
+                    ctrl_cmd = ctrl_queue.get(block=False)
+                    reader_node.get_logger().warn(f'Got new CMD: {str(ctrl_cmd)}')
+                except Empty:
+                    break
+
+            rcl_executor.spin_once(timeout_sec=1.0)
+            time.sleep(2)
+
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        pass
+    except Exception as e:
+        print(f'Exception in TopicReadProcessor {e}')
+
+    reader_node.destroy_node()
+    rcl_executor.shutdown()
+
+    print('TopicReadProcessor: exiting')
+
 
 class TopicReadSubscription:
 

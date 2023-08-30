@@ -8,6 +8,17 @@ from rclpy.context import Context
 from rclpy.timer import Timer
 
 from .inc.status_led import StatusLED
+from termcolor import colored as c
+
+import docker
+docker_client = None
+try:
+    host_docker_socket = 'unix:///host_run/docker.sock' # link /var/run/ to /host_run/ in docker-compose
+    # host_docker_socket = 'tcp://0.0.0.0:2375'
+    docker_client = docker.DockerClient(base_url=host_docker_socket)
+except Exception as e:
+    print(c(f'Failed to init docker client with {host_docker_socket} {e}', 'red'))
+    pass
 
 from rcl_interfaces.msg import ParameterDescriptor
 import signal
@@ -15,7 +26,6 @@ import time
 import sys
 import traceback
 import netifaces
-from termcolor import colored as c
 
 try:
     from picamera2 import Picamera2
@@ -59,7 +69,7 @@ from aiortc.rtcrtpsender import RTCRtpSender
 import os
 import platform
 
-from .inc.topic_reader import TopicReadSubscription
+from .inc.topic_reader import TopicReadSubscription, TopicReadProcessor
 from .inc.topic_writer import TopicWritePublisher
 from .inc.peer import WRTCPeer
 
@@ -73,8 +83,8 @@ class BridgeController(Node, BridgeControllerConfig):
     ##
     # node constructor
     ##
-    def __init__(self, context:Context, cbg:CallbackGroup):
-        super().__init__('phntm_bridge', context=context)
+    def __init__(self, context:Context, cbg:CallbackGroup, reader_ctrl_queue:mp.Queue, reader_data_out_queue:mp.Queue):
+        super().__init__('phntm_bridge_ctrl', context=context)
 
         self.shutting_down:bool = False
         self.paused:bool = False
@@ -83,9 +93,13 @@ class BridgeController(Node, BridgeControllerConfig):
         self.get_logger().set_level(rclpy.logging.LoggingSeverity.DEBUG)
         self.load_config(self.get_logger())
 
+        # separate process
         self.topic_read_subscriptions:dict[str: TopicReadSubscription] = {}
+
+        # this process
         self.topic_write_publishers:dict[str: TopicWritePublisher] = {}
-        self.camera_subscriptions:dict[str: CameraSubscription] = {}
+        self.camera_subscriptions:dict[str: Picamera2Subscription] = {}
+
         self.service_clients:dict[str: any] = {} # service name => client
 
         self.wrtc_nextChannelId = 1
@@ -100,7 +114,7 @@ class BridgeController(Node, BridgeControllerConfig):
 
         discovery_period:float = self.get_parameter('discovery_period_sec').get_parameter_value().double_value
         stop_discovery_after:float = self.get_parameter('stop_discovery_after_sec').get_parameter_value().double_value
-        self.discovery:Discovery = Discovery(discovery_period, stop_discovery_after, self, cbg, picam2, self.sio)
+        self.discovery:Discovery = Discovery(discovery_period, stop_discovery_after, self, cbg, picam2, docker_client, self.sio)
 
         self.conn_led = None
         if (self.conn_led_topic != None and self.conn_led_topic != ''):
@@ -113,6 +127,9 @@ class BridgeController(Node, BridgeControllerConfig):
             self.get_logger().info(f'DATA Led uses {self.data_led_topic}')
             self.data_led = StatusLED('data', node=self, cbg=self.callback_group, mode=StatusLED.Mode.OFF, topic=self.data_led_topic, qos=QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT))
             #self.data_led.off()
+
+        self.reader_ctrl_queue:mp.Queue = reader_ctrl_queue
+        self.reader_data_out_queue:mp.Queue = reader_data_out_queue
 
         self.get_logger().debug(f'Phntm Bridge started, idRobot={c(self.id_robot, "cyan")}')
 
@@ -139,7 +156,10 @@ class BridgeController(Node, BridgeControllerConfig):
             await asyncio.get_event_loop().create_task(self.discovery.report_cameras())
             await asyncio.get_event_loop().create_task(self.discovery.report_topics())
             await asyncio.get_event_loop().create_task(self.discovery.report_services())
+            await asyncio.get_event_loop().create_task( self.discovery.report_docker())
             await asyncio.get_event_loop().create_task(self.discovery.report_discovery())
+
+        event_loop = asyncio.get_event_loop()
 
         @self.sio.on('offer')
         async def on_offer(data):
@@ -148,10 +168,57 @@ class BridgeController(Node, BridgeControllerConfig):
                 return { 'err': 2, 'msg': 'No valid peer id provided' }
             return await self.on_peer_wrtc_offer(id_peer, data)
 
+        @self.sio.on('discovery')
+        async def on_discovery(data):
+            id_peer:str = WRTCPeer.GetId(data)
+            if id_peer == None:
+                return { 'err': 2, 'msg': 'No valid peer id provided' }
+            if not id_peer in self.wrtc_peers.keys():
+                return { 'err': 2, 'msg': 'Peer not connected' }
+            new_state = True if data['state'] else False
+            if new_state:
+                await self.discovery.start()
+            else:
+                await self.discovery.stop()
+            return { 'success': 1, 'discovery': self.discovery.running() }
+
+        @self.sio.on('docker')
+        async def on_docker_call(data):
+            id_peer:str = WRTCPeer.GetId(data)
+            if id_peer == None:
+                return { 'err': 2, 'msg': 'No valid peer id provided' }
+            if not id_peer in self.wrtc_peers.keys():
+                return { 'err': 2, 'msg': 'Peer not connected' }
+            id_container = data['container']
+            msg = data['msg']
+            if not id_container:
+                return { 'err': 2, 'msg': 'No container id provided' }
+            if not msg:
+                return { 'err': 2, 'msg': 'No container msg provided' }
+
+            cont = self.discovery.discovered_docker_containers[id_container]
+            if not cont:
+                return { 'err': 2, 'msg': 'Container not found here'}
+
+            self.get_logger().warn(f'Peer {id_peer} calling {msg} on docker container {cont[0].name} [{cont[0].status}]')
+
+            match msg:
+                case 'start':
+                    event_loop.run_in_executor(None, cont[0].start)
+                case 'stop':
+                    event_loop.run_in_executor(None, lambda: cont[0].stop(timeout=3)) # wait 3s then kill
+                case 'restart':
+                    event_loop.run_in_executor(None, lambda: cont[0].restart(timeout=3) ) # wait 3s then kill
+                case _:
+                   return { 'err': 2, 'msg': 'Invalid container action provided (start, stop or restart)'}
+
+            await self.discovery.start()
+
+            return { 'success': 1 }
+
         # subscribe and unsubscribe data channels
         # bcs the negotionation doesn't seem to be implemented well at the moment
         # it's be nice to do thisvia webrtc tho
-        event_loop = asyncio.get_event_loop()
         @self.sio.on('subscription:read')
         async def on_read_subscription(data:dict):
             id_peer = WRTCPeer.GetId(data)
@@ -332,26 +399,35 @@ class BridgeController(Node, BridgeControllerConfig):
         self.get_logger().info(c(f'Peer {id_peer} disconnected, cleaning up', 'red'))
 
         # read topics
-        for topic in self.topic_read_subscriptions.keys().copy():
+        delete_topics = []
+        for topic in self.topic_read_subscriptions.keys():
             if self.topic_read_subscriptions[topic].stop(id_peer): # subscriber destroyed
-                self.topic_read_subscriptions.pop(topic)
+                delete_topics.append(topic)
+        for topic in delete_topics:
+            del self.topic_read_subscriptions[topic]
 
         # wite tpics
-        for topic in self.topic_write_publishers.keys().copy():
+        delete_topics = []
+        for topic in self.topic_write_publishers.keys():
             if self.topic_write_publishers[topic].stop(id_peer): # publisher destroyed
-                self.topic_write_publishers.pop(topic)
+                delete_topics.append(topic)
+        for topic in delete_topics:
+            del self.topic_write_publishers[topic]
 
         # cameras
-        for cam in self.camera_subscriptions.keys().copy():
+        delete_cams = []
+        for cam in self.camera_subscriptions.keys():
             if self.camera_subscriptions[cam].stop(id_peer): # camera destroyed
-                self.camera_subscriptions.pop(cam)
+                delete_cams.append(cam)
+        for cam in delete_cams:
+            del self.camera_subscriptions[cam]
 
         if id_peer in self.wrtc_peers.keys():
             try:
                 await self.wrtc_peers[id_peer].pc.close()
             except Exception as e:
                 pass
-            self.wrtc_peers.pop(id_peer)
+            del self.wrtc_peers[id_peer]
 
 
     ##
@@ -421,9 +497,6 @@ class BridgeController(Node, BridgeControllerConfig):
                 if not is_image:
 
                     if not topic in self.topic_read_subscriptions:
-                        def on_msg_cb():
-                            if self.data_led != None:
-                                self.data_led.once() # blink when sending data to a peer
 
                         reliability = self.get_parameter_or(f'{topic}.reliability', Parameter(name='', value=QoSReliabilityPolicy.BEST_EFFORT)).get_parameter_value().integer_value
                         durability = self.get_parameter_or(f'{topic}.durability', Parameter(name='', value=DurabilityPolicy.VOLATILE)).get_parameter_value().integer_value
@@ -436,7 +509,12 @@ class BridgeController(Node, BridgeControllerConfig):
                                                                                       event_loop=asyncio.get_event_loop(),
                                                                                       log_message_every_sec=self.log_message_every_sec
                                                                                       )
+                        def on_msg_cb():
+                            if self.data_led != None:
+                                self.data_led.once() # blink when sending data to a peer
                         self.topic_read_subscriptions[topic].on_msg_cb = lambda: on_msg_cb() #blinker
+
+                        self.reader_ctrl_queue.put(['subscribe', topic, protocol, reliability, durability])
 
                     if not topic in peer.outbound_data_channels.keys():
                         self.wrtc_nextChannelId += 1
@@ -693,7 +771,7 @@ class BridgeController(Node, BridgeControllerConfig):
                     peer.video_tracks[id_cam] = sender
                     # await sender.track.set_frame(av.VideoFrame(width=640, height=480, format='rgb24'))
 
-                if not self.camera_subscriptions[id_cam].start(id_peer, peer.video_tracks[id_cam]):
+                if not await self.camera_subscriptions[id_cam].start(id_peer, peer.video_tracks[id_cam]):
                     self.get_logger().error(f'Camera {id_cam} failed to subscribe, peer={id_peer}')
                     return { 'err': 2, 'msg': f'Camera {id_cam} failed to subscribe'}
 
@@ -909,7 +987,6 @@ class BridgeController(Node, BridgeControllerConfig):
 
     #     return True
 
-
     # def unsubscribe_topic(self, topic:str, id_peer:str, out_res_unsubscribed:list[tuple[str,int]]):
     #     if not topic in self.topic_read_subscriptions.keys():
     #         self.get_logger().error(f'{topic} not found in self.topic_read_subscriptions ({str(self.topic_read_subscriptions)})')
@@ -958,7 +1035,6 @@ class BridgeController(Node, BridgeControllerConfig):
     #     #     #         if topic in self.wrtc_peer_video_tracks[id_peer]:
     #     #     #             self.wrtc_peer_video_tracks[id_peer].pop(topic)
     #     #     out_res_unsubscribed.append([ topic ])
-
 
     # def topic_subscriber_callback(self, topic, is_image, msg):
     #     self.topic_read_subscriptions[topic].num_received += 1 # num recieved
@@ -1149,44 +1225,85 @@ class BridgeController(Node, BridgeControllerConfig):
             #TODO actually I should spin ros node some more here
             await asyncio.sleep(1) # wait a bit
 
+    async def spin_async(self, rcl_executor:rclpy.executors.Executor, ctx:rclpy.context.Context, cbg:rclpy.callback_groups.CallbackGroup):
 
-async def spin_async(node: BridgeController, executor:rclpy.executors.Executor, ctx:rclpy.context.Context, cbg:rclpy.callback_groups.CallbackGroup):
+        # cancel = self.create_guard_condition(lambda: None)
 
-    cancel = node.create_guard_condition(lambda: None)
-
-    def _spin(node: Node,
-              future: asyncio.Future,
-              event_loop: asyncio.AbstractEventLoop):
-        while ctx.ok() and not future.cancelled() and not node.shutting_down:
+        while ctx.ok() and not self.shutting_down:
             try:
-                executor.spin_once()
-            except:
+                await asyncio.get_event_loop().run_in_executor(None, rcl_executor.spin_once)
+            except Exception as e:
+                print(f'**spin exception ** {str(e)}')
                 pass
-        if not future.cancelled():
-            event_loop.call_soon_threadsafe(future.set_result, None)
+        print('**spin ended**')
 
-    node.spin_task = asyncio.get_event_loop().create_future()
-    node.spin_thread = threading.Thread(target=_spin, args=(node, node.spin_task, asyncio.get_event_loop()))
-    node.spin_thread.start()
-    try:
-        await node.spin_task
-    except:
-        pass
+        # def _spin(future: asyncio.Future, event_loop: asyncio.AbstractEventLoop):
+        #     while ctx.ok() and not future.cancelled() and not self.shutting_down:
+        #         try:
+        #             print('**spin**')
+        #             executor.spin_once()
+        #         except:
+        #             pass
+        #     if not future.cancelled():
+        #         event_loop.call_soon_threadsafe(future.set_result, None)
 
-    cancel.trigger()
 
-    node.spin_thread.join()
-    node.destroy_guard_condition(cancel)
+        # print('**about to spin**')
+        # await _spin()
 
-async def main_async(bridge_node:BridgeController, executor:rclpy.executors.Executor, ctx:rclpy.context.Context, cbg:rclpy.callback_groups.CallbackGroup):
+        # node.spin_task = asyncio.get_event_loop().create_future()
+        # node.spin_thread = threading.Thread(target=_spin, args=(node, node.spin_task, asyncio.get_event_loop()))
+        # node.spin_thread.start()
+        # try:
+        #     await _spin()
+        # except:
+        #     pass
+
+        # cancel.trigger()
+
+        # node.spin_thread.join()
+        # node.destroy_guard_condition(cancel)
+
+# async def main_async(bridge_node:BridgeController, executor:rclpy.executors.Executor, ctx:rclpy.context.Context, cbg:rclpy.callback_groups.CallbackGroup):
     # create a node without any work to do
 
+async def main_async():
+
+    # reader runs on a separate process
+    reader_on_flag = mp.Value('b', 1, lock=False)
+    reader_ctrl_queue = mp.Queue()
+    reader_data_out_queue = mp.Queue()
+    topic_read_processor = mp.Process(target=TopicReadProcessor,
+                                      args=(reader_on_flag, reader_ctrl_queue, reader_data_out_queue, None))
+    topic_read_processor.start()
+
+
+    rcl_ctx = Context()
+    rcl_ctx.init() # This must be done before any ROS nodes can be created.
+
+    # rclpy.init(context=rcl_ctx)
+    # rclpy.uninstall_signal_handlers() #duplicate?
+    # ctx.init()
+
+    rcl_cbg = MutuallyExclusiveCallbackGroup()
+
+    rcl_executor = rclpy.executors.SingleThreadedExecutor(context=rcl_ctx)
+
+    # rclpy.init(context=rcl_ctx)
+
+    bridge_node = BridgeController(context=rcl_ctx, cbg=rcl_cbg, reader_ctrl_queue=reader_ctrl_queue, reader_data_out_queue=reader_data_out_queue)
+
+    rcl_executor.add_node(bridge_node)
+    rcl_cbg.add_entity(bridge_node)
+    rcl_cbg.add_entity(rcl_ctx)
+    rcl_cbg.add_entity(rcl_executor)
+
     # create tasks for spinning and sleeping
-    spin_task = asyncio.get_event_loop().create_task(spin_async(bridge_node, executor, ctx, cbg))
+    spin_task = asyncio.get_event_loop().create_task(bridge_node.spin_async(rcl_executor, rcl_ctx, rcl_cbg))
     sio_task = asyncio.get_event_loop().create_task(bridge_node.spin_sio_client(addr=bridge_node.sio_address, port=bridge_node.sio_port, path=bridge_node.sio_path))
     discovery_task = asyncio.get_event_loop().create_task(bridge_node.discovery.start())
 
-    # concurrently execute both tasks
+    # concurrently execute both tasks on this process
     await asyncio.wait([spin_task, sio_task], return_when=asyncio.ALL_COMPLETED)
 
     # cancel tasks
@@ -1195,55 +1312,33 @@ async def main_async(bridge_node:BridgeController, executor:rclpy.executors.Exec
     if sio_task.cancel():
         await sio_task
 
-def main(args=None):
+    reader_on_flag.value = 0
 
-    ctx = Context()
+    # try:
+    #     asyncio.get_event_loop().run_until_complete(main_async(bridge_node, executor, ctx, cbg))
+    # except:
+    #     pass
 
-    rclpy.init(context=ctx)
-    # rclpy.uninstall_signal_handlers() #duplicate?
-
-    # ctx.init()
-
-    cbg = MutuallyExclusiveCallbackGroup()
-
-    executor = rclpy.executors.MultiThreadedExecutor(context=ctx)
-
-    bridge_node = BridgeController(context=ctx, cbg=cbg)
-
-    executor.add_node(bridge_node)
-    cbg.add_entity(bridge_node)
-    cbg.add_entity(ctx)
-    cbg.add_entity(executor)
-
-    try:
-        asyncio.get_event_loop().run_until_complete(main_async(bridge_node, executor, ctx, cbg))
-    except:
-        pass
+    topic_read_processor.terminate()
+    topic_read_processor.join()
 
     asyncio.get_event_loop().run_until_complete(bridge_node.shutdown_cleanup())
 
     try:
         bridge_node.destroy_node()
-        executor.shutdown()
+        rcl_executor.shutdown()
         rclpy.shutdown()
     except:
         pass
 
     asyncio.get_event_loop().close()
 
+def main(): # ros2 calls this, so init here
+    # print(f'mp.start_method={mp.get_start_method()}')
+    try:
+        asyncio.run(main_async())
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        pass
 
-if __name__ == '__main__':
-    # with cProfile.Profile() as profile:
-    mp.set_start_method('spawn')
+if __name__ == '__main__': #ignired by ros
     main()
-
-    # pr.disable()
-    # s = io.StringIO()
-    # sortby = SortKey.CUMULATIVE
-    # ps = pstats.Stats(pr, stream=s).sort_stats(sortby)
-    # ps.print_stats()
-    # print(s.getvalue())
-
-    # results = pstats.Stats(profile)
-    # results.sort_stats(pstats.SortKey.TIME)
-    # results.print_stats()

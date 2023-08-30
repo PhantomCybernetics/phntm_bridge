@@ -90,8 +90,7 @@ boot_delay=0
 enable_uart=1
 " >> /boot/config.txt
 
-# comment line
-otg_mode=1
+# otg_mode=1 must be loke this to make this rplidar work
 
 sudo systemctl disable hciuart # uart used for core2
 

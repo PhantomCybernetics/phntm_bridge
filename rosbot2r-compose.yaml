@@ -1,6 +1,50 @@
 version: "3.9"
 
 services:
+
+  phntm_bridge:
+    image: phntm-bridge:humble
+    container_name: phntm-bridge
+    hostname: phntm-bridge.local
+    restart: unless-stopped
+    privileged: true
+    network_mode: host
+    volumes:
+      - ~/phntm_bridge:/ros2_ws/src/phntm_bridge
+      - ~/aioice:/ros2_ws/aioice
+      - ~/aiortc:/ros2_ws/aiortc
+      - ~/marcel_launch_params.yaml:/ros2_ws/phntm_bridge_params.yaml
+      - /var/run:/host_run
+    devices:
+      - /dev:/dev
+    command:
+      # ros2 launch phntm_bridge bridge_launch.py
+      /bin/sh -c "while sleep 1000; do :; done"
+
+  mecanum_drive:
+    image: mecanum-bot:humble
+    container_name: mecanum-drive
+    hostname: mecanum-drive.local
+    restart: unless-stopped
+    privileged: true
+    devices:
+      - /dev:/dev
+    command:
+      # ros2 launch phntm_bridge bridge_launch.py
+      /bin/sh -c "while sleep 1000; do :; done"
+
+   joy2twist:
+    image: husarion/joy2twist:humble
+    container_name: joy2twist
+    restart: unless-stopped
+    devices:
+      - /dev/input
+    volumes:
+      - ./joy2twist.yaml:/joy2twist.yaml
+    command: >
+      ros2 launch joy2twist gamepad_controller.launch.py
+        joy2twist_params_file:=/joy2twist.yaml
+
   astra:
     image: husarion/astra:humble-1.0.2-20230427
     container_name: astra
@@ -15,6 +59,7 @@ services:
     image: husarion/rplidar:humble
     container_name: rplidar
     restart: unless-stopped
+    cpu_count: 1
     devices:
       - /dev/ttyUSB0:/dev/ttyUSB0
     command: >
@@ -39,35 +84,11 @@ services:
       - "/dev/serial0"   # must match environment SERIAL_PORT
     command: ros2 launch rosbot_bringup bringup.launch.py
 
-  joy2twist:
-    image: husarion/joy2twist:humble
-    container_name: joy2twist
-    restart: unless-stopped
-    devices:
-      - /dev/input
-    volumes:
-      - ./joy2twist.yaml:/joy2twist.yaml
-    command: >
-      ros2 launch joy2twist gamepad_controller.launch.py
-        joy2twist_params_file:=/joy2twist.yaml
 
-  phntm_bridge:
-    image: phntm-bridge:humble
-    container_name: phntm-bridge
-    hostname: phntm-bridge.local
-    restart: unless-stopped
-    privileged: true
-    network_mode: host
-    volumes:
-      - ~/phntm_bridge:/ros2_ws/src/phntm_bridge
-      - ~/aioice:/ros2_ws/aioice
-      - ~/aiortc:/ros2_ws/aiortc
-      - ~/marcel_launch_params.yaml:/ros2_ws/phntm_bridge_params.yaml
-    devices:
-      - /dev:/dev
-    command:
-      # ros2 launch phntm_bridge bridge_launch.py
-      /bin/sh -c "while sleep 1000; do :; done"
+
+
+
+
 
 
       #  image_transport:
@@ -121,7 +142,7 @@ services:
       #    cap_add:
       #      - SYS_PTRACE
       #    security_opt:
-      #      - seccomp:unconfined   
+      #      - seccomp:unconfined
       #    volumes:
       #      - ~/ros2_ws/src/webrtc_ros:/ws/src
       #      - /etc/timezone:/etc/timezone:ro
