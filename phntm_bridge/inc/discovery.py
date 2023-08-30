@@ -112,7 +112,9 @@ class Discovery:
 
         #docker
         docker_containers_changed = False
-        new_docker_containers = self.docker_client.containers.list(all=True)
+        new_docker_containers = []
+        if self.docker_client:
+            new_docker_containers = self.docker_client.containers.list(all=True)
         for container in new_docker_containers:
             # print (f'container "{container.id}" <<{container.name}>>')
             # id_cam = cam_info[0]
