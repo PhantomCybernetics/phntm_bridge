@@ -20,6 +20,7 @@ from rclpy.callback_groups import CallbackGroup, MutuallyExclusiveCallbackGroup
 from rclpy.context import Context
 from rclpy.executors import Executor, MultiThreadedExecutor, SingleThreadedExecutor
 import threading
+import traceback
 
 import multiprocessing as mp
 from queue import Empty, Full
@@ -127,11 +128,13 @@ class TopicReadSubscription:
                         # self.event_loop.run_in_executor(self.executor, dc.send, what)
                     # self.event_loop.call_soon_threadsafe(send_this, msg)
                     # dc.send(msg)
+                    # self.event_loop.call_soon_threadsafe(dc.send, msg)
                     self.event_loop.call_soon_threadsafe(dc.send, msg)
-                    # self.event_loop.run_in_executor(None, dc.send, msg)
                     # await dc.send(msg) #always raw bytes bcs fast
                 except Exception as e:
-                    print(f'Exception {e}')
+                    print(f'Exception in on_msg: {e}')
+                    traceback.print_exception(e)
+
             # else:
                 # self.node.get_logger().info(c(f'DC {self.topic} for id_peer={id_peer} not open, not sending', 'dark_grey'))
                 # self.peers.pop(id_peer)

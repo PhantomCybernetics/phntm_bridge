@@ -20,10 +20,10 @@ from rclpy.callback_groups import CallbackGroup, MutuallyExclusiveCallbackGroup
 from rclpy.context import Context
 from rclpy.executors import Executor, MultiThreadedExecutor, SingleThreadedExecutor
 import threading
+import traceback
 
 import multiprocessing as mp
 from queue import Empty, Full
-
 
 def on_topic_msg(topic:str, msg:any, newest:dict[str:any]):
     # reader_node.get_logger().info(f' >> {msg_topic}, got {len(msg)} B')
@@ -82,7 +82,7 @@ def TopicReadProcessor(running_shared:mp.Value, ctrl_queue:mp.Queue, data_out_qu
     rcl_ctx = Context()
     rcl_ctx.init() # This must be done before any ROS nodes can be created.
     # rcl_cbg = MutuallyExclusiveCallbackGroup()
-    rcl_executor = MultiThreadedExecutor(context=rcl_ctx)
+    rcl_executor = SingleThreadedExecutor(context=rcl_ctx)
     reader_node = Node("phntm_bridge_reader", context=rcl_ctx, enable_rosout=False)
 
     rcl_executor.add_node(reader_node)
@@ -108,7 +108,12 @@ def TopicReadProcessor(running_shared:mp.Value, ctrl_queue:mp.Queue, data_out_qu
                     break # all messages processed
 
             # spin the node
-            rcl_executor.spin_once(timeout_sec=1.0) #initially times out before tehre is anything to do (subscribers)
+            try:
+                rcl_executor.spin_once(timeout_sec=.01) #initially times out before there is something to do (subscribers)
+            except Exception as e:
+                print(c(f'Exception while spinning read processor node', 'red'))
+                traceback.print_exception(e)
+                continue
 
             for topic in newest.keys():
                 try:
@@ -117,13 +122,13 @@ def TopicReadProcessor(running_shared:mp.Value, ctrl_queue:mp.Queue, data_out_qu
                     reader_node.get_logger().warn(f' >> out queue full, dropping {topic} msg')
                     pass
             newest.clear()
-            time.sleep(.1)
+            time.sleep(.01)
 
     except (asyncio.CancelledError, KeyboardInterrupt):
         pass
     except Exception as e:
-        print(c(f'Exception in TopicReadProcessor:', 'red'))
-        print(e)
+        print(c(f'Exception in TopicReadProcessor loop:', 'red'))
+        traceback.print_exception(e)
 
     reader_node.destroy_node()
     rcl_executor.shutdown()

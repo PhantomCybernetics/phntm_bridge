@@ -321,18 +321,22 @@ class BridgeController(Node, BridgeControllerConfig):
     ##
     # read and disctribute queued ros data
     ##
-    async def read_queued_data(self):
+    def read_queued_data(self):
         # newest:dict[str:any] = {}
         while not self.shutting_down:
             # while True:
             try:
-                [topic, msg] = self.reader_out_queue.get_nowait()
+                # print('read_queued_data >')
+                [topic, msg] = self.reader_out_queue.get()
+                # print('< read_queued_data')
+
                 if topic in self.topic_read_subscriptions.keys():
                     self.topic_read_subscriptions[topic].on_msg(msg)
-                    await asyncio.sleep(.01)
+                    # await asyncio.sleep(.01)
                 # newest[topic] = msg
                 # self.get_logger().warn(f'[{topic}] has {len(msg)} B')
             except Empty:
+                self.get_logger().warn(f'queue empty')
                 pass
 
             # for topic in newest.keys():
@@ -341,7 +345,7 @@ class BridgeController(Node, BridgeControllerConfig):
             #         # await asyncio.sleep(.01)
 
             # newest.clear()
-            await asyncio.sleep(.01)
+            # await asyncio.sleep(.01)
 
     ##
     # init p2p connection with a peer sdp offer
@@ -548,7 +552,8 @@ class BridgeController(Node, BridgeControllerConfig):
                                                                       protocol=protocol,
                                                                       negotiated=True,
                                                                       ordered=False,
-                                                                      maxRetransmits=0
+                                                                      maxRetransmits=1,
+                                                                    #   maxPacketLifeTime=10 #ms
                                                                       )
                         peer.outbound_data_channels[topic] = dc
                         self.get_logger().debug(f'Peer {id_peer} subscribed to {topic} (protocol={protocol}, ch_id={dc.id})')
@@ -1228,9 +1233,8 @@ class BridgeController(Node, BridgeControllerConfig):
         self.shutting_down = True
 
         # close peer connections
-        coros = [peer.pc.close() for peer in self.wrtc_peers.values()]
-        await asyncio.gather(*coros)
-        self.wrtc_peers.clear()
+        peer_remove_coros = [self.remove_peer(peer.id, False) for peer in self.wrtc_peers.values()]
+        await asyncio.gather(*peer_remove_coros)
 
         await self.sio.disconnect()
         self.spin_task.cancel()
@@ -1258,10 +1262,11 @@ class BridgeController(Node, BridgeControllerConfig):
             try:
                 await asyncio.get_event_loop().run_in_executor(None, rcl_executor.spin_once)
             except Exception as e:
-                print(f'**spin exception ** {str(e)}')
+                print(c(f'Exception while spinning ctrl node', 'red'))
+                traceback.print_exception(e)
                 pass
-            await asyncio.sleep(1.0) #slow spin
-        print('**spin ended**')
+            await asyncio.sleep(0.01) #slow spin
+        print('Done spinning ctrl node')
 
         # def _spin(future: asyncio.Future, event_loop: asyncio.AbstractEventLoop):
         #     while ctx.ok() and not future.cancelled() and not self.shutting_down:
@@ -1303,7 +1308,6 @@ async def main_async():
                                       args=(reader_on_flag, reader_ctrl_queue, reader_out_queue, None))
     topic_read_processor.start()
 
-
     rcl_ctx = Context()
     rcl_ctx.init() # This must be done before any ROS nodes can be created.
 
@@ -1324,11 +1328,15 @@ async def main_async():
     rcl_cbg.add_entity(rcl_ctx)
     rcl_cbg.add_entity(rcl_executor)
 
-    # create tasks for spinning and sleeping
-    spin_task = asyncio.get_event_loop().create_task(bridge_node.spin_async(rcl_executor, rcl_ctx, rcl_cbg))
-    sio_task = asyncio.get_event_loop().create_task(bridge_node.spin_sio_client(addr=bridge_node.sio_address, port=bridge_node.sio_port, path=bridge_node.sio_path))
-    read_task = asyncio.get_event_loop().create_task(bridge_node.read_queued_data())
-    discovery_task = asyncio.get_event_loop().create_task(bridge_node.discovery.start())
+    try:
+        # create tasks for spinning and sleeping
+        spin_task = asyncio.get_event_loop().create_task(bridge_node.spin_async(rcl_executor, rcl_ctx, rcl_cbg))
+        sio_task = asyncio.get_event_loop().create_task(bridge_node.spin_sio_client(addr=bridge_node.sio_address, port=bridge_node.sio_port, path=bridge_node.sio_path))
+        asyncio.get_event_loop().run_in_executor(None, bridge_node.read_queued_data)
+        discovery_task = asyncio.get_event_loop().create_task(bridge_node.discovery.start())
+    except Exception as e:
+        print(c('Exception in main_async()', 'red'))
+        traceback.print_exc(e)
 
     # concurrently execute both tasks on this process
     await asyncio.wait([spin_task, sio_task], return_when=asyncio.ALL_COMPLETED)
@@ -1339,13 +1347,11 @@ async def main_async():
     if sio_task.cancel():
         await sio_task
 
-    reader_on_flag.value = 0
-
     # try:
     #     asyncio.get_event_loop().run_until_complete(main_async(bridge_node, executor, ctx, cbg))
     # except:
     #     pass
-
+    reader_on_flag.value = 0 #stop readed thread
     topic_read_processor.terminate()
     topic_read_processor.join()
 
