@@ -558,7 +558,7 @@ class BridgeController(Node, BridgeControllerConfig):
                                                                       protocol=protocol,
                                                                       negotiated=True,
                                                                       ordered=False,
-                                                                      maxRetransmits=1,
+                                                                      maxRetransmits=None,
                                                                     #   maxPacketLifeTime=10 #ms
                                                                       )
                         peer.outbound_data_channels[topic] = dc
@@ -698,7 +698,7 @@ class BridgeController(Node, BridgeControllerConfig):
 
                     @dc.on('message')
                     async def on_inbound_channel_message(msg):
-                        self.topic_write_publishers[topic].publish(id_peer, msg)
+                        asyncio.get_event_loop().run_in_executor(None, lambda: self.topic_write_publishers[topic].publish(id_peer, msg))
 
                 res_subscribed.append([topic, peer.inbound_data_channels[topic].id, protocol])
 
