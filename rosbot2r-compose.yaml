@@ -33,7 +33,7 @@ services:
       # ros2 launch phntm_bridge bridge_launch.py
       /bin/sh -c "while sleep 1000; do :; done"
 
-   joy2twist:
+  joy2twist:
     image: husarion/joy2twist:humble
     container_name: joy2twist
     restart: unless-stopped
@@ -59,12 +59,12 @@ services:
     image: husarion/rplidar:humble
     container_name: rplidar
     restart: unless-stopped
-    cpu_count: 1
     devices:
       - /dev/ttyUSB0:/dev/ttyUSB0
     command: >
         ros2 launch sllidar_ros2 sllidar_launch.py
-        serial_baudrate:=${RPLIDAR_BAUDRATE:-255993}
+          serial_baudrate:=${RPLIDAR_BAUDRATE:-255993}
+          scan_frequency:=3
 
   microros:
     image: husarion/micro-ros-agent:humble
@@ -83,84 +83,3 @@ services:
     devices:
       - "/dev/serial0"   # must match environment SERIAL_PORT
     command: ros2 launch rosbot_bringup bringup.launch.py
-
-
-
-
-
-
-
-
-      #  image_transport:
-      #    image: phntm/bridge:humble
-      #    container_name: image-transport
-      #    hostname: image-transport
-      #    restart: unless-stopped
-      #    privileged: true
-      #    network_mode: "host"
-      #    volumes:
-      #      - ~/ros2_ws/src/phntm_image_transport:/ros2_ws/src/image_transport
-      #      - ~/phntm_image_transport_launch_params.yaml:/ros2_ws/image_transport_params.yaml
-      #    devices:
-      #      - /dev:/dev
-      #    command:
-      # ros2 launch phntm_image_transport bridge_launch.py
-      #      /bin/sh -c "while sleep 1000; do :; done"
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-      #image_transport:
-      # image: phntm/image-transport:iron
-      # container_name: image-transport
-      #network_mode: "host"
-      # privileged: true
-      #restart: unless-stopped
-      #devices:
-      # - /dev:/dev
-      #command:
-      #/bin/sh -c "while sleep 1000; do :; done"
-
-
-
-      #  webrtc:
-      #    image: webrtc:foxy
-      #    container_name: webrtc
-      #    network_mode: "host"
-      #    privileged: true
-      #    cap_add:
-      #      - SYS_PTRACE
-      #    security_opt:
-      #      - seccomp:unconfined
-      #    volumes:
-      #      - ~/ros2_ws/src/webrtc_ros:/ws/src
-      #      - /etc/timezone:/etc/timezone:ro
-      #      - /etc/localtime:/etc/localtime:ro
-      #    devices:
-      #      - /dev:/dev
-      #    build:
-      #      context: .
-      #      dockerfile: ./Dockerfile
-      #    command: /bin/sh -c "while sleep 1000; do :; done"
-
-  #  rviz:
-  #    image: husarion/rviz2:humble
-  #    container_name: rviz
-  #    restart: unless-stopped
-  #    volumes:
-  #      - /tmp/.X11-unix:/tmp/.X11-unix:rw
-  #      - ./default.rviz:/root/.rviz2/default.rviz
-  #    environment:
-  #      - DISPLAY=${DISPLAY:?err}
-  #      - LIBGL_ALWAYS_SOFTWARE=1
