@@ -116,7 +116,7 @@ class TopicReadSubscription:
             self.last_log = self.last_msg_time #last logged now
 
         for id_peer in self.peers.keys():
-            dc = self.peers[id_peer]
+            dc:RTCDataChannel = self.peers[id_peer]
             if dc.readyState == 'open':
                 if log_msg:
                     self.ctrl_node.get_logger().info(f'△ Sending {len(msg)}B into {self.topic} for id_peer={id_peer}, total received: {self.num_received}')
@@ -129,7 +129,8 @@ class TopicReadSubscription:
                     # self.event_loop.call_soon_threadsafe(send_this, msg)
                     # dc.send(msg)
                     # self.event_loop.call_soon_threadsafe(dc.send, msg)
-                    self.event_loop.call_soon_threadsafe(dc.send, msg)
+                    # self.event_loop.call_soon_threadsafe(dc.send, msg)
+                    dc.send(msg)
                     # await dc.send(msg) #always raw bytes bcs fast
                 except Exception as e:
                     print(f'Exception in on_msg: {e}')

@@ -12,16 +12,14 @@ import time
 import docker
 import json
 
-class Discovery:
+class Introspection:
 
-    def __init__(self, period:float, stop_after:float, node:Node, cbg:CallbackGroup, picam2:Picamera2, docker_client:docker.DockerClient,  sio:socketio.AsyncClient):
+    def __init__(self, period:float, stop_after:float, ctrl_node:Node, picam2:Picamera2, docker_client:docker.DockerClient, sio:socketio.AsyncClient):
         self.period:float = period
         self.stop_after:float = stop_after
 
-        self.node:Node = node
-        self.logger:RcutilsLogger = node.get_logger()
-
-        self.callback_group:CallbackGroup = cbg
+        self.ctrl_node:Node = ctrl_node
+        self.logger = ctrl_node.get_logger()
 
         self.picam2:Picamera2 = picam2
         self.docker_client = docker_client
@@ -32,42 +30,41 @@ class Discovery:
         self.discovered_docker_containers:dict[str: [ docker.models.containers.Container, str ]] = {}
 
         self.sio:socketio.AsyncClient = sio
-        self.timer:Timer = None
+        self.running:bool = False
+
 
     async def start(self):
-        await self.stop()
-
-        asyncio.get_event_loop().create_task(self.run_discovery())  # first run now
         self.started_time = time.time()
+        self.running = True
+        await self.report_introspection()
 
-        if self.period > 0:
-            self.logger.info(c(f"Discovering every {self.period}s ...", 'dark_grey'))
-            self.timer = self.node.create_timer(self.period, self.run_discovery, self.callback_group) #then every n ses
-        else:
-            self.logger.info(c(f"Auto discovery is off", 'dark_grey'))
+        while self.running:
+            await self.run_discovery()
+            await asyncio.sleep(self.period)
+            if self.period <= 0: # one shot
+                await self.stop(report=True)
+                return
+            if self.stop_after > 0.0 and self.started_time+self.stop_after < time.time():
+                self.logger.info(c(f'Introspection stopped after {self.stop_after}s', 'dark_grey'))
+                await self.stop(report=True)
+                return
 
-        await self.report_discovery()
 
-    async def stop(self):
-        if self.timer is not None:
-            self.logger.info(c(f'Discovery stopped after {self.stop_after}s', 'dark_grey'))
-            self.timer.destroy()
-            self.timer = None
-            await self.report_discovery()
+    async def stop(self, report:bool = True):
+        if self.running:
+            self.running = False
+            if report:
+                await self.report_introspection()
 
-    def running(self) -> bool:
-        if self.timer is not None:
-            return True
-        return False
 
     # spinned by timer
     async def run_discovery(self):
 
-        self.logger.info(c(f'Discovering things...', 'dark_grey'))
+        self.logger.info(c(f'Introspecting...', 'dark_grey'))
 
         #topics
         topics_changed = False
-        new_topics = self.node.get_topic_names_and_types()
+        new_topics = self.ctrl_node.get_topic_names_and_types()
 
         for topic_info in new_topics:
             topic = topic_info[0]
@@ -81,7 +78,7 @@ class Discovery:
 
         #services
         services_changed = False
-        new_services = self.node.get_service_names_and_types()
+        new_services = self.ctrl_node.get_service_names_and_types()
 
         for service_info in new_services:
             service = service_info[0]
@@ -131,8 +128,6 @@ class Discovery:
         if docker_containers_changed:
             await self.report_docker()
 
-        if self.stop_after > 0.0 and self.started_time+self.stop_after < time.time():
-            await self.stop()
 
     async def report_topics(self):
         if not self.sio or not self.sio.connected:
@@ -190,6 +185,7 @@ class Discovery:
             callback=None
             )
 
+
     async def report_docker(self):
         if not self.sio or not self.sio.connected:
             return
@@ -214,16 +210,15 @@ class Discovery:
             callback=None
             )
 
-    async def report_discovery(self):
+
+    async def report_introspection(self):
         if not self.sio or not self.sio.connected:
             return
 
-        data = True if self.timer is not None else False
-
-        self.logger.info(f'Reporting discovery running: {data}')
+        self.logger.info(f'Reporting introspection running: {self.running}')
 
         await self.sio.emit(
             event='discovery',
-            data=data,
+            data=self.running,
             callback=None
             )

@@ -74,7 +74,7 @@ from .inc.topic_read_processor import TopicReadProcessor
 from .inc.topic_writer import TopicWritePublisher
 from .inc.peer import WRTCPeer
 
-from .inc.discovery import Discovery
+from .inc.introspection import Introspection
 from .inc.config import BridgeControllerConfig
 
 ROOT = os.path.dirname(__file__)
@@ -115,7 +115,12 @@ class BridgeController(Node, BridgeControllerConfig):
 
         discovery_period:float = self.get_parameter('discovery_period_sec').get_parameter_value().double_value
         stop_discovery_after:float = self.get_parameter('stop_discovery_after_sec').get_parameter_value().double_value
-        self.discovery:Discovery = Discovery(discovery_period, stop_discovery_after, self, cbg, picam2, docker_client, self.sio)
+        self.introspection:Introspection = Introspection(period=discovery_period,
+                                                         stop_after=stop_discovery_after,
+                                                         ctrl_node=self,
+                                                         picam2=picam2,
+                                                         docker_client=docker_client,
+                                                         sio=self.sio)
 
         self.conn_led = None
         if (self.conn_led_topic != None and self.conn_led_topic != ''):
@@ -154,11 +159,11 @@ class BridgeController(Node, BridgeControllerConfig):
                 self.conn_led.on()
 
             # TODO: maybe report to clients without server caching?
-            await asyncio.get_event_loop().create_task(self.discovery.report_cameras())
-            await asyncio.get_event_loop().create_task(self.discovery.report_topics())
-            await asyncio.get_event_loop().create_task(self.discovery.report_services())
-            await asyncio.get_event_loop().create_task( self.discovery.report_docker())
-            await asyncio.get_event_loop().create_task(self.discovery.report_discovery())
+            asyncio.get_event_loop().create_task(self.introspection.report_cameras())
+            asyncio.get_event_loop().create_task(self.introspection.report_topics())
+            asyncio.get_event_loop().create_task(self.introspection.report_services())
+            asyncio.get_event_loop().create_task(self.introspection.report_docker())
+            asyncio.get_event_loop().create_task(self.introspection.report_introspection())
 
         event_loop = asyncio.get_event_loop()
 
@@ -178,10 +183,11 @@ class BridgeController(Node, BridgeControllerConfig):
                 return { 'err': 2, 'msg': 'Peer not connected' }
             new_state = True if data['state'] else False
             if new_state:
-                await self.discovery.start()
+                asyncio.get_event_loop().create_task(self.introspection.start())
             else:
-                await self.discovery.stop()
-            return { 'success': 1, 'discovery': self.discovery.running() }
+                asyncio.get_event_loop().create_task(self.introspection.stop())
+                # await self.introspection.stop()
+            return { 'success': 1, 'discovery': self.introspection.running }
 
         @self.sio.on('docker')
         async def on_docker_call(data):
@@ -197,7 +203,7 @@ class BridgeController(Node, BridgeControllerConfig):
             if not msg:
                 return { 'err': 2, 'msg': 'No container msg provided' }
 
-            cont = self.discovery.discovered_docker_containers[id_container]
+            cont = self.introspection.discovered_docker_containers[id_container]
             if not cont:
                 return { 'err': 2, 'msg': 'Container not found here'}
 
@@ -213,7 +219,7 @@ class BridgeController(Node, BridgeControllerConfig):
                 case _:
                    return { 'err': 2, 'msg': 'Invalid container action provided (start, stop or restart)'}
 
-            await self.discovery.start()
+            asyncio.get_event_loop().create_task(self.introspection.start())
 
             return { 'success': 1 }
 
@@ -321,17 +327,17 @@ class BridgeController(Node, BridgeControllerConfig):
     ##
     # read and disctribute queued ros data
     ##
-    def read_queued_data(self):
+    async def read_queued_data(self):
         # newest:dict[str:any] = {}
         while not self.shutting_down:
             # while True:
             try:
                 # print('read_queued_data >')
-                [topic, msg] = self.reader_out_queue.get()
-                # print('< read_queued_data')
+                [topic, msg] = await asyncio.get_event_loop().run_in_executor(None, self.reader_out_queue.get) #blocks
+                # print('  < read_queued_data')
 
                 if topic in self.topic_read_subscriptions.keys():
-                    self.topic_read_subscriptions[topic].on_msg(msg)
+                    asyncio.get_event_loop().run_in_executor(None, self.topic_read_subscriptions[topic].on_msg, msg)
                     # await asyncio.sleep(.01)
                 # newest[topic] = msg
                 # self.get_logger().warn(f'[{topic}] has {len(msg)} B')
@@ -515,12 +521,12 @@ class BridgeController(Node, BridgeControllerConfig):
                 #print(f'on_read_subscriptions_change:subscribe {threading.get_ident()}')
 
                 # we wouldn't have to wait for discovery if we required msg type from the client (?)
-                if not topic in self.discovery.discovered_topics.keys():
+                if not topic in self.introspection.discovered_topics.keys():
                     self.get_logger().debug(f'Topic {topic} not discovered yet in on_read_subscriptions_change, peer {id_peer}')
                     res_err.append([topic, 'Not discovered yet'])
                     continue
 
-                protocol:str = ', '.join(self.discovery.discovered_topics[topic]['msg_types'])
+                protocol:str = ', '.join(self.introspection.discovered_topics[topic]['msg_types'])
                 is_image = protocol == 'sensor_msgs/msg/Image'
 
                 # subscribe binary data channels
@@ -870,12 +876,12 @@ class BridgeController(Node, BridgeControllerConfig):
 
         self.get_logger().debug(f"Peer {id_peer} calling service {service} with args: {str(data['msg'])}")
 
-        if not service in self.discovery.discovered_services.keys():
+        if not service in self.introspection.discovered_services.keys():
             self.get_logger().error(f'Service {service} not discovered (yet?) for peer={id_peer}')
             return { 'err': 2, 'msg': f'Service {service} not discovered (yet?)' }
 
         message_class = None
-        msg_type = {self.discovery.discovered_services[service]["msg_types"][0]}
+        msg_type = {self.introspection.discovered_services[service]["msg_types"][0]}
         try:
             message_class = get_interface(msg_type)
         except:
@@ -1258,14 +1264,14 @@ class BridgeController(Node, BridgeControllerConfig):
 
         # cancel = self.create_guard_condition(lambda: None)
 
-        while ctx.ok() and not self.shutting_down:
-            try:
-                await asyncio.get_event_loop().run_in_executor(None, rcl_executor.spin_once)
-            except Exception as e:
-                print(c(f'Exception while spinning ctrl node', 'red'))
-                traceback.print_exception(e)
-                pass
-            await asyncio.sleep(0.01) #slow spin
+        # while ctx.ok() and not self.shutting_down:
+        #     try:
+        #         asyncio.get_event_loop().run_in_executor(None, rcl_executor.spin_once)
+        #     except Exception as e:
+        #         print(c(f'Exception while spinning ctrl node', 'red'))
+        #         traceback.print_exception(e)
+        #         pass
+        #     await asyncio.sleep(0.01) #slow spin
         print('Done spinning ctrl node')
 
         # def _spin(future: asyncio.Future, event_loop: asyncio.AbstractEventLoop):
@@ -1332,8 +1338,10 @@ async def main_async():
         # create tasks for spinning and sleeping
         spin_task = asyncio.get_event_loop().create_task(bridge_node.spin_async(rcl_executor, rcl_ctx, rcl_cbg))
         sio_task = asyncio.get_event_loop().create_task(bridge_node.spin_sio_client(addr=bridge_node.sio_address, port=bridge_node.sio_port, path=bridge_node.sio_path))
-        asyncio.get_event_loop().run_in_executor(None, bridge_node.read_queued_data)
-        discovery_task = asyncio.get_event_loop().create_task(bridge_node.discovery.start())
+
+        asyncio.get_event_loop().create_task(bridge_node.read_queued_data())
+        asyncio.get_event_loop().create_task(bridge_node.introspection.start())
+
     except Exception as e:
         print(c('Exception in main_async()', 'red'))
         traceback.print_exc(e)
