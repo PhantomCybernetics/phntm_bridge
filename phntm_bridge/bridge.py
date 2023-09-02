@@ -324,6 +324,20 @@ class BridgeController(Node, BridgeControllerConfig):
                 self.get_logger().info('CancelledError')
                 return
 
+    async def read_queue_lastest_by_topic(self) -> dict[str:any]:
+        #this blocks
+        res = {}
+        [topic, msg] = await asyncio.get_event_loop().run_in_executor(None, self.reader_out_queue.get) #blocks
+        res[topic] = msg
+        try:
+            while True: #read until empty and overwrite with newser
+                [topic, msg] = self.reader_out_queue.get_nowait()
+                res[topic] = msg
+        except Empty:
+            pass
+
+        return res
+
     ##
     # read and disctribute queued ros data
     ##
@@ -333,11 +347,12 @@ class BridgeController(Node, BridgeControllerConfig):
             # while True:
             try:
                 # print('read_queued_data >')
-                [topic, msg] = await asyncio.get_event_loop().run_in_executor(None, self.reader_out_queue.get) #blocks
+                latest_by_topic = await self.read_queue_lastest_by_topic()
                 # print('  < read_queued_data')
 
-                if topic in self.topic_read_subscriptions.keys():
-                    asyncio.get_event_loop().run_in_executor(None, self.topic_read_subscriptions[topic].on_msg, msg)
+                for topic in latest_by_topic:
+                    if topic in self.topic_read_subscriptions.keys():
+                        self.topic_read_subscriptions[topic].on_msg(latest_by_topic[topic])
                     # await asyncio.sleep(.01)
                 # newest[topic] = msg
                 # self.get_logger().warn(f'[{topic}] has {len(msg)} B')
@@ -698,7 +713,7 @@ class BridgeController(Node, BridgeControllerConfig):
 
                     @dc.on('message')
                     async def on_inbound_channel_message(msg):
-                        asyncio.get_event_loop().run_in_executor(None, lambda: self.topic_write_publishers[topic].publish(id_peer, msg))
+                        await self.topic_write_publishers[topic].publish(id_peer, msg)
 
                 res_subscribed.append([topic, peer.inbound_data_channels[topic].id, protocol])
 

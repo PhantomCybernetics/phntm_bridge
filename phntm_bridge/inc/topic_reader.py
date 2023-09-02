@@ -50,7 +50,9 @@ class TopicReadSubscription:
 
         self.on_msg_cb:Callable = None
         self.event_loop = event_loop
+        self.last_send_future:asyncio.Future = None
 
+        self.send_pool = concurrent.futures.ThreadPoolExecutor()
         #print(f'TopicReadSubscription:__init__() {threading.get_ident()}')
 
     def start(self, id_peer:str, dc:RTCDataChannel) -> bool:
@@ -130,7 +132,12 @@ class TopicReadSubscription:
                     # dc.send(msg)
                     # self.event_loop.call_soon_threadsafe(dc.send, msg)
                     # self.event_loop.call_soon_threadsafe(dc.send, msg)
-                    dc.send(msg)
+
+                    last_unfinished = self.last_send_future is not None and not self.last_send_future.done()
+
+                    if not last_unfinished:
+                        self.last_send_future = self.event_loop.run_in_executor(self.send_pool, lambda: dc.send(self.last_msg))
+
                     # await dc.send(msg) #always raw bytes bcs fast
                 except Exception as e:
                     print(f'Exception in on_msg: {e}')

@@ -11,6 +11,7 @@ from rclpy.qos import QoSHistoryPolicy, QoSReliabilityPolicy, DurabilityPolicy
 
 from typing import Callable
 import time
+import concurrent.futures
 
 import threading
 
@@ -31,6 +32,10 @@ class TopicWritePublisher:
         self.last_received_time:float = -1.0
         self.last_time_logged:float = -1.0
         self.log_message_every_sec:float = log_message_every_sec
+
+        self.write_pool = concurrent.futures.ThreadPoolExecutor()
+        self.last_publish_future:asyncio.Future = None
+        self.last_msg:any = None
 
     def start(self, id_peer:str) -> bool:
 
@@ -65,7 +70,7 @@ class TopicWritePublisher:
 
         return True
 
-    def publish(self, id_peer:str, msg:any):
+    async def publish(self, id_peer:str, msg:any):
 
         self.num_written += 1
         self.last_msg = msg
@@ -78,7 +83,11 @@ class TopicWritePublisher:
             else:
                 self.node.get_logger().info(f'▼ {self.topic} got message: {len(msg)}, from id_peer={id_peer}, total rcvd: {self.num_written}')
 
-        self.pub.publish(msg);
+        last_unfinished = self.last_publish_future is not None and not self.last_publish_future.done()
+        self.last_msg = msg
+
+        if not last_unfinished:
+            self.last_publish_future = asyncio.get_event_loop().run_in_executor(self.write_pool, lambda: self.pub.publish(self.last_msg))
 
     def stop(self, id_peer:str) -> bool:
         if id_peer in self.peers:
