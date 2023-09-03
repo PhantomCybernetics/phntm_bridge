@@ -16,6 +16,7 @@ from picamera2 import Picamera2
 import libcamera
 
 from aiortc import RTCRtpSender
+from aiortc.codecs.h264 import PACKET_MAX
 import asyncio
 
 VIDEO_CLOCK_RATE = 1000000000 #ns to s
@@ -33,6 +34,7 @@ class Picamera2Subscription:
         self.picam2:Picamera2 = picam2;
         self.encoder:H264Encoder = None
         self.output:PacketsOutput = None
+        self.event_loop = None
 
     async def start(self, id_peer:str, sender:RTCRtpSender) -> bool:
 
@@ -47,11 +49,13 @@ class Picamera2Subscription:
         #                                                         queue=False
         #                                                         )
 
+        self.event_loop = asyncio.get_event_loop()
+
         video_config = self.picam2.create_video_configuration(queue=False,
                                                               transform=libcamera.Transform(hflip=1, vflip=1))
         self.picam2.configure(video_config)
         self.encoder = H264Encoder(bitrate=5000000, framerate=30)
-        self.output = PacketsOutput()
+        self.output = PacketsOutput(sub=self)
 
         self.peers[id_peer] = sender
         self.peers[id_peer].track.set_output(self.output)
@@ -113,17 +117,23 @@ def picam2_has_camera(picam2:Picamera2, id_cam:str) -> bool:
 #shared camera frame output
 class PacketsOutput(FileOutput):
 
-    last_frame = None
-    last_timestamp = 0
-    last_keyframe = False
+    # last_frame: = None
+    # last_keyframe:av.Packet = None
+    # last_timestamp = 0
+    # last_keyframe_timestamp = 0
+    # last_was_keyframe = False
 
-    def __init__(self):
+
+    def __init__(self, sub:Picamera2Subscription):
         super().__init__()
-        self.last_frame = None
-        self.last_timestamp = 0
-        self.last_keyframe = False
+        # self.last_frameav.Packet = None
+        # self.last_keyframe = None
+        # self.last_timestamp = 0
+        # elf.last_keyframe_timestamp = 0
+        # self.last_was_keyframe = False
+        self.sub:Picamera2Subscription = sub
 
-    def outputframe(self, frame, keyframe=True, timestamp=None):
+    def outputframe(self, frame_bytes, keyframe=True, timestamp=None):
         """Outputs frame from encoder
 
         :param frame: Frame
@@ -133,17 +143,29 @@ class PacketsOutput(FileOutput):
         :param timestamp: Timestamp of frame
         :type timestamp: int
         """
-        if self.recording:
-            if self._firstframe:
-                if not keyframe:
-                    return
-                else:
-                    self._firstframe = False
-            self.last_frame = frame
-            self.last_timestamp = timestamp
-            self.last_keyframe = keyframe
-            # print(f'Receiving frame {timestamp}: {len(frame)} B{" KEYFRAME" if keyframe else ""}')
 
+        packet = av.Packet(frame_bytes)
+        packet.pts = timestamp
+        packet.time_base = VIDEO_TIME_BASE
+
+        for id_peer in self.sub.peers.keys():
+            self.sub.peers[id_peer].send_direct(packet, self.sub.event_loop, keyframe)
+
+        # if self.recording:
+        #     if self._firstframe:
+        #         if not keyframe:
+        #             return
+        #         else:
+        #             self._firstframe = False
+
+        #     self.last_was_keyframe = keyframe
+        #     if keyframe:
+        #         self.last_keyframe = frame
+        #         self.last_keyframe_timestamp = timestamp
+        #     else:
+        #         self.last_frame = frame
+        #         self.last_timestamp = timestamp
+        #     # print(f'Receiving frame {timestamp}: {len(frame)} B{" KEYFRAME" if keyframe else ""}')
 
 class CameraVideoStreamTrack(MediaStreamTrack):
 
@@ -157,6 +179,7 @@ class CameraVideoStreamTrack(MediaStreamTrack):
         self.logger:RcutilsLogger = logger
 
         self.output:PacketsOutput = None
+        self.last_output_keyframe_timestamp:int = -1
         self.last_output_timestamp:int = -1
 
         self.total_processed:int = 0
@@ -175,18 +198,24 @@ class CameraVideoStreamTrack(MediaStreamTrack):
         if not self.output:
             return None
 
-        enncoded_frame = self.output.last_frame
-        if enncoded_frame is None:
+        if self.output.last_keyframe is None:
             return None
 
-        if self.last_output_timestamp == self.output.last_timestamp: #no new frame
+        if self.last_output_keyframe_timestamp != self.output.last_keyframe_timestamp:
+            enncoded_frame = self.output.last_keyframe
+            timestamp = self.output.last_keyframe_timestamp
+            self.last_output_keyframe_timestamp = self.output.last_keyframe_timestamp
+        elif self.output.last_frame is not None and self.last_output_timestamp != self.output.last_timestamp:
+            enncoded_frame = self.output.last_frame
+            timestamp = self.output.last_timestamp
+            self.last_output_timestamp = self.output.last_timestamp
+        else:
             return None
-        self.last_output_timestamp = self.output.last_timestamp
 
         self.total_processed += 1
 
         packet = av.Packet(enncoded_frame)
-        packet.pts = self.output.last_timestamp
+        packet.pts = timestamp
         packet.time_base = VIDEO_TIME_BASE
 
         return packet # Tuple[List[bytes], int]

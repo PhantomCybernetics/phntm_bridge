@@ -165,7 +165,7 @@ class TopicReadSubscription:
                 return #nothing received yet, will report when we do
             if self.peers[id_peer].readyState == 'open':
                 # asyncio.get_event_loop().create_task(self.peers[id_peer].send())
-                self.event_loop.call_soon_threadsafe(self.peers[id_peer].send, self.last_msg)
+                self.event_loop.run_in_executor(self.send_pool, lambda: self.peers[id_peer].send(self.last_msg))
                 return #all done
             else:
                 await asyncio.sleep(.5) #wait until dc opens
