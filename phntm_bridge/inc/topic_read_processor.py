@@ -125,6 +125,7 @@ def TopicReadProcessor(running_shared:mp.Value, ctrl_queue:mp.Queue, data_out_qu
             time.sleep(.01)
 
     except (asyncio.CancelledError, KeyboardInterrupt):
+        print(c(f'TopicReadProcessor shutting down:', 'red'))
         pass
     except Exception as e:
         print(c(f'Exception in TopicReadProcessor loop:', 'red'))
@@ -133,4 +134,4 @@ def TopicReadProcessor(running_shared:mp.Value, ctrl_queue:mp.Queue, data_out_qu
     reader_node.destroy_node()
     rcl_executor.shutdown()
 
-    print('TopicReadProcessor: exiting')
+    print('TopicReadProcessor: finished')

@@ -31,10 +31,11 @@ class Picamera2Subscription:
         self.peers:dict[str:RTCRtpSender] = {}
         self.logger:RcutilsLogger = logger
 
-        self.picam2:Picamera2 = picam2;
+        self.picam2:Picamera2 = picam2
         self.encoder:H264Encoder = None
         self.output:PacketsOutput = None
         self.event_loop = None
+        self.camera_task_locks:dict[str:asyncio.Future] = {}
 
     async def start(self, id_peer:str, sender:RTCRtpSender) -> bool:
 
@@ -149,7 +150,9 @@ class PacketsOutput(FileOutput):
         packet.time_base = VIDEO_TIME_BASE
 
         for id_peer in self.sub.peers.keys():
-            self.sub.peers[id_peer].send_direct(packet, self.sub.event_loop, keyframe)
+            fut = self.sub.event_loop.create_future()
+            self.sub.camera_task_locks[id_peer] = fut
+            self.sub.peers[id_peer].send_direct(packet, self.sub.event_loop, keyframe, fut)
 
         # if self.recording:
         #     if self._firstframe:

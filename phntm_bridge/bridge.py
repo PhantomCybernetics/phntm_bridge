@@ -7,6 +7,8 @@ from rclpy.callback_groups import CallbackGroup, MutuallyExclusiveCallbackGroup
 from rclpy.context import Context
 from rclpy.timer import Timer
 
+import concurrent.futures
+
 from .inc.status_led import StatusLED
 from termcolor import colored as c
 
@@ -56,6 +58,7 @@ from rosidl_runtime_py.utilities import get_message, get_interface
 import asyncio
 import multiprocessing as mp
 from queue import Empty, Full
+import selectors
 
 import threading
 import socketio
@@ -84,7 +87,7 @@ class BridgeController(Node, BridgeControllerConfig):
     ##
     # node constructor
     ##
-    def __init__(self, context:Context, cbg:CallbackGroup, reader_ctrl_queue:mp.Queue, reader_out_queue:mp.Queue):
+    def __init__(self, context:Context=None, cbg:CallbackGroup=None, reader_ctrl_queue:mp.Queue=None, reader_out_queue:mp.Queue=None):
         super().__init__('phntm_bridge_ctrl', context=context)
 
         self.shutting_down:bool = False
@@ -138,6 +141,8 @@ class BridgeController(Node, BridgeControllerConfig):
         self.reader_out_queue:mp.Queue = reader_out_queue
 
         self.get_logger().debug(f'Phntm Bridge started, idRobot={c(self.id_robot, "cyan")}')
+
+
 
     ##
     # make a socket.io instance
@@ -301,16 +306,16 @@ class BridgeController(Node, BridgeControllerConfig):
     ##
     # spin socket.io
     ##
-    async def spin_sio_client(self, addr:str, port:int, path:str):
+    async def spin_sio_client(self):
         while not self.shutting_down:
             try:
-                self.get_logger().info(f'Socket.io connecting to {addr}{path}:{port}')
+                self.get_logger().info(f'Socket.io connecting to {self.sio_address}:{self.sio_port}{self.sio_path}')
                 auth_data = {
                     'id_robot': self.id_robot,
                     'key': self.auth_key,
                     'name': self.robot_name
                 }
-                await self.sio.connect(url=f'{addr}:{port}', socketio_path=path, auth=auth_data)
+                await self.sio.connect(url=f'{self.sio_address}:{self.sio_port}', socketio_path=self.sio_path, auth=auth_data)
 
                 self.sio_wait_task = asyncio.get_event_loop().create_task(self.sio.wait()) # wait as long as connected
                 await self.sio_wait_task
@@ -345,10 +350,24 @@ class BridgeController(Node, BridgeControllerConfig):
         # newest:dict[str:any] = {}
         while not self.shutting_down:
             # while True:
+
             try:
                 # print('read_queued_data >')
                 latest_by_topic = await self.read_queue_lastest_by_topic()
-                # print('  < read_queued_data')
+
+                for id_cam in self.camera_subscriptions.keys():
+                    sub =  self.camera_subscriptions[id_cam]
+                    for id_peer in sub.camera_task_locks.keys():
+                        fut = self.camera_subscriptions[id_cam].camera_task_locks[id_peer]
+                        if not fut.done():
+                            # print(f'  < read_queued_data {id_peer} => {str(fut)}')
+                            await fut
+                            # print(f'  < read_queued_data {id_peer} => DONE')
+
+                    #for id_peer in sub.camera_task_locks.keys():
+
+                #         print('read_queued_data waiting')
+                #         await fut
 
                 for topic in latest_by_topic:
                     if topic in self.topic_read_subscriptions.keys():
@@ -359,7 +378,8 @@ class BridgeController(Node, BridgeControllerConfig):
             except Empty:
                 self.get_logger().warn(f'queue empty')
                 pass
-
+            except (KeyboardInterrupt, asyncio.CancelledError):
+                return
             # for topic in newest.keys():
             #     if topic in self.topic_read_subscriptions.keys():
             #         self.topic_read_subscriptions[topic].on_msg(msg)
@@ -713,7 +733,7 @@ class BridgeController(Node, BridgeControllerConfig):
 
                     @dc.on('message')
                     async def on_inbound_channel_message(msg):
-                        await self.topic_write_publishers[topic].publish(id_peer, msg)
+                        self.topic_write_publishers[topic].publish(id_peer, msg)
 
                 res_subscribed.append([topic, peer.inbound_data_channels[topic].id, protocol])
 
@@ -1250,21 +1270,23 @@ class BridgeController(Node, BridgeControllerConfig):
     #     return { 'success': 1 }
 
     async def shutdown_cleanup(self):
-        self.get_logger().warn('SHUTTING DOWN')
-        self.shutting_down = True
 
         # close peer connections
         peer_remove_coros = [self.remove_peer(peer.id, False) for peer in self.wrtc_peers.values()]
+        print('Disconnecting peers...')
         await asyncio.gather(*peer_remove_coros)
+        print(f'{len(peer_remove_coros)} peer disconnected')
 
         await self.sio.disconnect()
-        self.spin_task.cancel()
+        if self.spin_task != None:
+            self.spin_task.cancel()
 
         if self.sio_wait_task != None:
             self.sio_wait_task.cancel()
             await self.sio_wait_task
 
         if self.sio_reconnect_wait_task != None:
+            self.sio_reconnect_wait_task.cancel()
             await self.sio_reconnect_wait_task
 
         if self.conn_led != None or self.data_led != None:
@@ -1275,7 +1297,7 @@ class BridgeController(Node, BridgeControllerConfig):
             #TODO actually I should spin ros node some more here
             await asyncio.sleep(1) # wait a bit
 
-    async def spin_async(self, rcl_executor:rclpy.executors.Executor, ctx:rclpy.context.Context, cbg:rclpy.callback_groups.CallbackGroup):
+    # async def spin_async(self, rcl_executor:rclpy.executors.Executor=None, ctx:rclpy.context.Context=None, cbg:rclpy.callback_groups.CallbackGroup=None):
 
         # cancel = self.create_guard_condition(lambda: None)
 
@@ -1287,7 +1309,7 @@ class BridgeController(Node, BridgeControllerConfig):
         #         traceback.print_exception(e)
         #         pass
         #     await asyncio.sleep(0.01) #slow spin
-        print('Done spinning ctrl node')
+        # print('Done spinning ctrl node')
 
         # def _spin(future: asyncio.Future, event_loop: asyncio.AbstractEventLoop):
         #     while ctx.ok() and not future.cancelled() and not self.shutting_down:
@@ -1321,6 +1343,8 @@ class BridgeController(Node, BridgeControllerConfig):
 
 async def main_async():
 
+
+
     # reader runs on a separate process
     reader_on_flag = mp.Value('b', 1, lock=False)
     reader_ctrl_queue = mp.Queue()
@@ -1329,72 +1353,85 @@ async def main_async():
                                       args=(reader_on_flag, reader_ctrl_queue, reader_out_queue, None))
     topic_read_processor.start()
 
-    rcl_ctx = Context()
-    rcl_ctx.init() # This must be done before any ROS nodes can be created.
+    # rcl_ctx = Context()
+    # rcl_ctx.init() # This must be done before any ROS nodes can be created.
 
     # rclpy.init(context=rcl_ctx)
     # rclpy.uninstall_signal_handlers() #duplicate?
     # ctx.init()
 
-    rcl_cbg = MutuallyExclusiveCallbackGroup()
+    # rcl_cbg = MutuallyExclusiveCallbackGroup()
 
-    rcl_executor = rclpy.executors.SingleThreadedExecutor(context=rcl_ctx)
+    # rcl_executor = rclpy.executors.SingleThreadedExecutor(context=rcl_ctx)
 
-    # rclpy.init(context=rcl_ctx)
+    rclpy.init()
 
-    bridge_node = BridgeController(context=rcl_ctx, cbg=rcl_cbg, reader_ctrl_queue=reader_ctrl_queue, reader_out_queue=reader_out_queue)
-
-    rcl_executor.add_node(bridge_node)
-    rcl_cbg.add_entity(bridge_node)
-    rcl_cbg.add_entity(rcl_ctx)
-    rcl_cbg.add_entity(rcl_executor)
+    priority_executor = concurrent.futures.ThreadPoolExecutor()
 
     try:
-        # create tasks for spinning and sleeping
-        spin_task = asyncio.get_event_loop().create_task(bridge_node.spin_async(rcl_executor, rcl_ctx, rcl_cbg))
-        sio_task = asyncio.get_event_loop().create_task(bridge_node.spin_sio_client(addr=bridge_node.sio_address, port=bridge_node.sio_port, path=bridge_node.sio_path))
+        bridge_node = BridgeController(reader_ctrl_queue=reader_ctrl_queue, reader_out_queue=reader_out_queue)
 
-        asyncio.get_event_loop().create_task(bridge_node.read_queued_data())
+        # rcl_executor.add_node(bridge_node)
+        # rcl_cbg.add_entity(bridge_node)
+        # rcl_cbg.add_entity(rcl_ctx)
+        # rcl_cbg.add_entity(rcl_executor)
+
+        # create tasks for spinning and sleeping
+        # spin_task = asyncio.get_event_loop().create_task(bridge_node.spin_async())
+        sio_task = asyncio.get_event_loop().create_task(bridge_node.spin_sio_client())
+        read_task = asyncio.get_event_loop().create_task(bridge_node.read_queued_data())
         asyncio.get_event_loop().create_task(bridge_node.introspection.start())
+
+        # concurrently execute both tasks on this process
+        await asyncio.wait([ sio_task, read_task ], return_when=asyncio.ALL_COMPLETED)
 
     except Exception as e:
         print(c('Exception in main_async()', 'red'))
         traceback.print_exc(e)
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        print(c('Shutting down main_async', 'red'))
 
-    # concurrently execute both tasks on this process
-    await asyncio.wait([spin_task, sio_task], return_when=asyncio.ALL_COMPLETED)
+    print('SHUTTING DOWN')
+    bridge_node.shutting_down = True
+
+    reader_on_flag.value = 0 #stop readed thread
+    topic_read_processor.terminate()
+    topic_read_processor.join()
 
     # cancel tasks
-    if spin_task.cancel():
-        await spin_task
-    if sio_task.cancel():
+    # if spin_task.cancel():
+        # await spin_task
+    if sio_task != None and sio_task.cancel():
         await sio_task
+    if read_task != None and read_task.cancel():
+        await read_task
+
+    await bridge_node.shutdown_cleanup()
 
     # try:
     #     asyncio.get_event_loop().run_until_complete(main_async(bridge_node, executor, ctx, cbg))
     # except:
     #     pass
-    reader_on_flag.value = 0 #stop readed thread
-    topic_read_processor.terminate()
-    topic_read_processor.join()
 
-    asyncio.get_event_loop().run_until_complete(bridge_node.shutdown_cleanup())
+    # asyncio.get_event_loop().run_until_complete()
 
     try:
         bridge_node.destroy_node()
-        rcl_executor.shutdown()
+        # rcl_executor.shutdown()
         rclpy.shutdown()
     except:
         pass
 
-    asyncio.get_event_loop().close()
+    # asyncio.get_event_loop().close()
+
+class MyPolicy(asyncio.DefaultEventLoopPolicy):
+    def new_event_loop(self):
+        selector = selectors.SelectSelector()
+        return asyncio.SelectorEventLoop(selector)
 
 def main(): # ros2 calls this, so init here
-    # print(f'mp.start_method={mp.get_start_method()}')
-    try:
-        asyncio.run(main_async())
-    except (asyncio.CancelledError, KeyboardInterrupt):
-        pass
+    asyncio.set_event_loop_policy(MyPolicy())
+    asyncio.run(main_async())
 
 if __name__ == '__main__': #ignired by ros
     main()

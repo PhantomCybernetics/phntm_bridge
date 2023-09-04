@@ -70,7 +70,7 @@ class TopicWritePublisher:
 
         return True
 
-    async def publish(self, id_peer:str, msg:any):
+    def publish(self, id_peer:str, msg:any):
 
         self.num_written += 1
         self.last_msg = msg
@@ -83,11 +83,12 @@ class TopicWritePublisher:
             else:
                 self.node.get_logger().info(f'▼ {self.topic} got message: {len(msg)}, from id_peer={id_peer}, total rcvd: {self.num_written}')
 
-        last_unfinished = self.last_publish_future is not None and not self.last_publish_future.done()
+        # last_unfinished = self.last_publish_future is not None and not self.last_publish_future.done()
         self.last_msg = msg
 
-        if not last_unfinished:
-            self.last_publish_future = asyncio.get_event_loop().run_in_executor(self.write_pool, lambda: self.pub.publish(self.last_msg))
+        # if not last_unfinished:
+        #  self.last_publish_future = asyncio.get_event_loop().run_in_executor(self.write_pool, lambda: self.pub.publish(self.last_msg))
+        asyncio.get_event_loop().call_soon(lambda: self.pub.publish(self.last_msg))
 
     def stop(self, id_peer:str) -> bool:
         if id_peer in self.peers:
