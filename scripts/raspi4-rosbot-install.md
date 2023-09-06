@@ -79,7 +79,7 @@ initramfs initrd.img followkernel
 # dtoverlay=disable-wifi
 dtoverlay=disable-bt # uart used for core2
 # enable usb-C as host instead of power
-dtoverlay=dwc2,dr_mode=host
+#dtoverlay=dwc2,dr_mode=host #DON'T! this forces the shitty dwc2 driver that makes things laggy with more USB ios => pi's usb-c not working
 # prevent overvolting
 never_over_voltage=1
 # speed up boot by disabling unnececery options
@@ -90,7 +90,7 @@ boot_delay=0
 enable_uart=1
 " >> /boot/config.txt
 
-# otg_mode=1 must be loke this to make this rplidar work
+otg_mode=1 # keep like this (doesn't apply to usb-c on pi)
 
 sudo systemctl disable hciuart # uart used for core2
 
