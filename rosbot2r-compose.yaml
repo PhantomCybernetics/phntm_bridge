@@ -9,6 +9,7 @@ services:
     restart: unless-stopped
     privileged: true
     network_mode: host
+    cpuset: '0,1,2'
     volumes:
       - ~/phntm_bridge:/ros2_ws/src/phntm_bridge
       - ~/aioice:/ros2_ws/aioice
@@ -19,6 +20,7 @@ services:
       - /dev:/dev
     command:
       # ros2 launch phntm_bridge bridge_launch.py
+      # nice --19 ros2 launch phntm_bridge bridge_launch.py
       /bin/sh -c "while sleep 1000; do :; done"
 
   mecanum_drive:
@@ -49,22 +51,23 @@ services:
     image: husarion/astra:humble-1.0.2-20230427
     container_name: astra
     restart: unless-stopped
+    cpuset: '3'
     devices:
       - /dev/bus/usb/
     volumes:
       - ./astra-params.yaml:/ros2_ws/install/astra_camera/share/astra_camera/params/astra_mini_params.yaml
-    command: ros2 launch astra_camera astra_mini.launch.py
+    command: nice -15 ros2 launch astra_camera astra_mini.launch.py
 
   rplidar:
     image: husarion/rplidar:humble
     container_name: rplidar
     restart: unless-stopped
+    cpuset: '3'
     devices:
       - /dev/ttyUSB0:/dev/ttyUSB0
     command: >
-        ros2 launch sllidar_ros2 sllidar_launch.py
+        nice -15 ros2 launch sllidar_ros2 sllidar_launch.py
           serial_baudrate:=${RPLIDAR_BAUDRATE:-255993}
-          scan_frequency:=3
 
   microros:
     image: husarion/micro-ros-agent:humble

@@ -359,10 +359,10 @@ class BridgeController(Node, BridgeControllerConfig):
                     sub =  self.camera_subscriptions[id_cam]
                     for id_peer in sub.camera_task_locks.keys():
                         fut = self.camera_subscriptions[id_cam].camera_task_locks[id_peer]
-                        if not fut.done():
-                            # print(f'  < read_queued_data {id_peer} => {str(fut)}')
-                            await fut
-                            # print(f'  < read_queued_data {id_peer} => DONE')
+                        # if not fut.done():
+                        #     # print(f'  < read_queued_data {id_peer} => {str(fut)}')
+                        #     await fut
+                        #     # print(f'  < read_queued_data {id_peer} => DONE')
 
                     #for id_peer in sub.camera_task_locks.keys():
 
@@ -727,12 +727,12 @@ class BridgeController(Node, BridgeControllerConfig):
                                                                   protocol=protocol,
                                                                   negotiated=True,
                                                                   ordered=False,
-                                                                  maxRetransmits=0)
+                                                                  maxRetransmits=None)
                     peer.inbound_data_channels[topic] = dc
                     self.get_logger().debug(f'Peer {id_peer} publishing into {topic} (protocol={protocol}, ch_id={dc.id})')
 
                     @dc.on('message')
-                    async def on_inbound_channel_message(msg):
+                    def on_inbound_channel_message(msg):
                         self.topic_write_publishers[topic].publish(id_peer, msg)
 
                 res_subscribed.append([topic, peer.inbound_data_channels[topic].id, protocol])

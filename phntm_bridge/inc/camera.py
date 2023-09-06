@@ -52,6 +52,9 @@ class Picamera2Subscription:
 
         self.event_loop = asyncio.get_event_loop()
 
+        # video_config = self.picam2.create_preview_configuration(queue=False,
+        #
+        # full res has much lowerr latency (?)
         video_config = self.picam2.create_video_configuration(queue=False,
                                                               transform=libcamera.Transform(hflip=1, vflip=1))
         self.picam2.configure(video_config)
@@ -59,7 +62,7 @@ class Picamera2Subscription:
         self.output = PacketsOutput(sub=self)
 
         self.peers[id_peer] = sender
-        self.peers[id_peer].track.set_output(self.output)
+        # self.peers[id_peer].track.set_output(self.output)
 
         await asyncio.sleep(2.0) #camera setup time (here?)
 
