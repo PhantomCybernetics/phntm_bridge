@@ -29,6 +29,8 @@ import sys
 import traceback
 import netifaces
 
+import contextvars
+
 try:
     from picamera2 import Picamera2
 except Exception as e:
@@ -54,6 +56,8 @@ from .inc.ros_video_streaming import ROSVideoStreamTrack, ROSFrameProcessor
 
 # from rclpy.subscription import TypeVar
 from rosidl_runtime_py.utilities import get_message, get_interface
+import std_msgs
+import std_srvs
 
 import asyncio
 import multiprocessing as mp
@@ -258,7 +262,7 @@ class BridgeController(Node, BridgeControllerConfig):
                 return { 'err': 2, 'msg': 'No valid peer id provided' }
             if not id_peer in self.wrtc_peers.keys():
                 return { 'err': 2, 'msg': 'Peer not connected' }
-            return await self.on_service_call(id_peer, data)
+            return await self.on_service_call(id_peer, data, event_loop)
 
         # subscribe and unsubscribe camera streams
         @self.sio.on('cameras:read')
@@ -903,7 +907,7 @@ class BridgeController(Node, BridgeControllerConfig):
     ##
     # ROS Service call handling
     ##
-    async def on_service_call(self, id_peer:str, data:dict):
+    async def on_service_call(self, id_peer:str, data:dict, event_loop:any):
         service = data['service']
         if not service:
             self.get_logger().error(f'No service name provided by peer={id_peer}, ignoring call')
@@ -916,7 +920,7 @@ class BridgeController(Node, BridgeControllerConfig):
             return { 'err': 2, 'msg': f'Service {service} not discovered (yet?)' }
 
         message_class = None
-        msg_type = {self.introspection.discovered_services[service]["msg_types"][0]}
+        msg_type = self.introspection.discovered_services[service]["msg_types"][0]
         try:
             message_class = get_interface(msg_type)
         except:
@@ -955,11 +959,17 @@ class BridgeController(Node, BridgeControllerConfig):
             req = message_class.Request(data=payload)
         else:
             req = message_class.Request()
-        future = cli.call_async(req)
+        future = self.service_clients[service].call_async(req)
+        # ftrs = set()
         # rclpy.spin_until_future_complete(self, self.future)
         async def srv_finished_checker():
             timeout_sec = 10.0
             while not future.done() and not self.shutting_down and timeout_sec > 0.0:
+                try:
+                    await event_loop.run_in_executor(None, lambda: rclpy.spin_once(self, timeout_sec=0.1)) # gotta spin to hear back
+                    # await fut
+                except Exception as e:
+                    print(f'Exception while spinning for service {service}: {e}')
                 await asyncio.sleep(.1)
                 timeout_sec -= .1
             is_timeout = timeout_sec <= 0.0
@@ -1343,8 +1353,6 @@ class BridgeController(Node, BridgeControllerConfig):
 
 async def main_async():
 
-
-
     # reader runs on a separate process
     reader_on_flag = mp.Value('b', 1, lock=False)
     reader_ctrl_queue = mp.Queue()
@@ -1366,7 +1374,7 @@ async def main_async():
 
     rclpy.init()
 
-    priority_executor = concurrent.futures.ThreadPoolExecutor()
+    # priority_executor = concurrent.futures.ThreadPoolExecutor()
 
     try:
         bridge_node = BridgeController(reader_ctrl_queue=reader_ctrl_queue, reader_out_queue=reader_out_queue)

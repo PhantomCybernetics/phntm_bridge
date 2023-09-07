@@ -18,15 +18,16 @@ sudo dd if=/dev/zero of=/var/swap bs=1M count=1024 oflag=append conv=notrun
 sudo mkswap /var/swap
 sudo swapon /var/swap -->
 
-# install 8821cu-20210916 Realtek wifi driver for 0bda:c811
-# 8821cu is usb2-only, doens't scan automatically, suffers from a lot of noise and apparently has BT turned on (all the time?)
-# https://github.com/morrownr/USB-WiFi/blob/main/home/USB_WiFi_Chipsets.md
-sudo apt install -y raspberrypi-kernel-headers build-essential bc dkms git
-cd
-git clone https://github.com/morrownr/8821cu-20210916.git
-cd 8821cu-20210916/
-sudo ./install-driver.sh
-# >> don't edit config file & reboot
+## install 8821cu-20210916 Realtek wifi driver for 0bda:c811
+## 8821cu is usb2-only, doens't scan automatically, suffers from a lot of noise and apparently has BT turned on (all #the time?)
+## https://github.com/morrownr/USB-WiFi/blob/main/home/USB_WiFi_Chipsets.md
+#sudo apt install -y raspberrypi-kernel-headers build-essential bc dkms git
+#cd
+#git clone https://github.com/morrownr/8821cu-20210916.git
+#cd 8821cu-20210916/
+#sudo ./install-driver.sh
+## >> don't edit config file & reboot
+##   need to modprobe bcm2835_v4l2 ??
 
 # docker
 sudo apt-get install ca-certificates curl gnupg
@@ -177,10 +178,12 @@ pip install numpy
 v4l2-ctl --list-devices
 libcamera-vid
 
+You'll need to run ./scripts/reload_devices.sh on first container launch (TODO: auto)
+to amake the Pi Camera devices available to the container.
+
 # TODO:
 #   CORE2 fw flashing ??
-#   need to modprobe bcm2835_v4l2 ??
-#   need to ./reload_devices.sh ??
+
 # ressurces:
 https://husarion.com/tutorials/howtostart/rosbot2r-quick-start/#flashing-the-firmware
 
