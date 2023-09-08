@@ -45,6 +45,8 @@ RUN git clone https://github.com/deborggraever/ros2-mecanum-bot.git .
 # WORKDIR $ROS_WS/src/
 # RUn git clone https://github.com/dudasdavid/mecanum_drive.git
 
+RUN apt-get install -y ros-humble-joint-state-publisher
+
 WORKDIR $ROS_WS
 
 RUN  . /opt/ros/$ROS_DISTRO/setup.sh && \
@@ -53,7 +55,7 @@ RUN  . /opt/ros/$ROS_DISTRO/setup.sh && \
      colcon build
 
 # pimp up prompt with hostame and color
-RUN echo "PS1='\${debian_chroot:+(\$debian_chroot)}\\[\\033[01;35m\\]\\u@\\h\\[\\033[00m\\] \\[\\033[01;34m\\]\\w\\[\\033[00m\\] 🦄 '"  >> /root/.bashrc
+RUN echo "PS1='\${debian_chroot:+(\$debian_chroot)}\\[\\033[01;35m\\]\\u@\\h\\[\\033[00m\\] \\[\\033[01;34m\\]\\w\\[\\033[00m\\] 🦀 '"  >> /root/.bashrc
 
 ENTRYPOINT ["/ros_entrypoint.sh"]
 CMD [ "bash" ]

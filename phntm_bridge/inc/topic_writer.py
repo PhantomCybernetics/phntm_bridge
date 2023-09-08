@@ -63,7 +63,7 @@ class TopicWritePublisher:
         # reliable from here
         qos = QoSProfile(history=QoSHistoryPolicy.KEEP_LAST, \
                          depth=1, \
-                         reliability=QoSReliabilityPolicy.BEST_EFFORT \
+                         reliability=QoSReliabilityPolicy.RELIABLE \
                          )
 
         self.pub = self.node.create_publisher(message_class, self.topic, qos, callback_group=self.callback_group)
@@ -99,7 +99,7 @@ class TopicWritePublisher:
             drop = False
         if drop:
             self.num_dropped += 1
-            # print (c(f'{self.topic} got msg: {str(msg_header.stamp.sec)}:{str(msg_header.stamp.nanosec)}, delta msg={msg_delta_s} local={local_delta_s} s', color))
+            print (c(f'{self.topic} DROP msg: {str(msg_header.stamp.sec)}:{str(msg_header.stamp.nanosec)}, delta msg={msg_delta_s} local={local_delta_s} s', color))
 
         self.num_written += 1
         self.last_msg = msg
