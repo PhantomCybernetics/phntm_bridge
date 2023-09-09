@@ -31,9 +31,11 @@ services:
     privileged: true
     devices:
       - /dev:/dev
+    # volumes:
+    #   - ./joy2twist.yaml:/joy2twist.yaml
     command:
-      # ros2 launch mecanumbot_bringup mecanumbot_teleop.py
-      /bin/sh -c "while sleep 1000; do :; done"
+      ros2 launch mecanumbot_bringup mecanumbot_teleop.py
+      #/bin/sh -c "while sleep 1000; do :; done"
 
   joy2twist:
     image: husarion/joy2twist:humble
