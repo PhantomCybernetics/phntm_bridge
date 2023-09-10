@@ -685,6 +685,19 @@ class BridgeController(Node, BridgeControllerConfig):
         return reply_data
 
 
+    def make_publisher_dc(self, peer, topic, protocol) -> RTCDataChannel:
+        self.wrtc_nextChannelId += 1
+        dc = peer.pc.createDataChannel(topic,
+                                        id=self.wrtc_nextChannelId,
+                                        protocol=protocol,
+                                        negotiated=True,
+                                        ordered=False,
+                                        maxRetransmits=None)
+        @dc.on('message')
+        async def on_inbound_channel_message(msg):
+            self.topic_write_publishers[topic].publish(peer.id, msg)
+        return dc
+
     ##
     # Topic WRITE subscriptions & message routing
     ###
@@ -725,19 +738,9 @@ class BridgeController(Node, BridgeControllerConfig):
                     return { 'err': 2, 'msg': f'Topic {topic} failed to create publisher'}
 
                 if not topic in peer.inbound_data_channels.keys():
-                    self.wrtc_nextChannelId += 1
-                    dc:RTCDataChannel = peer.pc.createDataChannel(topic,
-                                                                  id=self.wrtc_nextChannelId,
-                                                                  protocol=protocol,
-                                                                  negotiated=True,
-                                                                  ordered=False,
-                                                                  maxRetransmits=None)
+                    dc = self.make_publisher_dc(peer, topic, protocol)
                     peer.inbound_data_channels[topic] = dc
                     self.get_logger().debug(f'Peer {id_peer} publishing into {topic} (protocol={protocol}, ch_id={dc.id})')
-
-                    @dc.on('message')
-                    def on_inbound_channel_message(msg):
-                        self.topic_write_publishers[topic].publish(id_peer, msg)
 
                 res_subscribed.append([topic, peer.inbound_data_channels[topic].id, protocol])
 

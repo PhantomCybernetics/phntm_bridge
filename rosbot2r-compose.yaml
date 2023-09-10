@@ -87,4 +87,7 @@ services:
       - "SERIAL_PORT=/dev/serial0" # default: ttyS1 - rosbot2.0; ttyS4 - rosbot2.0 `pro
     devices:
       - "/dev/serial0"   # must match environment SERIAL_PORT
-    command: ros2 launch rosbot_bringup bringup.launch.py
+    command: >
+        ros2 launch rosbot_bringup bringup.launch.py
+          mecanum:=True
+

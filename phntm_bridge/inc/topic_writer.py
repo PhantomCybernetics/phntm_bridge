@@ -43,6 +43,16 @@ class TopicWritePublisher:
         self.last_msg:any = None
         self.last_received_msg_stamp:float = -1.0
 
+        self.message_class = None
+        try:
+            self.message_class = get_message(self.protocol)
+        except:
+            pass
+
+        if self.message_class == None:
+            self.node.get_logger().error(f'NOT creating publisher for topic {self.topic}, msg class {self.protocol} not loaded')
+            return False
+
     def start(self, id_peer:str) -> bool:
 
         if self.pub != None:
@@ -50,23 +60,13 @@ class TopicWritePublisher:
                 self.peers.append(id_peer)
             return True #all done, one pub for all
 
-        message_class = None
-        try:
-            message_class = get_message(self.protocol)
-        except:
-            pass
-
-        if message_class == None:
-            self.node.get_logger().error(f'NOT creating publisher for topic {self.topic}, msg class {self.protocol} not loaded')
-            return False
-
-        # reliable from here
+        # reliable from here (not)
         qos = QoSProfile(history=QoSHistoryPolicy.KEEP_LAST, \
                          depth=1, \
-                         reliability=QoSReliabilityPolicy.RELIABLE \
+                         reliability=QoSReliabilityPolicy.BEST_EFFORT \
                          )
 
-        self.pub = self.node.create_publisher(message_class, self.topic, qos, callback_group=self.callback_group)
+        self.pub = self.node.create_publisher(self.message_class, self.topic, qos, callback_group=self.callback_group)
         if self.pub == None:
             self.get_logger().error(f'Failed creating publisher for topic {self.topic}, protocol={self.protocol}, peer={id_peer}')
             return False
@@ -78,33 +78,38 @@ class TopicWritePublisher:
 
     def publish(self, id_peer:str, msg:any):
 
-        msg_header:Header = deserialize_message(msg, Header)
-
-        # stamp=builtin_interfaces.msg.Time(sec=0, nanosec=0)
-        msg_s:float = msg_header.stamp.sec + (msg_header.stamp.nanosec * 1.0/1000000000.0)
-
-        local_delta_s:float = time.time() - self.last_received_time if self.last_received_time > -1.0 else 0
-        msg_delta_s:float = msg_s - self.last_received_msg_stamp if self.last_received_msg_stamp > -1.0 else 0
-
-        color:str = None
+        # print (self.message_class)
         drop=False
-        if local_delta_s < msg_delta_s/2.0: #local buff burst
-            color = 'red'
-            drop = True
-        if local_delta_s > msg_delta_s*2.0: #delayed in transport
-            color = 'cyan'
-            drop = True
-        if msg_delta_s > 1.0: # after pause
-            color = 'magenta'
-            drop = False
-        if drop:
-            self.num_dropped += 1
-            print (c(f'{self.topic} DROP msg: {str(msg_header.stamp.sec)}:{str(msg_header.stamp.nanosec)}, delta msg={msg_delta_s} local={local_delta_s} s', color))
+
+        if hasattr(self.message_class, 'header'):
+            msg_header:Header = deserialize_message(msg, Header)
+
+            # stamp=builtin_interfaces.msg.Time(sec=0, nanosec=0)
+            msg_s:float = msg_header.stamp.sec + (msg_header.stamp.nanosec * 1.0/1000000000.0)
+
+            local_delta_s:float = time.time() - self.last_received_time if self.last_received_time > -1.0 else 0
+            msg_delta_s:float = msg_s - self.last_received_msg_stamp if self.last_received_msg_stamp > -1.0 else 0
+
+            color:str = None
+            if local_delta_s < msg_delta_s/2.0: #local buff burst
+                color = 'red'
+                drop = True
+            if local_delta_s > msg_delta_s*2.0: #delayed in transport
+                color = 'cyan'
+                drop = True
+            if msg_delta_s > 1.0: # after pause
+                color = 'magenta'
+                drop = False
+            if drop:
+                self.num_dropped += 1
+                print (c(f'{self.topic} DROP msg: {str(msg_header.stamp.sec)}:{str(msg_header.stamp.nanosec)}, delta msg={msg_delta_s} local={local_delta_s} s', color))
+
+            self.last_received_msg_stamp = msg_s
 
         self.num_written += 1
         self.last_msg = msg
         self.last_received_time = time.time()
-        self.last_received_msg_stamp = msg_s
+
 
         if time.time()-self.last_time_logged > self.log_message_every_sec:
             self.last_time_logged = time.time() #logged now
@@ -119,7 +124,8 @@ class TopicWritePublisher:
         # if not last_unfinished:
         #  self.last_publish_future = asyncio.get_event_loop().run_in_executor(self.write_pool, lambda: self.pub.publish(self.last_msg))
         if not drop:
-            self.pub.publish(self.last_msg)
+            asyncio.get_event_loop().call_soon(self.pub.publish,self.last_msg)
+            # self.pub.publish(self.last_msg)
 
     def stop(self, id_peer:str) -> bool:
         if id_peer in self.peers:
