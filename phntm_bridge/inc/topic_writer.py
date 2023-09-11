@@ -31,8 +31,8 @@ class TopicWritePublisher:
         self.topic:str = topic
         self.protocol:str = protocol
 
-        self.num_written:int = 0
-        self.num_dropped:int = 0;
+        self.num_received:int = 0
+        self.num_written:int = 0;
         self.last_msg:any = None
         self.last_received_time:float = -1.0
         self.last_time_logged:float = -1.0
@@ -80,52 +80,52 @@ class TopicWritePublisher:
 
         # print (self.message_class)
         drop=False
+        msg_header:Header = None
 
         if hasattr(self.message_class, 'header'):
-            msg_header:Header = deserialize_message(msg, Header)
-
-            # stamp=builtin_interfaces.msg.Time(sec=0, nanosec=0)
+            msg_header = deserialize_message(msg, Header)
             msg_s:float = msg_header.stamp.sec + (msg_header.stamp.nanosec * 1.0/1000000000.0)
-
-            local_delta_s:float = time.time() - self.last_received_time if self.last_received_time > -1.0 else 0
             msg_delta_s:float = msg_s - self.last_received_msg_stamp if self.last_received_msg_stamp > -1.0 else 0
-
-            color:str = None
-            if local_delta_s < msg_delta_s/2.0: #local buff burst
-                color = 'red'
-                drop = True
-            if local_delta_s > msg_delta_s*2.0: #delayed in transport
-                color = 'cyan'
-                drop = True
-            if msg_delta_s > 1.0: # after pause
-                color = 'magenta'
-                drop = False
-            if drop:
-                self.num_dropped += 1
-                print (c(f'{self.topic} DROP msg: {str(msg_header.stamp.sec)}:{str(msg_header.stamp.nanosec)}, delta msg={msg_delta_s} local={local_delta_s} s', color))
-
             self.last_received_msg_stamp = msg_s
+            expected_delta_s = msg_delta_s
+        else:
+            expected_delta_s = 0.033 #temp 30 Hzexpected
 
-        self.num_written += 1
-        self.last_msg = msg
+        self.num_received += 1
+        self.last_msg = msg #save last always
+
+        local_delta_s:float = time.time() - self.last_received_time if self.last_received_time > -1.0 else 0
         self.last_received_time = time.time()
 
+        color:str = None
+        if local_delta_s < expected_delta_s/2.0: #local buff burst
+            color = 'red'
+            drop = True
+        if local_delta_s > expected_delta_s*2.0: #delayed in transport
+            color = 'cyan'
+            drop = False
+        if msg_header and expected_delta_s > 1.0: # after pause
+            color = 'magenta'
+            drop = False
+        if drop:
+            # if msg_header:
+            #     print (c(f'{self.topic} DROP msg: {str(msg_header.stamp.sec)}:{str(msg_header.stamp.nanosec)}, delta msg={msg_delta_s} local={local_delta_s} s', color))
+            # else:
+            #     print (c(f'{self.topic} DROP msg: exp delta msg={expected_delta_s} local={local_delta_s} s', color))
+            return
+        # else:
+        #     print (c(f'{self.topic} msg: local delta={local_delta_s} s', color))
 
         if time.time()-self.last_time_logged > self.log_message_every_sec:
             self.last_time_logged = time.time() #logged now
             if type(msg) is bytes:
-                self.node.get_logger().info(f'▼ {self.topic} got message: {len(msg)}B from id_peer={id_peer}, total rcvd: {self.num_written}, dropped={self.num_dropped}')
+                self.node.get_logger().info(f'▼ {self.topic} got message: {len(msg)}B from id_peer={id_peer}, total rcvd: {self.num_received}, written={self.num_written}')
             else:
-                self.node.get_logger().info(f'▼ {self.topic} got message: {len(msg)}, from id_peer={id_peer}, total rcvd: {self.num_written}, dropped={self.num_dropped}')
+                self.node.get_logger().info(f'▼ {self.topic} got message: {len(msg)}, from id_peer={id_peer}, total rcvd: {self.num_received}, written={self.num_written}')
 
-        # last_unfinished = self.last_publish_future is not None and not self.last_publish_future.done()
-        self.last_msg = msg
-
-        # if not last_unfinished:
-        #  self.last_publish_future = asyncio.get_event_loop().run_in_executor(self.write_pool, lambda: self.pub.publish(self.last_msg))
-        if not drop:
-            asyncio.get_event_loop().call_soon(self.pub.publish,self.last_msg)
-            # self.pub.publish(self.last_msg)
+        self.num_written += 1
+        asyncio.get_event_loop().call_soon(self.pub.publish,self.last_msg)
+        # self.pub.publish(self.last_msg)
 
     def stop(self, id_peer:str) -> bool:
         if id_peer in self.peers:

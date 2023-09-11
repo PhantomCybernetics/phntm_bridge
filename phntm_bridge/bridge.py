@@ -694,7 +694,7 @@ class BridgeController(Node, BridgeControllerConfig):
                                         ordered=False,
                                         maxRetransmits=None)
         @dc.on('message')
-        async def on_inbound_channel_message(msg):
+        def on_inbound_channel_message(msg):
             self.topic_write_publishers[topic].publish(peer.id, msg)
         return dc
 
