@@ -201,6 +201,18 @@ class BridgeController(Node, BridgeControllerConfig):
                 # await self.introspection.stop()
             return { 'success': 1, 'discovery': self.introspection.running }
 
+        @self.sio.on('iw:scan')
+        async def on_iw_scan(data):
+            id_peer:str = WRTCPeer.GetId(data)
+            if id_peer == None:
+                return { 'err': 2, 'msg': 'No valid peer id provided' }
+            if not id_peer in self.wrtc_peers.keys():
+                return { 'err': 2, 'msg': 'Peer not connected' }
+
+            res = await self.iw.scan()
+
+            return { 'success': 1, 'res': res }
+
         @self.sio.on('docker')
         async def on_docker_call(data):
             id_peer:str = WRTCPeer.GetId(data)

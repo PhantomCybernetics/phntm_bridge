@@ -1,4 +1,5 @@
 import iwlib
+import iwlib.iwlist
 import asyncio
 
 from phntm_interfaces.msg import IWStatus
@@ -55,7 +56,7 @@ class IW:
 
     async def report_status(self):
 
-        cfg = await asyncio.get_event_loop().run_in_executor(None, iwlib.get_iwconfig, self.iface)
+        cfg = await asyncio.get_event_loop().run_in_executor(None, iwlib.iwconfig.get_iwconfig, self.iface)
         msg = IWStatus()
         # msg.header = Header()
         # msg.header.stamp = Stamp(
@@ -102,5 +103,10 @@ class IW:
             self.pub = None
 
     async def scan(self):
-        pass
+        print(f'IW Monitor scanning...')
+        res = await asyncio.get_event_loop().run_in_executor(None, iwlib.iwlist.scan, self.iface)
+        print(f'IW Monitor scan res: ')
+        for r in res:
+            print(r)
+        return res
 
