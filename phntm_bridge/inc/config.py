@@ -68,3 +68,7 @@ class BridgeControllerConfig():
         self.declare_parameter('topic_blacklist', [ '/led/', '/_', '/rosout' ] )
         self.declare_parameter('param_whitelist', [ '.*' ])
         self.declare_parameter('param_blacklist', [ '' ])
+
+        self.declare_parameter('iw_interface', 'wlan0')
+        self.declare_parameter('iw_monitor_period_sec', 1.0)
+        self.declare_parameter('iw_monitor_topic', '/iw_status')

@@ -83,6 +83,7 @@ from .inc.peer import WRTCPeer
 
 from .inc.introspection import Introspection
 from .inc.config import BridgeControllerConfig
+from .inc.iw import IW
 
 ROOT = os.path.dirname(__file__)
 
@@ -119,6 +120,8 @@ class BridgeController(Node, BridgeControllerConfig):
         self.sio_reconnect_wait_task: asyncio.Future[any] = None
 
         self.create_sio_client()
+
+        self.iw:IW = None
 
         discovery_period:float = self.get_parameter('discovery_period_sec').get_parameter_value().double_value
         stop_discovery_after:float = self.get_parameter('stop_discovery_after_sec').get_parameter_value().double_value
@@ -1382,6 +1385,12 @@ async def main_async():
     try:
         bridge_node = BridgeController(reader_ctrl_queue=reader_ctrl_queue, reader_out_queue=reader_out_queue)
 
+        bridge_node.iw = IW(iface=bridge_node.get_parameter('iw_interface').get_parameter_value().string_value,
+                            monitor_period_s=bridge_node.get_parameter('iw_monitor_period_sec').get_parameter_value().double_value,
+                            node=bridge_node,
+                            topic=bridge_node.get_parameter('iw_monitor_topic').get_parameter_value().string_value
+                            )
+
         # rcl_executor.add_node(bridge_node)
         # rcl_cbg.add_entity(bridge_node)
         # rcl_cbg.add_entity(rcl_ctx)
@@ -1391,7 +1400,8 @@ async def main_async():
         # spin_task = asyncio.get_event_loop().create_task(bridge_node.spin_async())
         sio_task = asyncio.get_event_loop().create_task(bridge_node.spin_sio_client())
         read_task = asyncio.get_event_loop().create_task(bridge_node.read_queued_data())
-        asyncio.get_event_loop().create_task(bridge_node.introspection.start())
+        initial_introspection_task = asyncio.get_event_loop().create_task(bridge_node.introspection.start())
+        iw_monitor_task = asyncio.get_event_loop().create_task(bridge_node.iw.start_monitor())
 
         # concurrently execute both tasks on this process
         await asyncio.wait([ sio_task, read_task ], return_when=asyncio.ALL_COMPLETED)
@@ -1404,6 +1414,8 @@ async def main_async():
 
     print('SHUTTING DOWN')
     bridge_node.shutting_down = True
+
+    await bridge_node.iw.stop_monitor()
 
     reader_on_flag.value = 0 #stop readed thread
     topic_read_processor.terminate()

@@ -134,7 +134,12 @@ RUN apt-get install -y udev
 # fix numpy version to >= 1.25.2
 RUN pip install numpy --force-reinstall
 
+# docekr ctrl
 RUN pip install docker
+
+# wifi ctrl
+RUN apt-get install -y wireless-tools libiw-dev
+RUN pip install iwlib
 
 # pimp up prompt with hostame and color
 RUN echo "PS1='\${debian_chroot:+(\$debian_chroot)}\\[\\033[01;35m\\]\\u@\\h\\[\\033[00m\\] \\[\\033[01;34m\\]\\w\\[\\033[00m\\] 🦄 '"  >> /root/.bashrc
