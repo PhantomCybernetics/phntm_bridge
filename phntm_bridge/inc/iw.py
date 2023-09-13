@@ -42,7 +42,7 @@ class IW:
             return False
 
         self.monitor_running = True
-        print(f'IW Monitor started w pub={self.pub}')
+        print(c(f'IW Monitor started w pub={self.pub}', 'cyan'))
 
         try:
             while self.monitor_running:
@@ -95,7 +95,7 @@ class IW:
         if not self.monitor_running:
             return
 
-        print(f'IW Monitor stopping...')
+        print(c(f'IW Monitor stopping...', 'cyan'))
         self.monitor_running = False #kill the loop
 
         if self.pub:
@@ -103,10 +103,57 @@ class IW:
             self.pub = None
 
     async def scan(self):
-        print(f'IW Monitor scanning...')
-        res = await asyncio.get_event_loop().run_in_executor(None, iwlib.iwlist.scan, self.iface)
-        print(f'IW Monitor scan res: ')
-        for r in res:
-            print(r)
-        return res
+        print(c(f'IW Monitor scanning...', 'cyan'))
+        results = await asyncio.get_event_loop().run_in_executor(None, iwlib.iwlist.scan, self.iface)
+        res_data = []
+        print(f'IW Monitor scan results: ')
+        for one_res in results:
+            one_data = {}
+            linehr = []
+
+            if 'ESSID' in one_res.keys():
+                one_data['essid'] = one_res['ESSID'].decode() # b'CircuitLaunch'
+                linehr.append(f'ESSID: {one_data["essid"]}')
+
+            if 'Access Point' in one_res.keys():
+                one_data['access_point'] = one_res['Access Point'].decode() # b'BA:FB:E4:45:19:4F'
+                linehr.append(f'AP: {one_data["access_point"]}')
+
+            if 'Frequency' in one_res.keys():
+                one_data['frequency'] = float(one_res['Frequency'].split()[0]) # b'5.24 GHz'
+                linehr.append(f'Freq: {one_data["frequency"]} GHz')
+
+            if 'BitRate' in one_res.keys():
+                one_data['bit_rate'] = float(one_res['BitRate'].split()[0]) # b'120 Mb/s'
+                linehr.append(f'BR: {one_data["bit_rate"]} Mb/s')
+
+            if 'Mode' in one_res.keys():
+                if one_res['Mode'] == b'Managed':
+                    one_data['mode'] = IWStatus.MODE_MANAGED #b'Managed'
+                elif one_res['Mode'] == b'Ad-Hoc':
+                    one_data['mode'] = IWStatus.MODE_AD_HOC #b'Ad-Hoc'
+                elif one_res['Mode'] == b'Master':
+                    one_data['mode'] = 3 #b'Ad-Hoc'
+                linehr.append(f'Mode: {one_data["mode"]}')
+
+            if 'stats' in one_res.keys():
+                if 'quality' in one_res['stats'].keys():
+                    one_data['quality'] = one_res['stats']['quality'] # 34
+                    linehr.append(f'Q: {one_data["quality"]}')
+
+                if 'level' in one_res['stats'].keys():
+                    one_data['level'] = one_res['stats']['level'] # 180
+                    linehr.append(f'Lvl: {one_data["level"]}')
+
+                if 'noise' in one_res['stats'].keys():
+                    one_data['noise'] = one_res['stats']['noise'] # 0
+                    linehr.append(f'N: {one_data["noise"]}')
+
+                if 'updated' in one_res['stats'].keys():
+                    one_data['updated'] = one_res['stats']['updated']
+                    linehr.append(f'Upd: {one_data["updated"]}')
+
+            res_data.append(one_data)
+            print(c(', '.join(linehr), 'cyan'))
+        return res_data
 

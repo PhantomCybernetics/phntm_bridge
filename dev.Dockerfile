@@ -65,11 +65,18 @@ RUN --mount=type=bind,rw=true,source=./aioice,target=/ros2_ws/aioice \
 RUN --mount=type=bind,rw=true,source=./aiortc,target=/ros2_ws/aiortc \
         pip install -e /ros2_ws/aiortc
 
+RUN --mount=type=bind,source=./phntm_interfaces,target=/ros2_ws/src/phntm_interfaces \
+        . /opt/ros/$ROS_DISTRO/setup.sh && \
+        rosdep update --rosdistro $ROS_DISTRO && \
+        rosdep install -i --from-path src/phntm_interfaces --rosdistro $ROS_DISTRO -y && \
+        colcon build --symlink-install --packages-select phntm_interfaces
+
 # mount ~/phntm_webrtc_bridge repo and buidl the pkg for the first time
 RUN --mount=type=bind,source=./phntm_bridge,target=/ros2_ws/src/phntm_bridge \
         . /opt/ros/$ROS_DISTRO/setup.sh && \
+	. /ros2_ws/install/setup.sh && \
         rosdep update --rosdistro $ROS_DISTRO && \
-        rosdep install -i --from-path src --rosdistro $ROS_DISTRO -y && \
+        rosdep install -i --from-path src/phntm_bridge --rosdistro $ROS_DISTRO -y && \
         colcon build --symlink-install --packages-select phntm_bridge
 
 # RUN . install/local_setup.bash
@@ -137,9 +144,11 @@ RUN pip install numpy --force-reinstall
 # docekr ctrl
 RUN pip install docker
 
-# wifi ctrl
+# wifi scanning
 RUN apt-get install -y wireless-tools libiw-dev
 RUN pip install iwlib
+# wifi ctrl via shared /var/run/wpa_supplicant/ (also needs shared /tmp)
+RUN apt-get install -y wpasupplicant
 
 # pimp up prompt with hostame and color
 RUN echo "PS1='\${debian_chroot:+(\$debian_chroot)}\\[\\033[01;35m\\]\\u@\\h\\[\\033[00m\\] \\[\\033[01;34m\\]\\w\\[\\033[00m\\] 🦄 '"  >> /root/.bashrc

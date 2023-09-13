@@ -12,10 +12,12 @@ services:
     cpuset: '0,1,2'
     volumes:
       - ~/phntm_bridge:/ros2_ws/src/phntm_bridge
+      - ~/phntm_interfaces:/ros2_ws/src/phntm_interfaces
       - ~/aioice:/ros2_ws/aioice
       - ~/aiortc:/ros2_ws/aiortc
       - ~/marcel_launch_params.yaml:/ros2_ws/phntm_bridge_params.yaml
       - /var/run:/host_run
+      - /tmp:/tmp
     devices:
       - /dev:/dev
     command:
