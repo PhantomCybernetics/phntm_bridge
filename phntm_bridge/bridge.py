@@ -209,7 +209,8 @@ class BridgeController(Node, BridgeControllerConfig):
             if not id_peer in self.wrtc_peers.keys():
                 return { 'err': 2, 'msg': 'Peer not connected' }
 
-            res = await self.iw.scan()
+            roam = data['roam'] if 'roam' in data else False
+            res = await self.iw.scan(roam)
 
             return { 'success': 1, 'res': res }
 

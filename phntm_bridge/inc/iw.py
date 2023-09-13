@@ -13,6 +13,7 @@ from rclpy.node import Node, Parameter, Subscription, QoSProfile, Publisher
 from rclpy.qos import QoSHistoryPolicy, QoSReliabilityPolicy, DurabilityPolicy
 
 from termcolor import colored as c
+import os
 
 class IW:
     def __init__(self, iface:str, monitor_period_s:float, node:Node, topic:str):
@@ -25,6 +26,10 @@ class IW:
         self.node:Node = node
         self.pub:Publisher = None
         self.topic:str = topic
+
+        self.last_essid:str = None #roaming between aps with same essid
+        self.last_access_point:str = None
+        self.last_frequency:float = None #GHz
 
     async def start_monitor(self):
         if self.monitor_running:
@@ -66,29 +71,39 @@ class IW:
         msg.header.stamp.nanosec = time_nanosec - (msg.header.stamp.sec *1000000000)
 
         try:
-            msg.frequency = float(cfg['Frequency'].split()[0]) # b'5.24 GHz'
-            msg.access_point = cfg['Access Point'].decode() # b'BA:FB:E4:45:19:4F'
-            msg.bit_rate = float(cfg['BitRate'].split()[0]) # b'120 Mb/s'
-            msg.essid = cfg['ESSID'].decode() # b'CircuitLaunch'
-            if cfg['Mode'] == b'Managed':
-                msg.mode = IWStatus.MODE_MANAGED #b'Managed'
-            elif cfg['Mode'] == b'Ad-Hoc':
-                msg.mode = IWStatus.MODE_AD_HOC #b'Ad-Hoc'
-            msg.quality = cfg['stats']['quality'] # 34
+            if 'Frequency' in cfg:
+                msg.frequency = float(cfg['Frequency'].split()[0]) # b'5.24 GHz'
+            if 'Access Point' in cfg:
+                msg.access_point = cfg['Access Point'].decode() # b'BA:FB:E4:45:19:4F'
+            if 'BitRate' in cfg:
+                msg.bit_rate = float(cfg['BitRate'].split()[0]) # b'120 Mb/s'
+            if 'ESSID' in cfg:
+                msg.essid = cfg['ESSID'].decode() # b'CircuitLaunch'
+            if 'Mode' in cfg:
+                if cfg['Mode'] == b'Managed':
+                    msg.mode = IWStatus.MODE_MANAGED #b'Managed'
+                elif cfg['Mode'] == b'Ad-Hoc':
+                    msg.mode = IWStatus.MODE_AD_HOC #b'Ad-Hoc'
+            if 'stats' in cfg:
+                if 'quality' in cfg['stats']:
+                    msg.quality = cfg['stats']['quality'] # 34
+                if 'level' in cfg['stats']:
+                    msg.level = cfg['stats']['level'] # 180
+                if 'noise' in cfg['stats']:
+                    msg.noise = cfg['stats']['noise'] # 0
+
             msg.quality_max = self.max_quality # 70
-            msg.level = cfg['stats']['level'] # 180
-            msg.noise = cfg['stats']['noise'] # 0
             msg.supports_scanning = self.supports_scanning
+
+            self.last_essid = msg.essid
+            self.last_access_point = msg.access_point
+            self.last_frequency = msg.frequency
+
         except Exception as e:
             print (c(f'Error while generating IWStatus: {e}', 'red'))
             print (f'IW CFG was: {cfg}')
 
-        # print(f'IW Monitor: {cfg} max={self.max_quality} sup_scan={self.supports_scanning}')
-        # print(msg)
-
         asyncio.get_event_loop().run_in_executor(None, self.pub.publish, msg)
-
-        # print(cfg)
 
 
     async def stop_monitor(self):
@@ -102,11 +117,15 @@ class IW:
             self.pub.destroy()
             self.pub = None
 
-    async def scan(self):
-        print(c(f'IW Monitor scanning...', 'cyan'))
+
+    async def scan(self, roam:bool):
+        print(c(f'IW Monitor scanning... roam={roam}', 'cyan'))
         results = await asyncio.get_event_loop().run_in_executor(None, iwlib.iwlist.scan, self.iface)
         res_data = []
         print(f'IW Monitor scan results: ')
+
+        roaming_candidates = []
+
         for one_res in results:
             one_data = {}
             linehr = []
@@ -153,7 +172,28 @@ class IW:
                     one_data['updated'] = one_res['stats']['updated']
                     linehr.append(f'Upd: {one_data["updated"]}')
 
+            if 'essid' in one_data and one_data['essid'] == self.last_essid \
+                and 'access_point' in one_data \
+                and 'quality' in one_data and 'level' in one_data:
+                roaming_candidates.append(one_data)
+
             res_data.append(one_data)
             print(c(', '.join(linehr), 'cyan'))
+
+        if roam:
+            print(f'IW: Seeing {len(roaming_candidates)} roaming candidates for {self.last_essid}')
+            # sort by quallity desc
+            sorted_candidates = sorted(roaming_candidates, key=lambda x: x['level'], reverse=True)
+            for cand in sorted_candidates:
+                print(f" >> {cand['access_point']} {cand['frequency'] if 'frequency' in cand else 'n/a'} GHz, Quality={cand['quality']}, lvl={cand['level'] if 'level' in cand else 'n/a'}, noise={cand['noise'] if 'noise' in cand else 'n/a'} {' < CURR' if cand['access_point'] == self.last_access_point else ''}")
+
+            bestest = sorted_candidates[0]
+            if bestest['access_point'] == self.last_access_point:
+                print(c(f" >>> Not roaming, current AP seems best", 'cyan'))
+            else:
+                print(c(f" >>> Attenmpting to roam to {bestest['access_point']} with quality={bestest['quality']}", 'cyan'))
+                wpa_cli_res = await asyncio.get_event_loop().run_in_executor(None, os.system, f"wpa_cli -p /host_run/wpa_supplicant/ -i {self.iface} roam {bestest['access_point']}")
+                print(f'wpa_cli_res={wpa_cli_res}')
+
         return res_data
 
