@@ -22,22 +22,44 @@ services:
       - /dev:/dev
     command:
       # ros2 launch phntm_bridge bridge_launch.py
-      # nice --19 ros2 launch phntm_bridge bridge_launch.py
+      #nice --19 ros2 launch phntm_bridge bridge_launch.py
       /bin/sh -c "while sleep 1000; do :; done"
 
-  mecanum_drive:
-    image: mecanum-bot:humble
-    container_name: mecanum-drive
-    hostname: mecanum-drive.local
+  rplidar:
+    image: phntm/rplidar:humble
+    container_name: rplidar
     restart: unless-stopped
-    privileged: true
-    devices:
-      - /dev:/dev
+    privileged: true #GPIO needs this
+    cpuset: '3'
     # volumes:
-    #   - ./joy2twist.yaml:/joy2twist.yaml
-    command:
-      ros2 launch mecanumbot_bringup mecanumbot_teleop.py
-      #/bin/sh -c "while sleep 1000; do :; done"
+    #   - ~/sllidar_ros2:/ros2_ws/src/sllidar_ros2
+    #   - ~/ledtest.py:/ros2_ws/ledtest.py
+    devices:
+      #- /dev/ttyAMA1:/dev/ttyUSB0
+      - /dev/ttyAMA1:/dev/ttyAMA1
+    command: >
+      ros2 launch sllidar_ros2 sllidar_launch.py
+        serial_port:=/dev/ttyAMA1 serial_baudrate:=256000 pwm_pin:=13
+
+  microros:
+    image: husarion/micro-ros-agent:humble
+    container_name: microros
+    restart: unless-stopped
+    devices:
+      - /dev/serial0
+    command: ros2 run micro_ros_agent micro_ros_agent serial -D /dev/serial0 serial -b 576000 # -v6
+
+  rosbot:
+    image: husarion/rosbot:humble
+    container_name: rosbot
+    restart: unless-stopped
+    environment:
+      - "SERIAL_PORT=/dev/serial0" # default: ttyS1 - rosbot2.0; ttyS4 - rosbot2.0 `pro
+    devices:
+      - "/dev/serial0"   # must match environment SERIAL_PORT
+    command: >
+        ros2 launch rosbot_bringup bringup.launch.py
+          mecanum:=True
 
   joy2twist:
     image: husarion/joy2twist:humble
@@ -62,34 +84,18 @@ services:
       - ./astra-params.yaml:/ros2_ws/install/astra_camera/share/astra_camera/params/astra_mini_params.yaml
     command: nice -15 ros2 launch astra_camera astra_mini.launch.py
 
-  rplidar:
-    image: husarion/rplidar:humble
-    container_name: rplidar
-    restart: unless-stopped
-    cpuset: '3'
-    devices:
-      - /dev/ttyUSB0:/dev/ttyUSB0
-    command: >
-        nice -15 ros2 launch sllidar_ros2 sllidar_launch.py
-          serial_baudrate:=${RPLIDAR_BAUDRATE:-255993}
+  # mecanum_drive:
+  #   image: mecanum-bot:humble
+  #   container_name: mecanum-drive
+  #   hostname: mecanum-drive.local
+  #   restart: unless-stopped
+  #   privileged: true
+  #   devices:
+  #     - /dev:/dev
+  #   # volumes:
+  #   #   - ./joy2twist.yaml:/joy2twist.yaml
+  #   command:
+  #     ros2 launch mecanumbot_bringup mecanumbot_teleop.py
+  #     #/bin/sh -c "while sleep 1000; do :; done"
 
-  microros:
-    image: husarion/micro-ros-agent:humble
-    container_name: microros
-    restart: unless-stopped
-    devices:
-      - /dev/serial0
-    command: ros2 run micro_ros_agent micro_ros_agent serial -D /dev/serial0 serial -b 576000 # -v6
-
-  rosbot:
-    image: husarion/rosbot:humble
-    container_name: rosbot
-    restart: unless-stopped
-    environment:
-      - "SERIAL_PORT=/dev/serial0" # default: ttyS1 - rosbot2.0; ttyS4 - rosbot2.0 `pro
-    devices:
-      - "/dev/serial0"   # must match environment SERIAL_PORT
-    command: >
-        ros2 launch rosbot_bringup bringup.launch.py
-          mecanum:=True
 
