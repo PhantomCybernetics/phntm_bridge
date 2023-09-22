@@ -843,6 +843,10 @@ class BridgeController(Node, BridgeControllerConfig):
                 if not id_cam in self.camera_subscriptions:
                      self.camera_subscriptions[id_cam] = Picamera2Subscription(id_camera=id_cam,
                                                                                picam2=picam2,
+                                                                               hflip=self.get_parameter('picam_hflip').get_parameter_value().bool_value,
+                                                                               vflip=self.get_parameter('picam_vflip').get_parameter_value().bool_value,
+                                                                               bitrate=self.get_parameter('picam_bitrate').get_parameter_value().integer_value,
+                                                                               framerate=self.get_parameter('picam_framerate').get_parameter_value().integer_value,
                                                                                logger=self.get_logger()
                                                                             ) #TODO config
 

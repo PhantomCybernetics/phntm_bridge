@@ -25,11 +25,16 @@ VIDEO_TIME_BASE = fractions.Fraction(1, VIDEO_CLOCK_RATE)
 
 class Picamera2Subscription:
 
-    def __init__(self, id_camera:str, picam2:Picamera2, logger:RcutilsLogger):
+    def __init__(self, id_camera:str, picam2:Picamera2, logger:RcutilsLogger, hflip:bool=False, vflip:bool=False, bitrate:int=5000000, framerate:int = 30):
         self.id_camera:str = id_camera
         self.num_received:int = 0
         self.peers:dict[str:RTCRtpSender] = {}
         self.logger:RcutilsLogger = logger
+
+        self.hflip = hflip
+        self.vflip = vflip
+        self.bitrate = bitrate
+        self.framerate = framerate
 
         self.picam2:Picamera2 = picam2
         self.encoder:H264Encoder = None
@@ -56,9 +61,10 @@ class Picamera2Subscription:
         #
         # full res has much lowerr latency (?)
         video_config = self.picam2.create_video_configuration(queue=False,
-                                                              transform=libcamera.Transform(hflip=1, vflip=1))
+                                                              transform=libcamera.Transform(hflip=1 if self.hflip else 0,
+                                                                                            vflip=1 if self.vflip else 0))
         self.picam2.configure(video_config)
-        self.encoder = H264Encoder(bitrate=5000000, framerate=30)
+        self.encoder = H264Encoder(bitrate=self.bitrate, framerate=self.framerate)
         self.output = PacketsOutput(sub=self)
 
         self.peers[id_peer] = sender

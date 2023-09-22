@@ -69,6 +69,13 @@ class BridgeControllerConfig():
         self.declare_parameter('param_whitelist', [ '.*' ])
         self.declare_parameter('param_blacklist', [ '' ])
 
+        # wifi monitoring + scan
         self.declare_parameter('iw_interface', 'wlan0')
         self.declare_parameter('iw_monitor_period_sec', 1.0)
         self.declare_parameter('iw_monitor_topic', '/iw_status')
+
+        # picamera2
+        self.declare_parameter('picam_hflip', False)
+        self.declare_parameter('picam_vflip', False)
+        self.declare_parameter('picam_bitrate', 5000000)
+        self.declare_parameter('picam_framerate', 30)
