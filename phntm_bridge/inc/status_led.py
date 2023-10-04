@@ -18,11 +18,11 @@ class StatusLED():
         BLINK_ONCE = 2
         BLINKING   = 3
 
-    def __init__(self, name:str, node:Node, cbg:CallbackGroup, mode:Mode, topic:str, qos: Union[QoSProfile, int]):
+    def __init__(self, name:str, node:Node, mode:Mode, topic:str, qos: Union[QoSProfile, int]):
         # super().__init__('webrtc_bridge_led_blinker_'+name)
         self.name = name
         self.topic = topic
-        self.publisher_ = node.create_publisher(Bool, self.topic, qos, callback_group=cbg)
+        self.publisher_ = node.create_publisher(Bool, self.topic, qos)
 
         self.msg_off = Bool(data=False)
         self.msg_on = Bool(data=True)

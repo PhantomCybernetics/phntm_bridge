@@ -28,13 +28,12 @@ from queue import Empty, Full
 class TopicReadSubscription:
 
     # def __init__(self, sub:Subscription, peers:list[str], frame_processor, processed_frames_h264:mp.Queue, processed_frames_v8:mp.Queue, make_keyframe_shared:mp.Value, make_h264_shared:mp.Value, make_v8_shared:mp.Value):
-    def __init__(self, ctrl_node:Node, reader_ctrl_queue:mp.Queue, topic:str, protocol:str, reliability:QoSReliabilityPolicy, durability:DurabilityPolicy, cbg:CallbackGroup, event_loop:object, log_message_every_sec:float):
+    def __init__(self, ctrl_node:Node, reader_ctrl_queue:mp.Queue, topic:str, protocol:str, reliability:QoSReliabilityPolicy, durability:DurabilityPolicy, event_loop:object, log_message_every_sec:float):
 
         self.sub:Subscription|bool = None
         self.ctrl_node:Node = ctrl_node
         self.reader_ctrl_queue:mp.Queue = reader_ctrl_queue
 
-        self.callback_group:CallbackGroup=cbg
         self.peers:{str:RTCDataChannel} = {} #target outbound dcs
         self.topic:str = topic
         self.protocol:str = protocol
@@ -52,7 +51,7 @@ class TopicReadSubscription:
         self.event_loop = event_loop
         self.last_send_future:asyncio.Future = None
 
-        self.send_pool = concurrent.futures.ThreadPoolExecutor()
+        # self.send_pool = concurrent.futures.ThreadPoolExecutor()
         #print(f'TopicReadSubscription:__init__() {threading.get_ident()}')
 
     def start(self, id_peer:str, dc:RTCDataChannel) -> bool:
@@ -63,7 +62,12 @@ class TopicReadSubscription:
 
         if self.reader_ctrl_queue: # subscribe on processor's process
 
-            self.reader_ctrl_queue.put_nowait(['subscribe', self.topic, self.protocol, self.reliability, self.durability])
+            self.reader_ctrl_queue.put_nowait({'action': 'subscribe',
+                                               'topic': self.topic,
+                                               'msg_type': self.protocol,
+                                               'reliability': self.reliability,
+                                               'durability': self.durability
+                                               })
             self.sub = True
 
         else: #subscribe here on ctrl node's process
@@ -85,13 +89,14 @@ class TopicReadSubscription:
                                     lifespan=Infinite \
                                     )
             self.ctrl_node.get_logger().warn(f'Subscribing to topic {self.topic} {self.protocol}')
+            no_skip:bool = self.protocol in [ 'std_msgs/msg/String', 'rcl_interfaces/msg/Log' ]
             self.sub = self.ctrl_node.create_subscription(
                     msg_type=message_class,
                     topic=self.topic,
                     callback=self.on_msg,
                     qos_profile=qosProfile,
                     raw=True,
-                    callback_group=self.callback_group
+                    no_skip=no_skip
                 )
             if self.sub == None:
                 self.ctrl_node.get_logger().error(f'Failed subscribing to topic {self.topic}, msg class={self.protocol}, peer={id_peer}')
@@ -102,16 +107,16 @@ class TopicReadSubscription:
         return True
 
     # called either by ctrl node's process or when data is received via reader_out_queue (called on ctrl node's process)
-    def on_msg(self, msg:any):
+    def on_msg(self, reader_res:dict):
         self.num_received += 1
-        self.last_msg = msg
+        self.last_msg = reader_res['msg']
         self.last_msg_time = time.time()
 
         #print(f'TopicReadSubscription:on_msg() {threading.get_ident()}')
 
         log_msg = False
         if self.num_received == 1: # first data in
-            self.ctrl_node.get_logger().debug(f'Receiving {type(msg).__name__} from {self.topic}')
+            self.ctrl_node.get_logger().debug(f'⚡️ Receiving {type(reader_res["msg"]).__name__} from {self.topic}')
 
         if self.last_log < 0 or self.last_msg_time-self.last_log > self.log_message_every_sec:
             log_msg = True
@@ -121,7 +126,7 @@ class TopicReadSubscription:
             dc:RTCDataChannel = self.peers[id_peer]
             if dc.readyState == 'open':
                 if log_msg:
-                    self.ctrl_node.get_logger().info(f'△ Sending {len(msg)}B into {self.topic} for id_peer={id_peer}, total received: {self.num_received}')
+                    self.ctrl_node.get_logger().info(f'⚡️ △ Sending {len(reader_res["msg"])}B into {self.topic} for id_peer={id_peer} / dc= {str(id(dc))}, total received: {self.num_received}')
                 # print(f' hello! {self.topic}')
                 try:
                     # await self.event_loop.create_task(dc.send(msg)) #always raw bytes bcs fast
@@ -133,14 +138,12 @@ class TopicReadSubscription:
                     # self.event_loop.call_soon_threadsafe(dc.send, msg)
                     # self.event_loop.call_soon_threadsafe(dc.send, msg)
 
-                    last_unfinished = self.last_send_future is not None and not self.last_send_future.done()
-
-                    if not last_unfinished:
-                        self.last_send_future = self.event_loop.run_in_executor(self.send_pool, lambda: dc.send(self.last_msg))
+                    # last_unfinished = self.last_send_future is not None and not self.last_send_future.done()
+                    dc.send(self.last_msg)
 
                     # await dc.send(msg) #always raw bytes bcs fast
                 except Exception as e:
-                    print(f'Exception in on_msg: {e}')
+                    print(f'⚡️ Exception in on_msg: {e}')
                     traceback.print_exception(e)
 
             # else:
@@ -165,7 +168,7 @@ class TopicReadSubscription:
                 return #nothing received yet, will report when we do
             if self.peers[id_peer].readyState == 'open':
                 # asyncio.get_event_loop().create_task(self.peers[id_peer].send())
-                self.event_loop.run_in_executor(self.send_pool, lambda: self.peers[id_peer].send(self.last_msg))
+                self.event_loop.run_in_executor(None, lambda: self.peers[id_peer].send(self.last_msg))
                 return #all done
             else:
                 await asyncio.sleep(.5) #wait until dc opens
@@ -180,7 +183,7 @@ class TopicReadSubscription:
             return False
 
         if self.sub == True:
-            self.reader_ctrl_queue.put_nowait(['unsubscribe', self.topic])
+            self.reader_ctrl_queue.put_nowait({'action': 'unsubscribe', 'topic':self.topic })
         else:
             self.ctrl_node.get_logger().info(f'Destroying local subscriber for {self.topic}')
             self.ctrl_node.destroy_subscription(self.sub)

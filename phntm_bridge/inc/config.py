@@ -20,6 +20,14 @@ class BridgeControllerConfig():
             logger.error(f'Param key not provided!')
             exit(1)
 
+        #webrtc
+        self.declare_parameter('ice_server_urls', [
+            "stun:stun.l.google.com:19302",
+            "turn:turn.phntm.io:3478",
+            "turn:turn.phntm.io:5349"
+            ])
+        self.ice_server_urls = self.get_parameter('ice_server_urls').get_parameter_value().string_array_value
+
         # SOCKET.IO
         self.declare_parameter('sio_address', 'https://api.phntm.io')
         self.declare_parameter('sio_port', 1337)

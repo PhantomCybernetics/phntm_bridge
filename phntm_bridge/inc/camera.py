@@ -8,6 +8,7 @@ from typing import Tuple, Union, List
 from termcolor import colored as c
 import av
 import fractions
+import time
 
 from rclpy.impl.rcutils_logger import RcutilsLogger
 
@@ -19,13 +20,16 @@ from aiortc import RTCRtpSender
 from aiortc.codecs.h264 import PACKET_MAX
 import asyncio
 
-VIDEO_CLOCK_RATE = 1000000000 #ns to s
+NS_TO_SEC = 1000000000
 # VIDEO_PTIME = 1 / 30  # 30fps
-VIDEO_TIME_BASE = fractions.Fraction(1, VIDEO_CLOCK_RATE)
+SRC_VIDEO_TIME_BASE = fractions.Fraction(1, NS_TO_SEC)
+
+from aiortc.mediastreams import VIDEO_TIME_BASE, convert_timebase
+from aiortc.codecs.h264 import H264Encoder as aiortcH264Encoder
 
 class Picamera2Subscription:
 
-    def __init__(self, id_camera:str, picam2:Picamera2, logger:RcutilsLogger, hflip:bool=False, vflip:bool=False, bitrate:int=5000000, framerate:int = 30):
+    def __init__(self, id_camera:str, picam2:Picamera2, logger:RcutilsLogger, bridge_time_started_ns:int, hflip:bool=False, vflip:bool=False, bitrate:int=5000000, framerate:int = 30, log_message_every_sec:float=5.0):
         self.id_camera:str = id_camera
         self.num_received:int = 0
         self.peers:dict[str:RTCRtpSender] = {}
@@ -40,13 +44,14 @@ class Picamera2Subscription:
         self.encoder:H264Encoder = None
         self.output:PacketsOutput = None
         self.event_loop = None
-        self.camera_task_locks:dict[str:asyncio.Future] = {}
+
+        self.bridge_time_started_ns:int = bridge_time_started_ns
+        self.log_message_every_sec:float = log_message_every_sec
 
     async def start(self, id_peer:str, sender:RTCRtpSender) -> bool:
 
         if self.output != None:
             self.peers[id_peer] = sender
-            sender.track.set_output(self.output)
             return True #all done, one sub for all
 
         # preview_config = self.picam2.create_preview_configuration(display='main',
@@ -65,7 +70,7 @@ class Picamera2Subscription:
                                                                                             vflip=1 if self.vflip else 0))
         self.picam2.configure(video_config)
         self.encoder = H264Encoder(bitrate=self.bitrate, framerate=self.framerate)
-        self.output = PacketsOutput(sub=self)
+        self.output = PacketsOutput(sub=self, bridge_time_started_ns=self.bridge_time_started_ns, logger=self.logger, log_message_every_sec=self.log_message_every_sec)
 
         self.peers[id_peer] = sender
         # self.peers[id_peer].track.set_output(self.output)
@@ -82,8 +87,6 @@ class Picamera2Subscription:
 
     def stop(self, id_peer:str):
         if id_peer in self.peers.keys():
-            if self.peers[id_peer].track:
-                self.peers[id_peer].track.set_output(None)
             self.peers.pop(id_peer)
 
         if len(self.peers) == 0:
@@ -133,8 +136,7 @@ class PacketsOutput(FileOutput):
     # last_keyframe_timestamp = 0
     # last_was_keyframe = False
 
-
-    def __init__(self, sub:Picamera2Subscription):
+    def __init__(self, sub:Picamera2Subscription, bridge_time_started_ns:int, logger:RcutilsLogger, log_message_every_sec:float=5.0):
         super().__init__()
         # self.last_frameav.Packet = None
         # self.last_keyframe = None
@@ -142,6 +144,15 @@ class PacketsOutput(FileOutput):
         # elf.last_keyframe_timestamp = 0
         # self.last_was_keyframe = False
         self.sub:Picamera2Subscription = sub
+        self.last_frame:int = 0
+        self.bridge_time_started_ns:int = bridge_time_started_ns
+        self.num_received = 0
+        self.logger:RcutilsLogger = logger
+
+        self.last_log:float = -1.0
+        self.log_message_every_sec:float = log_message_every_sec
+
+        self.aiortc_encoder:aiortcH264Encoder() = aiortcH264Encoder()
 
     def outputframe(self, frame_bytes, keyframe=True, timestamp=None):
         """Outputs frame from encoder
@@ -154,20 +165,41 @@ class PacketsOutput(FileOutput):
         :type timestamp: int
         """
 
-        packet = av.Packet(frame_bytes)
-        packet.pts = timestamp
-        packet.time_base = VIDEO_TIME_BASE
+        if not self.sub.event_loop.is_running:
+            return
 
+        self.num_received += 1
+
+        packet = av.Packet(frame_bytes)
+        packet.pts = timestamp # ns
+        packet.time_base = SRC_VIDEO_TIME_BASE
+
+        log_msg = False
+        if self.num_received == 1: # first data in
+            log_msg = True
+            self.logger.debug(f'👁️  Receiving {len(frame_bytes)}B frame from camera {self.sub.id_camera}')
+
+        if self.last_log < 0 or time.time()-self.last_log > self.log_message_every_sec:
+            log_msg = True
+            self.last_log = time.time() #last logged now
+
+        payloads, stamp_converted = self.aiortc_encoder.pack(packet)
+
+        self.last_frame = timestamp
         for id_peer in self.sub.peers.keys():
-            fut = self.sub.event_loop.create_future()
-            self.sub.camera_task_locks[id_peer] = fut
-            self.sub.peers[id_peer].send_direct(packet, self.sub.event_loop, keyframe, fut)
+            # fut = self.sub.event_loop.create_future()
+            if log_msg:
+                self.logger.info(f'👁️  △ Sending {len(frame_bytes)}B / {len(payloads)} pkgs of {self.sub.id_camera} to id_peer={id_peer} / id_stream= {str(self.sub.peers[id_peer]._stream_id)}, total received: {self.num_received}, ts={timestamp}, sender={str(id(self.sub.peers[id_peer]))}')
+            # if timestamp == 0:
+                # offset_ns = time.time_ns()-self.bridge_time_started_ns
+                # self.sub.peers[id_peer].timestamp_origin = convert_timebase(offset_ns, SRC_VIDEO_TIME_BASE, VIDEO_TIME_BASE)
+            self.sub.event_loop.create_task(self.sub.peers[id_peer].send_direct(frame_data=payloads, stamp_converted=stamp_converted, keyframe=keyframe))
 
         # if self.recording:
         #     if self._firstframe:
         #         if not keyframe:
         #             return
-        #         else:
+        #         else:s
         #             self._firstframe = False
 
         #     self.last_was_keyframe = keyframe
@@ -179,55 +211,65 @@ class PacketsOutput(FileOutput):
         #         self.last_timestamp = timestamp
         #     # print(f'Receiving frame {timestamp}: {len(frame)} B{" KEYFRAME" if keyframe else ""}')
 
+
 class CameraVideoStreamTrack(MediaStreamTrack):
 
     kind = "video"
 
-    def __init__(self, id_cam:str, id_peer:str, logger:RcutilsLogger, log_message_every_sec:float):
-        super().__init__()
-
-        self.id_peer:str = id_peer
-        self.id_cam:str = id_cam
-        self.logger:RcutilsLogger = logger
-
-        self.output:PacketsOutput = None
-        self.last_output_keyframe_timestamp:int = -1
-        self.last_output_timestamp:int = -1
-
-        self.total_processed:int = 0
-        self.log_message_every_sec:float = log_message_every_sec
-
-        self.last_log:float = -1.0
-
-    def set_sender(self, sender):
-        self._sender = sender
-
-    def set_output(self, output:PacketsOutput):
-        self.output = output
-
     async def recv(self) -> av.Packet:
+        pass #sending directly
 
-        if not self.output:
-            return None
 
-        if self.output.last_keyframe is None:
-            return None
 
-        if self.last_output_keyframe_timestamp != self.output.last_keyframe_timestamp:
-            enncoded_frame = self.output.last_keyframe
-            timestamp = self.output.last_keyframe_timestamp
-            self.last_output_keyframe_timestamp = self.output.last_keyframe_timestamp
-        elif self.output.last_frame is not None and self.last_output_timestamp != self.output.last_timestamp:
-            enncoded_frame = self.output.last_frame
-            timestamp = self.output.last_timestamp
-            self.last_output_timestamp = self.output.last_timestamp
-        else:
-            return None
+# class CameraVideoStreamTrack(MediaStreamTrack):
 
-        self.total_processed += 1
+#     kind = "video"
 
-        packet = av.Packet(enncoded_frame)
-        packet.pts = timestamp
-        packet.time_base = VIDEO_TIME_BASE
+#     def __init__(self, id_cam:str, id_peer:str, logger:RcutilsLogger, log_message_every_sec:float):
+#         super().__init__()
 
-        return packet # Tuple[List[bytes], int]
+#         self.id_peer:str = id_peer
+#         self.id_cam:str = id_cam #or topic
+#         self.logger:RcutilsLogger = logger
+
+#         self.output:PacketsOutput = None
+#         self.last_output_keyframe_timestamp:int = -1
+#         self.last_output_timestamp:int = -1
+
+#         self.total_processed:int = 0
+#         self.log_message_every_sec:float = log_message_every_sec
+
+#         self.last_log:float = -1.0
+
+#     def set_sender(self, sender):
+#         self._sender = sender
+
+#     def set_output(self, output:PacketsOutput):
+#         self.output = output
+
+#     async def recv(self) -> av.Packet:
+
+#         if not self.output:
+#             return None
+
+#         if self.output.last_keyframe is None:
+#             return None
+
+#         if self.last_output_keyframe_timestamp != self.output.last_keyframe_timestamp:
+#             enncoded_frame = self.output.last_keyframe
+#             timestamp = self.output.last_keyframe_timestamp
+#             self.last_output_keyframe_timestamp = self.output.last_keyframe_timestamp
+#         elif self.output.last_frame is not None and self.last_output_timestamp != self.output.last_timestamp:
+#             enncoded_frame = self.output.last_frame
+#             timestamp = self.output.last_timestamp
+#             self.last_output_timestamp = self.output.last_timestamp
+#         else:
+#             return None
+
+#         self.total_processed += 1
+
+#         packet = av.Packet(enncoded_frame)
+#         packet.pts = timestamp
+#         packet.time_base = VIDEO_TIME_BASE
+
+#         return packet # Tuple[List[bytes], int]

@@ -6,7 +6,6 @@ from rclpy.node import Node, Parameter, Subscription, QoSProfile, Publisher
 from rclpy.duration import Duration, Infinite
 from rclpy.impl.rcutils_logger import RcutilsLogger
 from rosidl_runtime_py.utilities import get_message, get_interface
-from rclpy.callback_groups import CallbackGroup
 from rclpy.qos import QoSHistoryPolicy, QoSReliabilityPolicy, DurabilityPolicy
 
 from typing import Callable
@@ -23,10 +22,9 @@ import threading
 # this can indeed lead for compeition
 class TopicWritePublisher:
 
-    def __init__(self, node:Node, topic:str, protocol:str, cbg:CallbackGroup, log_message_every_sec:float):
+    def __init__(self, node:Node, topic:str, protocol:str, log_message_every_sec:float):
         self.pub:Publisher = None
         self.node:Node = node
-        self.callback_group:CallbackGroup=cbg
         self.peers:list[str] = []
         self.topic:str = topic
         self.protocol:str = protocol
@@ -66,7 +64,7 @@ class TopicWritePublisher:
                          reliability=QoSReliabilityPolicy.BEST_EFFORT \
                          )
 
-        self.pub = self.node.create_publisher(self.message_class, self.topic, qos, callback_group=self.callback_group)
+        self.pub = self.node.create_publisher(self.message_class, self.topic, qos)
         if self.pub == None:
             self.get_logger().error(f'Failed creating publisher for topic {self.topic}, protocol={self.protocol}, peer={id_peer}')
             return False
@@ -119,9 +117,9 @@ class TopicWritePublisher:
         if time.time()-self.last_time_logged > self.log_message_every_sec:
             self.last_time_logged = time.time() #logged now
             if type(msg) is bytes:
-                self.node.get_logger().info(f'▼ {self.topic} got message: {len(msg)}B from id_peer={id_peer}, total rcvd: {self.num_received}, written={self.num_written}')
+                self.node.get_logger().info(f' 🐵 ▼ {self.topic} got message: {len(msg)}B from id_peer={id_peer}, total rcvd: {self.num_received}, written={self.num_written}')
             else:
-                self.node.get_logger().info(f'▼ {self.topic} got message: {len(msg)}, from id_peer={id_peer}, total rcvd: {self.num_received}, written={self.num_written}')
+                self.node.get_logger().info(f' 🐵 ▼ {self.topic} got message: {len(msg)}, from id_peer={id_peer}, total rcvd: {self.num_received}, written={self.num_written}')
 
         self.num_written += 1
         asyncio.get_event_loop().call_soon(self.pub.publish,self.last_msg)

@@ -10,6 +10,7 @@ services:
     privileged: true
     network_mode: host
     cpuset: '0,1,2'
+    shm_size: 200m #more room for shared camera frames
     volumes:
       - ~/phntm_bridge:/ros2_ws/src/phntm_bridge
       - ~/phntm_interfaces:/ros2_ws/src/phntm_interfaces

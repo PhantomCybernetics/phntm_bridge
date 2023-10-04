@@ -12,7 +12,9 @@ from rclpy.qos import QoSHistoryPolicy, QoSReliabilityPolicy, DurabilityPolicy
 from typing import Callable
 import time
 
-from .camera import CameraVideoStreamTrack
+from termcolor import colored as c
+
+# from .camera import CameraVideoStreamTrack
 
 import threading
 
@@ -23,10 +25,10 @@ class WRTCPeer:
 
     # self.wrtc_peer_video_tracks:dict[str,dict[str,RTCRtpSender]] = dict() # id_peer => [ topic => peer read webrtc video track ]
     # self.video_track_tmp:ROSVideoStreamTrack = None
-    def __init__(self, id_peer:str, node:Node):
+    def __init__(self, id_peer:str, ctrl_node:Node, ice_server_urls:list):
         self.id:str = id_peer
-        self.node:Node = node
-        self.logger:RcutilsLogger = node.get_logger()
+        self.node:Node = ctrl_node
+        self.logger:RcutilsLogger = ctrl_node.get_logger()
 
         self.ros_publishers:list[str] = []
 
@@ -35,18 +37,12 @@ class WRTCPeer:
 
         self.video_tracks:dict[str:RTCRtpSender] = {}
 
+        self.logger.info(c(f'Creating peer with iceServers={str(ice_server_urls)}', 'cyan'))
+
         config = RTCConfiguration(
             iceServers=[
-                RTCIceServer( #TODO move this to server generated config
-                    urls=[
-                        "stun:stun.l.google.com:19302",
-                        "stun:stun1.l.google.com:19302",
-                        "stun:stun2.l.google.com:19302",
-                        "stun:stun3.l.google.com:19302",
-                        "stun:stun4.l.google.com:19302",
-                        "turn:turn.phntm.io:3478",
-                        "turn:turn.phntm.io:5349",
-                    ],
+                RTCIceServer(
+                    urls=ice_server_urls,
                     credential="robopass",
                 ),
             ]

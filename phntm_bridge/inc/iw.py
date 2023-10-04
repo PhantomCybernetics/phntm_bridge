@@ -43,7 +43,7 @@ class IW:
         self.pub = self.node.create_publisher(IWStatus, self.topic, qos)
 
         if self.pub == None:
-            self.get_logger().error(f'Failed creating publisher for topic {self.topic}, protocol={self.protocol}, peer={id_peer}')
+            self.get_logger().error(f'Failed creating publisher for topic {self.topic}, msg_type=IWStatus')
             return False
 
         self.monitor_running = True
