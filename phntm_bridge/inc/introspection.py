@@ -128,18 +128,20 @@ class Introspection:
         if docker_containers_changed:
             await self.report_docker()
 
-
-    async def report_topics(self):
-        if not self.sio or not self.sio.connected:
-            return
-
+    def get_topics_data(self):
         data = []
         for topic in self.discovered_topics.keys():
             topic_data = [ topic ] # msg types follow
             for msg_type in self.discovered_topics[topic]['msg_types']:
                 topic_data.append(msg_type)
             data.append(topic_data)
+        return data
 
+    async def report_topics(self):
+        if not self.sio or not self.sio.connected:
+            return
+
+        data = self.get_topics_data()
         self.logger.info(f'Reporting {len(data)} topics')
 
         await self.sio.emit(
@@ -148,18 +150,20 @@ class Introspection:
             callback=None
             )
 
-
-    async def report_services(self):
-        if not self.sio or not self.sio.connected:
-            return
-
+    def get_services_data(self):
         data = []
         for service in self.discovered_services.keys():
             service_data = [ service ]  # msg types follow
             for msg_type in self.discovered_services[service]['msg_types']:
                 service_data.append(msg_type)
             data.append(service_data)
+        return data
 
+    async def report_services(self):
+        if not self.sio or not self.sio.connected:
+            return
+
+        data = self.get_services_data()
         self.logger.info(f'Reporting {len(data)} services')
 
         await self.sio.emit(
@@ -168,15 +172,17 @@ class Introspection:
             callback=None
             )
 
+    def get_cameras_data(self):
+        data = []
+        for id_cam in self.discovered_cameras.keys():
+            data.append( [ id_cam,  self.discovered_cameras[id_cam] ])
+        return data
 
     async def report_cameras(self):
         if not self.sio or not self.sio.connected:
             return
 
-        data = []
-        for id_cam in self.discovered_cameras.keys():
-            data.append( [ id_cam,  self.discovered_cameras[id_cam] ])
-
+        data = self.get_cameras_data()
         self.logger.info(f'Reporting {len(data)} cameras')
 
         await self.sio.emit(
@@ -185,11 +191,7 @@ class Introspection:
             callback=None
             )
 
-
-    async def report_docker(self):
-        if not self.sio or not self.sio.connected:
-            return
-
+    def get_docker_data(self):
         data = []
         for id_container in self.discovered_docker_containers.keys():
             cont = self.discovered_docker_containers[id_container][0]
@@ -201,7 +203,13 @@ class Introspection:
                 'status': cont.status
             }
             data.append(cont_data)
+        return data
 
+    async def report_docker(self):
+        if not self.sio or not self.sio.connected:
+            return
+
+        data = self.get_docker_data()
         self.logger.info(f'Reporting {len(data)} docker containers')
 
         await self.sio.emit(
@@ -210,7 +218,6 @@ class Introspection:
             callback=None
             )
 
-
     async def report_introspection(self):
         if not self.sio or not self.sio.connected:
             return
@@ -218,7 +225,7 @@ class Introspection:
         self.logger.info(f'Reporting introspection running: {self.running}')
 
         await self.sio.emit(
-            event='discovery',
+            event='introspection',
             data=self.running,
             callback=None
             )

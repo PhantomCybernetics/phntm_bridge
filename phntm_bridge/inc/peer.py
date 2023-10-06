@@ -34,10 +34,12 @@ class WRTCPeer:
 
         self.inbound_data_channels:dict[str:RTCDataChannel] = {}
         self.outbound_data_channels:dict[str:RTCDataChannel] = {}
-
         self.video_tracks:dict[str:RTCRtpSender] = {}
 
         self.logger.info(c(f'Creating peer with iceServers={str(ice_server_urls)}', 'cyan'))
+
+        self.read_subs:list(str) = []
+        self.write_subs:list(list(str)) = []
 
         config = RTCConfiguration(
             iceServers=[
@@ -55,6 +57,29 @@ class WRTCPeer:
             self.logger.error(f'Peer WebRTC connection is closed or failed for {id_peer}')
             return
 
+        @self.pc.on("icegatheringstatechange")
+        async def on_icegatheringstatechange():
+            self.logger.warn(f'WebRTC(peer={id_peer}) Ice Gathering State: %s' % self.pc.iceGatheringState)
+
+        @self.pc.on("iceconnectionstatechange")
+        async def on_iceconnectionstatechange():
+            self.logger.warn(f'WebRTC (peer={id_peer}) Ice Connection State: %s' % self.pc.iceConnectionState)
+
+        @self.pc.on("signalingstatechange")
+        async def on_signalingstatechange():
+            self.logger.warn(f'WebRTC (peer={id_peer}) Signaling State: %s' % self.pc.signalingState)
+
+    async def process_subs(self):
+        subs = {
+
+        }
+        for sub in self.read_subs:
+            pass
+
+        for sub in self.write_subs:
+            pass
+
+        return subs
 
     def GetId(data:dict) -> str:
         id_peer:str = None

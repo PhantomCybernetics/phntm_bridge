@@ -177,15 +177,15 @@ class BridgeController(Node, BridgeControllerConfig):
 
         event_loop = asyncio.get_event_loop()
 
-        @self.sio.on('offer')
-        async def on_offer(data):
+        @self.sio.on('peer')
+        async def on_peer(data):
             id_peer:str = WRTCPeer.GetId(data)
             if id_peer == None:
                 return { 'err': 2, 'msg': 'No valid peer id provided' }
-            return await self.on_peer_wrtc_offer(id_peer, data)
+            return await self.on_peer_connect(id_peer, data)
 
-        @self.sio.on('discovery')
-        async def on_discovery(data):
+        @self.sio.on('introspection')
+        async def on_introspection(data):
             id_peer:str = WRTCPeer.GetId(data)
             if id_peer == None:
                 return { 'err': 2, 'msg': 'No valid peer id provided' }
@@ -197,7 +197,7 @@ class BridgeController(Node, BridgeControllerConfig):
             else:
                 asyncio.get_event_loop().create_task(self.introspection.stop())
                 # await self.introspection.stop()
-            return { 'success': 1, 'discovery': self.introspection.running }
+            return { 'success': 1, 'introspection': self.introspection.running }
 
         @self.sio.on('iw:scan')
         async def on_iw_scan(data):
@@ -254,12 +254,13 @@ class BridgeController(Node, BridgeControllerConfig):
             id_peer = WRTCPeer.GetId(data)
             if id_peer == None:
                 return { 'err': 2, 'msg': 'No valid peer id provided' }
-            if not id_peer in self.wrtc_peers.keys():
+            peer:WRTCPeer = self.wrtc_peers[id_peer]
+            if not peer:
                 return { 'err': 2, 'msg': 'Peer not connected' }
             if not 'topics' in data:
                 self.get_logger().error(f'No topics specified in on_read_subscriptions_change, peer={id_peer}')
                 return { 'err': 2, 'msg': 'No topics specified' }
-            return await event_loop.create_task(self.on_read_subscriptions_change(id_peer, data))
+            return await event_loop.create_task(self.on_read_subscriptions_change(peer, data))
 
         # subscribe and unsubscribe camera streams
         @self.sio.on('cameras:read')
@@ -267,11 +268,12 @@ class BridgeController(Node, BridgeControllerConfig):
             id_peer = WRTCPeer.GetId(data)
             if id_peer == None:
                 return { 'err': 2, 'msg': 'No valid peer id provided' }
-            if not id_peer in self.wrtc_peers.keys():
-                 return { 'err': 2, 'msg': 'Peer not connected' }
+            peer:WRTCPeer = self.wrtc_peers[id_peer]
+            if not peer:
+                return { 'err': 2, 'msg': 'Peer not connected' }
             if not 'cameras' in data:
                 return { 'err': 2, 'msg': 'No cameras specified' }
-            return await self.on_camera_subscription_change(id_peer, data)
+            return await self.on_camera_subscription_change(peer, data)
 
         @self.sio.on('sdp:answer')
         async def on_sdp_answer(data:dict):
@@ -305,9 +307,10 @@ class BridgeController(Node, BridgeControllerConfig):
             id_peer = WRTCPeer.GetId(data)
             if id_peer == None:
                 return { 'err': 2, 'msg': 'No valid peer id provided' }
-            if not id_peer in self.wrtc_peers.keys():
-                 return { 'err': 2, 'msg': 'Peer not connected' }
-            return await self.on_write_subscription_change(id_peer, data)
+            peer:WRTCPeer = self.wrtc_peers[id_peer]
+            if not peer:
+                return { 'err': 2, 'msg': 'Peer not connected' }
+            return await self.on_write_subscription_change(peer, data)
 
         # SERVICE CALLS
         @self.sio.on('service')
@@ -466,55 +469,48 @@ class BridgeController(Node, BridgeControllerConfig):
     ##
     # init p2p connection with a peer sdp offer
     ##
-    async def on_peer_wrtc_offer(self, id_peer:str, offerData:dict):
+    async def on_peer_connect(self, id_peer:str, peer_data:dict):
 
-        if not 'sdp' in offerData.keys():
-            return { 'err': 2, 'msg': 'Offer missing sdp' }
-
-        offer = RTCSessionDescription(sdp=offerData['sdp'], type='offer')
-
-        self.get_logger().debug(c('Got SDP offer from '+id_peer, 'cyan'))
-        if self.log_sdp:
-            print(c(offer.sdp, 'dark_grey'))
+        self.get_logger().debug(c(f'Peer {id_peer} connected...', 'magenta'))
+        self.get_logger().info(c(peer_data, 'dark_grey'))
 
         if id_peer in self.wrtc_peers.keys():
-            self.get_logger().debug(f'Peer {id_peer} was already connected, removing...')
+            self.get_logger().warn(f'Peer {id_peer} was already connected, restarting...')
             await self.remove_peer(id_peer, wait=False)
 
         # pc.addTransceiver('video', direction='sendonly') #must have at least one
         peer = WRTCPeer(id_peer, self, self.ice_server_urls)
+        peer.read_subs = peer_data['read'] if 'read' in peer_data else []
+        peer.write_subs = peer_data['write'] if 'write' in peer_data else []
         self.wrtc_peers[id_peer] = peer
+
         @peer.pc.on("connectionstatechange")
         async def on_connectionstatechange():
-            self.get_logger().warn(f"WebRTC (peer={id_peer}) Connection state: %s" % peer.pc.connectionState)
+            self.get_logger().warn(f"WebRTC (peer={id_peer}) Connection state: {peer.pc.connectionState}")
             if peer.pc.connectionState == "failed":
                await self.remove_peer(peer.id, wait=True)
 
-        @peer.pc.on("icegatheringstatechange")
-        async def on_icegatheringstatechange():
-            self.get_logger().warn(f'WebRTC(peer={id_peer}) Ice Gathering State: %s' % peer.pc.iceGatheringState)
+        subs = await peer.process_subs()
 
-        @peer.pc.on("iceconnectionstatechange")
-        async def on_iceconnectionstatechange():
-            self.get_logger().warn(f'WebRTC (peer={id_peer}) Ice Connection State: %s' % peer.pc.iceConnectionState)
+        if len(subs) == 0:
+            self.get_logger().debug(c(f'Peer {id_peer} connected, nothing to do', 'dark_grey'))
+            return {
+                'success' : 1 # SDF can't be generated
+            }
 
-        @peer.pc.on("signalingstatechange")
-        async def on_signalingstatechange():
-            self.get_logger().warn(f'WebRTC (peer={id_peer}) Signaling State: %s' % peer.pc.signalingState)
-
-        await peer.pc.setRemoteDescription(offer)
-
-        answer = await peer.pc.createAnswer()
-        await peer.pc.setLocalDescription(answer)
+        self.get_logger().debug(c(f'Creating initial SDP offer for peer {id_peer}...', 'cyan'))
+        offer = await peer.pc.createOffer()
 
         if not await self.peer_ice_checker(peer):
             return { 'err': 2, 'msg': 'Timed out waiting forinitial  ICE gathering' }
 
-        self.get_logger().debug(c('Generated answer', 'cyan'))
+        await peer.pc.setLocalDescription(offer)
         if self.log_sdp:
             self.get_logger().info(c(peer.pc.localDescription.sdp, 'dark_grey'))
 
-        return { 'sdp': peer.pc.localDescription.sdp }
+        return {
+            'offer': peer.pc.localDescription.sdp
+        }
 
 
     # WRTC peer disconnected
@@ -600,7 +596,7 @@ class BridgeController(Node, BridgeControllerConfig):
     ##
     # Topic READ subscriptions & message routing
     ##
-    async def on_read_subscriptions_change(self, id_peer:str, data:dict) -> {}:
+    async def on_read_subscriptions_change(self, peer:WRTCPeer, data:dict) -> {}:
 
         # self.get_logger().info(f'Peer {id_peer} subscription change for {len(data["topics"])} topics')
 
@@ -609,11 +605,6 @@ class BridgeController(Node, BridgeControllerConfig):
             if int(topic_data[1]) > 0: # subscribe?
                 negotiation_needed = True
                 break
-
-        peer:WRTCPeer = self.wrtc_peers[id_peer]
-        if not peer:
-            self.get_logger().error(f'Peer not connected in on_read_subscriptions_change, peer={id_peer}')
-            return { 'err': 2, 'msg': 'Peer not connected' }
 
         if negotiation_needed and not await self.peer_signalling_stable_checker(peer):
             self.get_logger().err(f'Timed out waiting for stable signalling stat for peer={id_peer}')
@@ -875,16 +866,11 @@ class BridgeController(Node, BridgeControllerConfig):
     ##
     # Topic WRITE subscriptions & message routing
     ###
-    async def on_write_subscription_change(self, id_peer:str, data:dict) -> {}:
-        peer:WRTCPeer = self.wrtc_peers[id_peer]
+    async def on_write_subscription_change(self, peer:WRTCPeer, data:dict) -> {}:
 
         if not 'topics' in data:
             self.get_logger().error(f'No topics specified in on_write_subscription_change, peer={id_peer}')
             return { 'err': 2, 'msg': 'No topics specified' }
-
-        if not peer:
-            self.get_logger().error(f'Peer not connected in on_write_subscription_change, peer={id_peer}')
-            return { 'err': 2, 'msg': 'Peer not connected' }
 
         # TODO: Is this necessary here? We open DCs on both ends so no need for SPD exchange or blocking?
         # negotiation_needed = False
@@ -947,7 +933,7 @@ class BridgeController(Node, BridgeControllerConfig):
     ##
     # Camera feed subscriptions
     ##
-    async def on_camera_subscription_change(self, id_peer:str, data:dict):
+    async def on_camera_subscription_change(self, peer:WRTCPeer, data:dict):
         # self.get_logger().info(f'Peer {id_peer} subscriptoin change for cameras: {str(data["cameras"])}')
 
         negotiation_needed = False
@@ -955,11 +941,6 @@ class BridgeController(Node, BridgeControllerConfig):
             if int(camera_data[1]) > 0: #subscribe
                 negotiation_needed = True
                 break
-
-        peer:WRTCPeer = self.wrtc_peers[id_peer]
-        if not peer:
-            self.get_logger().error(f'Peer not connected in on_camera_subscription, peer={id_peer}')
-            return { 'err': 2, 'msg': 'Peer not connected' }
 
         if negotiation_needed and not await self.peer_signalling_stable_checker(peer):
             self.get_logger().err(f'Timed out waiting for stable signalling stat for peer={id_peer}')
@@ -1616,8 +1597,8 @@ async def main_async():
         # await spin_task
     if sio_task != None and sio_task.cancel():
         await sio_task
-    if read_task != None and read_task.cancel():
-        await read_task
+    if read_data_task != None and read_data_task.cancel():
+        await read_data_task
 
     await bridge_node.shutdown_cleanup()
 
