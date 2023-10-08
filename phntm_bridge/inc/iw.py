@@ -33,7 +33,7 @@ class IW:
 
     async def start_monitor(self):
         if self.monitor_running:
-            return;
+            return
 
         qos = QoSProfile(history=QoSHistoryPolicy.KEEP_LAST,
                          depth=1,
@@ -99,11 +99,13 @@ class IW:
             self.last_access_point = msg.access_point
             self.last_frequency = msg.frequency
 
+            asyncio.get_event_loop().run_in_executor(None, self.pub.publish, msg)
+
         except Exception as e:
             print (c(f'Error while generating IWStatus: {e}', 'red'))
             print (f'IW CFG was: {cfg}')
 
-        asyncio.get_event_loop().run_in_executor(None, self.pub.publish, msg)
+
 
 
     async def stop_monitor(self):

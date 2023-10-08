@@ -58,6 +58,10 @@ from aiortc.mediastreams import VIDEO_TIME_BASE, convert_timebase
 NS_TO_SEC = 1000000000
 SRC_VIDEO_TIME_BASE = fractions.Fraction(1, NS_TO_SEC)
 
+
+def IsImageType(s:str) -> bool:
+    return s == ImageTopicReadSubscription.MSG_TYPE
+
 class ImageTopicReadSubscription:
 
     MSG_TYPE:str = 'sensor_msgs/msg/Image'

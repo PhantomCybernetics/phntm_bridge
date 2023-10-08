@@ -40,7 +40,7 @@ from picamera2.encoders import H264Encoder
 from picamera2.outputs import FileOutput
 from picamera2 import Picamera2
 import time
-from .inc.camera import get_camera_info, picam2_has_camera, CameraVideoStreamTrack, Picamera2Subscription
+from .inc.camera import get_camera_info, picam2_has_camera, CameraVideoStreamTrack, Picamera2Subscription, IsPiCameraId
 
 picam2 = None
 try:
@@ -49,7 +49,7 @@ try:
 except Exception as e:
     print('Picamera2 not active')
 
-from .inc.ros_video_streaming import ImageTopicReadSubscription
+from .inc.ros_video_streaming import ImageTopicReadSubscription, IsImageType
 
 # from rclpy.subscription import TypeVar
 from rosidl_runtime_py.utilities import get_message, get_interface
@@ -260,7 +260,7 @@ class BridgeController(Node, BridgeControllerConfig):
             if not 'topics' in data:
                 self.get_logger().error(f'No topics specified in on_read_subscriptions_change, peer={id_peer}')
                 return { 'err': 2, 'msg': 'No topics specified' }
-            return await event_loop.create_task(self.on_read_subscriptions_change(peer, data))
+            # return await event_loop.create_task(self.on_read_subscriptions_change(peer, data))
 
         # subscribe and unsubscribe camera streams
         @self.sio.on('cameras:read')
@@ -273,7 +273,18 @@ class BridgeController(Node, BridgeControllerConfig):
                 return { 'err': 2, 'msg': 'Peer not connected' }
             if not 'cameras' in data:
                 return { 'err': 2, 'msg': 'No cameras specified' }
-            return await self.on_camera_subscription_change(peer, data)
+            # return await self.on_camera_subscription_change(peer, data)
+
+        # WRITE SUBS
+        @self.sio.on('subscription:write')
+        async def on_write_subscription(data:dict):
+            id_peer = WRTCPeer.GetId(data)
+            if id_peer == None:
+                return { 'err': 2, 'msg': 'No valid peer id provided' }
+            peer:WRTCPeer = self.wrtc_peers[id_peer]
+            if not peer:
+                return { 'err': 2, 'msg': 'Peer not connected' }
+            # return await self.on_write_subscription_change(peer, data)
 
         @self.sio.on('sdp:answer')
         async def on_sdp_answer(data:dict):
@@ -300,17 +311,6 @@ class BridgeController(Node, BridgeControllerConfig):
             await peer.pc.setRemoteDescription(answer)
 
             return { 'success': 1 }
-
-        # WRITE SUBS
-        @self.sio.on('subscription:write')
-        async def on_write_subscription(data:dict):
-            id_peer = WRTCPeer.GetId(data)
-            if id_peer == None:
-                return { 'err': 2, 'msg': 'No valid peer id provided' }
-            peer:WRTCPeer = self.wrtc_peers[id_peer]
-            if not peer:
-                return { 'err': 2, 'msg': 'Peer not connected' }
-            return await self.on_write_subscription_change(peer, data)
 
         # SERVICE CALLS
         @self.sio.on('service')
@@ -472,17 +472,18 @@ class BridgeController(Node, BridgeControllerConfig):
     async def on_peer_connect(self, id_peer:str, peer_data:dict):
 
         self.get_logger().debug(c(f'Peer {id_peer} connected...', 'magenta'))
-        self.get_logger().info(c(peer_data, 'dark_grey'))
 
         if id_peer in self.wrtc_peers.keys():
             self.get_logger().warn(f'Peer {id_peer} was already connected, restarting...')
             await self.remove_peer(id_peer, wait=False)
 
         # pc.addTransceiver('video', direction='sendonly') #must have at least one
-        peer = WRTCPeer(id_peer, self, self.ice_server_urls)
-        peer.read_subs = peer_data['read'] if 'read' in peer_data else []
-        peer.write_subs = peer_data['write'] if 'write' in peer_data else []
-        self.wrtc_peers[id_peer] = peer
+        peer = WRTCPeer(id_peer=id_peer,
+                        id_app=peer_data['id_app'] if 'id_app' in peer_data.keys() else None,
+                        id_instance=peer_data['id_instance'] if 'id_instance' in peer_data.keys() else None,
+                        ctrl_node=self,
+                        ice_server_urls=self.ice_server_urls,
+                        ice_credential=self.ice_credential)
 
         @peer.pc.on("connectionstatechange")
         async def on_connectionstatechange():
@@ -490,27 +491,146 @@ class BridgeController(Node, BridgeControllerConfig):
             if peer.pc.connectionState == "failed":
                await self.remove_peer(peer.id, wait=True)
 
-        subs = await peer.process_subs()
+        self.wrtc_peers[id_peer] = peer
+        peer.read_subs = peer_data['read'] if 'read' in peer_data.keys() else []
+        peer.write_subs = peer_data['write'] if 'write' in peer_data.keys() else []
 
-        if len(subs) == 0:
-            self.get_logger().debug(c(f'Peer {id_peer} connected, nothing to do', 'dark_grey'))
+        subscriptions_changes = await self.process_peer_subscriptions(peer, send_update=False)
+        return subscriptions_changes
+
+
+    async def process_peer_subscriptions(self, peer:WRTCPeer, send_update=False) -> dict:
+        self.get_logger().warn(f'Processing read {peer.read_subs}')
+        self.get_logger().warn(f'Processing write {peer.write_subs}')
+
+        res = {
+            'read_video_streams': [],
+            'read_data_channels': [],
+            'write_data_channels': []
+        }
+
+        all_topics_discovered = True
+        all_cameras_discovered = True
+        for sub in peer.read_subs:
+            if IsPiCameraId(sub):
+                if sub in self.introspection.discovered_cameras.keys():
+                    id_track = await self.subscribe_picamera(sub, peer)
+                    res['read_video_streams'].append([sub, id_track])
+                else:
+                    self.get_logger().info(c(f'{peer} missing {sub}, not discovered yet', 'dark_grey'))
+                    all_cameras_discovered = False
+
+            elif sub in self.introspection.discovered_topics.keys():
+                msg_type = self.introspection.discovered_topics[sub]['msg_types'][0]
+                is_image = IsImageType(msg_type)
+                if not is_image:
+                    id_dc = await self.subscribe_data_topic(sub, peer)
+                    res['read_data_channels'].append([sub, id_dc, msg_type])
+                elif is_image:
+                    id_track = await self.subscribe_image_topic(sub, peer)
+                    res['read_video_streams'].append([ sub, id_track ])
+
+            else: #topic not discovered yet
+                self.get_logger().info(c(f'{peer} missing {sub}, not discovered yet', 'dark_grey'))
+                all_topics_discovered = False # introspection will keep running
+
+        if not all_topics_discovered:
+            self.introspection.once('topics', lambda topics: self.process_peer_subscriptions(peer, send_update=True))
+
+        if not all_topics_discovered or not all_cameras_discovered:
+            self.introspection.add_waiting_peer(peer)
+        else:
+            self.introspection.remove_waiting_peer(peer)
+
+        # open write data channels
+        for sub in peer.write_subs:
+            topic = sub[0]
+            msg_type = sub[1]
+            id_dc = await self.open_write_channel(topic, msg_type, peer)
+            res['write_data_channels'].append([ topic, id_dc, msg_type ]) # topic, msg_type, channel
+
+        # unsubscribe from data channels
+        for topic in peer.outbound_data_channels.keys():
+            if not topic in peer.read_subs:
+                self.get_logger().info(f'{peer} unsubscribing from {topic}')
+                await self.unsubscribe_data_topic(topic, peer)
+                res['read_data_channels'].append([ topic ]) # no id => unsubscribed
+
+        # unsubscribe from video streams
+        for sub in peer.video_tracks.keys():
+            if not sub in peer.read_subs:
+                if IsPiCameraId(sub):
+                    self.get_logger().info(f'{peer} unsubscribing from camera {sub}')
+                    await self.unsubscribe_picamera(sub, peer)
+                else:
+                    self.get_logger().info(f'{peer} unsubscribing from image topic {sub}')
+                    await self.unsubscribe_image_topic(sub, peer)
+                res['read_video_streams'].append([ sub ]) # no id => unsubscribed
+
+        #close write channels
+        for topic in peer.inbound_data_channels.keys():
+            if not topic in peer.write_subs:
+                self.get_logger().info(f'{peer} stopped writing into {topic}')
+                await self.close_write_channel(topic, peer)
+                res['write_data_channels'].append([ topic ]) # no id => unsubscribed
+
+        if len(res) == 0:
+            self.get_logger().debug(c(f'{peer} connected, nothing else to do here', 'dark_grey'))
             return {
                 'success' : 1 # SDF can't be generated
             }
 
-        self.get_logger().debug(c(f'Creating initial SDP offer for peer {id_peer}...', 'cyan'))
+        if not await self.peer_signalling_stable_checker(peer):
+            if send_update:
+                return None
+            else:
+                return { 'err': 2, 'msg': 'Timed out waiting for stable signalling state' }
+
+        self.get_logger().debug(c(f'Creating SDP offer for {peer}...', 'cyan'))
         offer = await peer.pc.createOffer()
+        await peer.pc.setLocalDescription(offer)
 
         if not await self.peer_ice_checker(peer):
-            return { 'err': 2, 'msg': 'Timed out waiting forinitial  ICE gathering' }
+            if send_update:
+                return None
+            else:
+                return { 'err': 2, 'msg': 'Timed out waiting for ICE gathering state' }
 
-        await peer.pc.setLocalDescription(offer)
         if self.log_sdp:
             self.get_logger().info(c(peer.pc.localDescription.sdp, 'dark_grey'))
 
-        return {
-            'offer': peer.pc.localDescription.sdp
-        }
+        res['offer'] = peer.pc.localDescription.sdp
+
+        if not send_update:
+            return res
+        else:
+            return await self.update_peer(peer, res)
+
+
+    async def update_peer(self, peer:WRTCPeer, update_data):
+        self.get_logger().info(f'Sending update to {peer}')
+        if peer.id_app:
+            update_data['id_app'] = peer.id_app
+        if peer.id_instance:
+            update_data['id_instance'] = peer.id_instance
+        print(update_data)
+        await self.sio.emit(event='peer:update',
+                            data=update_data,
+                            callback=lambda reply_data: self.on_peer_update_reply(peer, reply_data))
+
+    def on_peer_update_reply(self, peer:WRTCPeer, reply_data):
+        if 'err' in reply_data.keys():
+            msg = reply_data['msg'] if 'msg' in reply_data.keys() else None
+            self.get_logger().error(f'Client returned error: {msg}')
+            return
+
+        if peer.pc.signalingState != 'have-local-offer':
+            self.get_logger().error(f'Not setting SDP answer from {peer}, signalingState={peer.pc.signalingState}')
+            return
+        self.get_logger().info(c(f'Got peer answer:', 'cyan'))
+        print(reply_data)
+        answer = RTCSessionDescription(sdp=reply_data['sdp'], type='answer')
+        asyncio.get_event_loop().create_task(peer.pc.setRemoteDescription(answer))
 
 
     # WRTC peer disconnected
@@ -519,52 +639,30 @@ class BridgeController(Node, BridgeControllerConfig):
         if not id_peer in self.wrtc_peers.keys():
             return
 
+        self.introspection.remove_waiting_peer(self.wrtc_peers[id_peer])
+
+        peer = self.wrtc_peers[id_peer]
+
         if wait:
-            self.get_logger().info(f'Peer {id_peer} seems to be disconnected (waiting 10s...)')
+            self.get_logger().info(f'{peer} seems to be disconnected (waiting 10s...)')
 
             self.paused = True
             await asyncio.sleep(10.0) #wait a bit for reconnects
 
             if not id_peer in self.wrtc_peers.keys():
+                return # already removed
+
+            peer = self.wrtc_peers[id_peer]
+            if peer.pc.connectionState in [ 'connected' ]:
+                self.get_logger().info(f'{peer} recovered, we good')
                 return
 
-            if self.wrtc_peers[id_peer].pc.connectionState in []:
-                self.get_logger().info(f'Peer {id_peer} recovered, we good')
-                return
+        self.get_logger().info(c(f'{peer} disconnected, cleaning up', 'red'))
 
-        self.get_logger().info(c(f'Peer {id_peer} disconnected, cleaning up', 'red'))
+        peer.read_subs = []
+        peer.write_subs = []
 
-        # read topics
-        delete_topics = []
-        for topic in self.topic_read_subscriptions.keys():
-            if self.topic_read_subscriptions[topic].stop(id_peer): # subscriber destroyed
-                delete_topics.append(topic)
-        for topic in delete_topics:
-            del self.topic_read_subscriptions[topic]
-
-        # image topics
-        delete_topics = []
-        for topic in self.image_topic_read_subscriptions.keys():
-            if self.image_topic_read_subscriptions[topic].stop(id_peer): # subscriber destroyed
-                delete_topics.append(topic)
-        for topic in delete_topics:
-            del self.image_topic_read_subscriptions[topic]
-
-        # wite tpics
-        delete_topics = []
-        for topic in self.topic_write_publishers.keys():
-            if self.topic_write_publishers[topic].stop(id_peer): # publisher destroyed
-                delete_topics.append(topic)
-        for topic in delete_topics:
-            del self.topic_write_publishers[topic]
-
-        # cameras
-        delete_cams = []
-        for cam in self.camera_subscriptions.keys():
-            if self.camera_subscriptions[cam].stop(id_peer): # camera destroyed
-                delete_cams.append(cam)
-        for cam in delete_cams:
-            del self.camera_subscriptions[cam]
+        self.process_peer_subscriptions(peer) #unsubscribes
 
         if id_peer in self.wrtc_peers.keys():
             try:
@@ -573,15 +671,17 @@ class BridgeController(Node, BridgeControllerConfig):
                 pass
             del self.wrtc_peers[id_peer]
 
+
     async def peer_signalling_stable_checker(self, peer:WRTCPeer) -> bool:
         timeout_sec = 10.0
         while peer.pc.signalingState != 'stable' and timeout_sec > 0.0:
             await asyncio.sleep(.1)
             timeout_sec -= .1
         if timeout_sec <= 0.0:
-            self.get_logger().error(f'Timed out waiting for stable signalling state, peer={peer.id}')
+            self.get_logger().error(f'Timed out waiting for stable signalling, state={peer.pc.signalingState}, {peer}')
             return False
         return True
+
 
     async def peer_ice_checker(self, peer:WRTCPeer) -> bool:
         timeout_sec = 10.0
@@ -589,26 +689,261 @@ class BridgeController(Node, BridgeControllerConfig):
             await asyncio.sleep(.1)
             timeout_sec -= .1
         if timeout_sec <= 0.0:
-            self.get_logger().error(f'Timed out waiting for ICE gathering, state={peer.pc.iceGatheringState}, peer={peer.id}')
+            self.get_logger().error(f'Timed out waiting for ICE gathering, state={peer.pc.iceGatheringState}, {peer}')
             return False
         return True
+
+
+    def on_msg_blink(self):
+        if self.data_led != None:
+            self.data_led.once() # blink when sending data to a peer
+
+
+    # SUBSCRIBE data topic
+    async def subscribe_data_topic(self, topic:str, peer:WRTCPeer) -> str:
+
+        if not topic in self.introspection.discovered_topics.keys():
+            return None
+
+        msg_type:str = self.introspection.discovered_topics[topic]['msg_types'][0]
+        if IsImageType(msg_type):
+            return None
+
+        if not topic in self.topic_read_subscriptions:
+            reliability = self.get_parameter_or(f'{topic}.reliability', Parameter(name='', value=QoSReliabilityPolicy.BEST_EFFORT)).get_parameter_value().integer_value
+            durability = self.get_parameter_or(f'{topic}.durability', Parameter(name='', value=DurabilityPolicy.VOLATILE)).get_parameter_value().integer_value
+            self.topic_read_subscriptions[topic] = TopicReadSubscription(ctrl_node=self,
+                                                                            reader_ctrl_queue=self.reader_ctrl_queue,
+                                                                            topic=topic,
+                                                                            protocol=msg_type,
+                                                                            reliability=reliability,
+                                                                            durability=durability,
+                                                                            event_loop=asyncio.get_event_loop(),
+                                                                            log_message_every_sec=self.log_message_every_sec)
+            self.topic_read_subscriptions[topic].on_msg_cb = self.on_msg_blink # blinker
+
+        if not topic in peer.outbound_data_channels.keys():
+            self.wrtc_nextChannelId += 1
+            dc:RTCDataChannel = peer.pc.createDataChannel(topic,
+                                                            id=self.wrtc_nextChannelId,
+                                                            protocol=msg_type,
+                                                            negotiated=True,
+                                                            ordered=False,
+                                                            maxRetransmits=None)
+            peer.outbound_data_channels[topic] = dc
+            self.get_logger().debug(f'{peer} subscribed to {topic} (protocol={msg_type}, ch_id={dc.id})')
+
+        if not self.topic_read_subscriptions[topic].start(peer.id, peer.outbound_data_channels[topic]):
+            self.get_logger().error(f'Topic {topic} failed to subscribee in on_read_subscriptions_change, {peer}')
+            return None
+
+        asyncio.get_event_loop().create_task(self.topic_read_subscriptions[topic].report_latest_when_ready(peer.id))
+        return peer.outbound_data_channels[topic].id
+
+    # UNSUBSCRIBE data topic
+    async def unsubscribe_data_topic(self, topic:str, peer:WRTCPeer):
+        if topic in peer.outbound_data_channels.keys():
+            self.get_logger().debug(f'{peer} no longer subscribing to {topic}')
+            id_closed_dc = peer.outbound_data_channels[topic].id
+            peer.outbound_data_channels[topic].close()
+            peer.outbound_data_channels.pop(topic)
+
+        if topic in self.topic_read_subscriptions.keys():
+            if self.topic_read_subscriptions[topic].stop(peer.id):
+                self.get_logger().debug(f'No longer reading {topic}')
+                self.topic_read_subscriptions.pop(topic)
+
+
+    # SUBSCRIBE image topic
+    async def subscribe_image_topic(self, topic:str, peer:WRTCPeer) -> str:
+
+        if not topic in self.introspection.discovered_topics.keys():
+            return None
+
+        msg_type:str = self.introspection.discovered_topics[topic]['msg_types'][0]
+        if not IsImageType(msg_type):
+            return None
+
+        if not topic in self.image_topic_read_subscriptions:
+            reliability = self.get_parameter_or(f'{topic}.reliability', Parameter(name='', value=QoSReliabilityPolicy.BEST_EFFORT)).get_parameter_value().integer_value
+            durability = self.get_parameter_or(f'{topic}.durability', Parameter(name='', value=DurabilityPolicy.VOLATILE)).get_parameter_value().integer_value
+
+            self.image_topic_read_subscriptions[topic] = ImageTopicReadSubscription(ctrl_node=self,
+                                                                                    reader_ctrl_queue=self.reader_ctrl_queue,
+                                                                                    topic=topic,
+                                                                                    reliability=reliability,
+                                                                                    durability=durability,
+                                                                                    log_message_every_sec=self.log_message_every_sec,
+                                                                                    clock_rate=1000000000,
+                                                                                    time_base=1,
+                                                                                    bridge_time_started_ns=self.time_started_ns
+                                                                                    )
+            self.image_topic_read_subscriptions[topic].on_msg_cb = self.on_msg_blink # blinker
+
+        if not topic in peer.video_tracks.keys():
+            track = CameraVideoStreamTrack()
+            sender:RTCRtpSender = peer.pc.addTrack(track)
+
+            # set transciever's preference to H264
+            transcievers = peer.pc.getTransceivers()
+            for t in transcievers:
+                if t.sender == sender:
+                    capabilities = RTCRtpSender.getCapabilities("video")
+                    preferences = list(filter(lambda x: x.mimeType == "video/H264", capabilities.codecs))
+                    t.setCodecPreferences(preferences)
+
+            sender._stream_id = sender._track_id
+            sender.name = topic
+            sender.pc = peer.pc
+
+            self.get_logger().info(f'Created video sender for {peer} {topic}, track_id=={sender._track_id}, capabilities: {str(sender.getCapabilities(kind="video"))}')
+
+            @sender.track.on('ended')
+            async def on_sender_track_ended():
+                self.get_logger().warn(f'Sender video track ended for {peer} {topic}, track_id=={str(sender._track_id)}')
+
+            peer.video_tracks[topic] = sender
+            # await sender.track.set_frame(av.VideoFrame(width=640, height=480, format='rgb24'))
+
+        if not self.image_topic_read_subscriptions[topic].start(peer.id, peer.video_tracks[topic]):
+            self.get_logger().error(f'Image topic {topic} failed to subscribe, {peer}')
+            return { 'err': 2, 'msg': f'Image topic {topic} failed to subscribe'}
+
+        return [ peer.video_tracks[topic]._track_id, msg_type ]
+
+    # UNSUBSCRIBE image topic
+    async def unsubscribe_image_topic(self, topic:str, peer:WRTCPeer):
+
+        if topic in peer.video_tracks.keys():
+            self.get_logger().debug(f'Peer {id_peer} no longer subscribed to {topic}; TODO CLOSE!')
+            #TODO close channel!
+
+        if topic in self.image_topic_read_subscriptions.keys():
+            if self.image_topic_read_subscriptions[topic].stop(peer.id): # subscriber destroyed
+                self.get_logger().debug(f'No longer reading {topic}')
+                self.image_topic_read_subscriptions.pop(topic)
+
+
+    # SUBSCRIBE Pi camera stream
+    async def subscribe_picamera(self, id_cam:str, peer:WRTCPeer) -> str:
+        if picam2 is None:
+            self.get_logger().error(f'Picamera2 not available')
+            return None
+
+        if not picam2_has_camera(picam2, id_cam):
+            self.get_logger().error(f'{id_cam} Not available via Picamera2')
+            return None
+
+        if not id_cam in self.camera_subscriptions:
+            self.get_logger().info(f'Subscribing to camera {id_cam}')
+            self.camera_subscriptions[id_cam] = Picamera2Subscription(id_camera=id_cam,
+                                                                      picam2=picam2,
+                                                                      hflip=self.get_parameter('picam_hflip').get_parameter_value().bool_value,
+                                                                      vflip=self.get_parameter('picam_vflip').get_parameter_value().bool_value,
+                                                                      bitrate=self.get_parameter('picam_bitrate').get_parameter_value().integer_value,
+                                                                      framerate=self.get_parameter('picam_framerate').get_parameter_value().integer_value,
+                                                                      logger=self.get_logger(),
+                                                                      bridge_time_started_ns=self.time_started_ns,
+                                                                      log_message_every_sec=self.log_message_every_sec
+                                                                    )
+
+        if not id_cam in peer.video_tracks.keys():
+            track = CameraVideoStreamTrack()
+            sender:RTCRtpSender = peer.pc.addTrack(track)
+
+            # set transciever's preference to H264
+            transcievers = peer.pc.getTransceivers()
+            for t in transcievers:
+                if t.sender == sender:
+                    capabilities = RTCRtpSender.getCapabilities("video")
+                    preferences = list(filter(lambda x: x.mimeType == "video/H264", capabilities.codecs))
+                    # preferences = list(filter(lambda x: x.name == "H264", capabilities.codecs))
+                    t.setCodecPreferences(preferences)
+
+            sender._stream_id = sender._track_id
+            sender.name = id_cam
+            sender.pc = peer.pc
+            peer.video_tracks[id_cam] = sender
+
+            self.get_logger().info(f'Created video sender for {peer} {id_cam}, track_id=={sender._track_id}, capabilities: {str(sender.getCapabilities(kind="video"))}')
+
+            @sender.track.on('ended')
+            async def on_sender_track_ended():
+                self.get_logger().warn(f'Sender video track ended for {peer} {id_cam}, track_id=={str(sender._track_id)}')
+
+        if not await self.camera_subscriptions[id_cam].start(peer.id, peer.video_tracks[id_cam]):
+            self.get_logger().error(f'Camera {id_cam} failed to subscribe for {peer}')
+            return None
+
+        return peer.video_tracks[id_cam]._track_id
+
+    # UNSUBSCRIBE Pi camera stream
+    async def unsubscribe_picamera(self, id_cam:str, peer:WRTCPeer):
+        if id_cam in peer.video_tracks.keys():
+            self.get_logger().debug(f'{peer} no longer subscribed to {id_cam}; TODO CLOSE!')
+            #TODO CLOSE!
+
+        if id_cam in self.camera_subscriptions:
+            if self.camera_subscriptions[id_cam].stop(peer.id): # cam destroyed
+                self.get_logger().debug(f'No longer reading {id_cam}')
+                self.camera_subscriptions.pop(id_cam)
+
+
+    # OPEN WRITE data channel
+    async def open_write_channel(self, topic:str, msg_type:str, peer:WRTCPeer) -> str:
+        if not topic in self.topic_write_publishers:
+            self.topic_write_publishers[topic] = TopicWritePublisher(node=self,
+                                                                    topic=topic,
+                                                                    protocol=msg_type,
+                                                                    log_message_every_sec=self.log_message_every_sec)
+
+        if not self.topic_write_publishers[topic].start(peer.id):
+            self.get_logger().error(f'Topic {topic} failed to start publisher in on_write_subscription_change, {peer}')
+            return None
+
+        if not topic in peer.inbound_data_channels.keys():
+            dc = self.make_publisher_dc(peer, topic, msg_type)
+            if dc is not None:
+                peer.inbound_data_channels[topic] = dc
+                self.get_logger().debug(f'{peer} publishing into {topic} (protocol={msg_type}, ch_id={dc.id})')
+
+        if not topic in peer.inbound_data_channels.keys():
+            self.get_logger().error(f'Topic {topic} failed to open write subscription for {peer}')
+            return None
+
+        return peer.inbound_data_channels[topic].id
+        # res_subscribed.append([topic, peer.inbound_data_channels[topic].id, protocol])
+
+    # CLOSE WRITE data channel
+    async def close_write_channel(self, topic:str, peer:WRTCPeer):
+        if topic in peer.inbound_data_channels.keys():
+            self.get_logger().debug(f'{peer} no longer publishing into {topic}')
+            id_closed_dc = peer.inbound_data_channels[topic].id
+            peer.inbound_data_channels[topic].close()
+            peer.inbound_data_channels.pop(topic)
+
+        if topic in self.topic_write_publishers:
+            if self.topic_write_publishers[topic].stop(peer.id):
+                self.get_logger().debug(f'No longer publishing into {topic}')
+                self.topic_write_publishers.pop(topic)
 
     ##
     # Topic READ subscriptions & message routing
     ##
     async def on_read_subscriptions_change(self, peer:WRTCPeer, data:dict) -> {}:
 
+        pass
         # self.get_logger().info(f'Peer {id_peer} subscription change for {len(data["topics"])} topics')
 
-        negotiation_needed = False
-        for topic_data in data['topics']: # : [ topic, subscribe, ...]
-            if int(topic_data[1]) > 0: # subscribe?
-                negotiation_needed = True
-                break
+        # negotiation_needed = False
+        # for topic_data in data['topics']: # : [ topic, subscribe, ...]
+        #     if int(topic_data[1]) > 0: # subscribe?
+        #         negotiation_needed = True
+        #         break
 
-        if negotiation_needed and not await self.peer_signalling_stable_checker(peer):
-            self.get_logger().err(f'Timed out waiting for stable signalling stat for peer={id_peer}')
-            return { 'err': 2, 'msg': 'Timed out waiting for stable signalling state' }
+        # if negotiation_needed and not await self.peer_signalling_stable_checker(peer):
+        #     self.get_logger().err(f'Timed out waiting for stable signalling stat for peer={id_peer}')
+        #     return { 'err': 2, 'msg': 'Timed out waiting for stable signalling state' }
 
         # async def signalling_stable_checker():
         #     timeout_sec = 10.0
@@ -627,119 +962,31 @@ class BridgeController(Node, BridgeControllerConfig):
         #         print(c(data['sdp_offer'], 'dark_grey'))
         #     await peer.pc.setRemoteDescription(offer)
 
-        res_subscribed:list[tuple[str,int]] = [] # [ topic, id_ch ]
-        res_unsubscribed:list[tuple[str,int]] = []
-        res_err:list[tuple[str,str]] = []
+        # res_subscribed:list[tuple[str,int]] = [] # [ topic, id_ch ]
+        # res_unsubscribed:list[tuple[str,int]] = []
+        # res_err:list[tuple[str,str]] = []
 
-        for topic_data in data['topics']: # : [ topic, subscribe, ...]
-            topic:str = topic_data[0]
-            subscribe:bool = int(topic_data[1]) > 0
+        # for topic_data in data['topics']: # : [ topic, subscribe, ...]
+        #     topic:str = topic_data[0]
+        #     subscribe:bool = int(topic_data[1]) > 0
 
-            if subscribe:
+        #     if subscribe:
                 #print(f'on_read_subscriptions_change:subscribe {threading.get_ident()}')
 
                 # we wouldn't have to wait for discovery if we required msg type from the client (?)
-                if not topic in self.introspection.discovered_topics.keys():
-                    self.get_logger().debug(f'Topic {topic} not discovered yet in on_read_subscriptions_change, peer {id_peer}')
-                    res_err.append([topic, 'Not discovered yet'])
-                    continue
+                # if not topic in self.introspection.discovered_topics.keys():
+                #     self.get_logger().debug(f'Topic {topic} not discovered yet in on_read_subscriptions_change, peer {id_peer}')
+                #     res_err.append([topic, 'Not discovered yet'])
+                #     continue
 
-                msg_type:str = ', '.join(self.introspection.discovered_topics[topic]['msg_types'])
-                is_image = msg_type == ImageTopicReadSubscription.MSG_TYPE
+                # msg_type:str = ', '.join(self.introspection.discovered_topics[topic]['msg_types'])
+                # is_image = msg_type == ImageTopicReadSubscription.MSG_TYPE
 
                 # subscribe binary data channels
-                if not is_image:
+                # if not is_image:
 
-                    if not topic in self.topic_read_subscriptions:
+                # else: #subscribe image topics
 
-                        reliability = self.get_parameter_or(f'{topic}.reliability', Parameter(name='', value=QoSReliabilityPolicy.BEST_EFFORT)).get_parameter_value().integer_value
-                        durability = self.get_parameter_or(f'{topic}.durability', Parameter(name='', value=DurabilityPolicy.VOLATILE)).get_parameter_value().integer_value
-                        self.topic_read_subscriptions[topic] = TopicReadSubscription(ctrl_node=self,
-                                                                                     reader_ctrl_queue=self.reader_ctrl_queue,
-                                                                                     topic=topic,
-                                                                                     protocol=msg_type,
-                                                                                     reliability=reliability,
-                                                                                     durability=durability,
-                                                                                     event_loop=asyncio.get_event_loop(),
-                                                                                     log_message_every_sec=self.log_message_every_sec
-                                                                                    )
-                        def on_msg_cb():
-                            if self.data_led != None:
-                                self.data_led.once() # blink when sending data to a peer
-                        self.topic_read_subscriptions[topic].on_msg_cb = lambda: on_msg_cb() # blinker
-
-                    if not topic in peer.outbound_data_channels.keys():
-                        self.wrtc_nextChannelId += 1
-                        dc:RTCDataChannel = peer.pc.createDataChannel(topic,
-                                                                      id=self.wrtc_nextChannelId,
-                                                                      protocol=msg_type,
-                                                                      negotiated=True,
-                                                                      ordered=False,
-                                                                      maxRetransmits=None,
-                                                                    #   maxPacketLifeTime=10 #ms
-                                                                      )
-                        peer.outbound_data_channels[topic] = dc
-                        self.get_logger().debug(f'Peer {id_peer} subscribed to {topic} (protocol={msg_type}, ch_id={dc.id})')
-
-                    if not self.topic_read_subscriptions[topic].start(id_peer, peer.outbound_data_channels[topic]):
-                        self.get_logger().error(f'Topic {topic} failed to subscribee in on_read_subscriptions_change, peer={id_peer}')
-                        return { 'err': 2, 'msg': f'Topic {topic} failed to subscribe'}
-
-                    res_subscribed.append([topic, peer.outbound_data_channels[topic].id, msg_type])
-                    asyncio.get_event_loop().create_task(self.topic_read_subscriptions[topic].report_latest_when_ready(id_peer))
-
-                else: #subscribe image topics
-
-                    if not topic in self.image_topic_read_subscriptions:
-
-                        reliability = self.get_parameter_or(f'{topic}.reliability', Parameter(name='', value=QoSReliabilityPolicy.BEST_EFFORT)).get_parameter_value().integer_value
-                        durability = self.get_parameter_or(f'{topic}.durability', Parameter(name='', value=DurabilityPolicy.VOLATILE)).get_parameter_value().integer_value
-
-                        self.image_topic_read_subscriptions[topic] = ImageTopicReadSubscription(ctrl_node=self,
-                                                                                                reader_ctrl_queue=self.reader_ctrl_queue,
-                                                                                                topic=topic,
-                                                                                                reliability=reliability,
-                                                                                                durability=durability,
-                                                                                                log_message_every_sec=self.log_message_every_sec,
-                                                                                                clock_rate=1000000000,
-                                                                                                time_base=1,
-                                                                                                bridge_time_started_ns=self.time_started_ns
-                                                                                                )
-                        def on_msg_cb():
-                            if self.data_led != None:
-                                self.data_led.once() # blink when sending data to a peer
-                        self.image_topic_read_subscriptions[topic].on_msg_cb = lambda: on_msg_cb() # blinker
-
-                    if not topic in peer.video_tracks:
-                        track = CameraVideoStreamTrack()
-                        sender:RTCRtpSender = peer.pc.addTrack(track)
-
-                        # set transciever's preference to H264
-                        transcievers = peer.pc.getTransceivers()
-                        for t in transcievers:
-                            if t.sender == sender:
-                                capabilities = RTCRtpSender.getCapabilities("video")
-                                preferences = list(filter(lambda x: x.mimeType == "video/H264", capabilities.codecs))
-                                t.setCodecPreferences(preferences)
-
-                        sender._stream_id = sender._track_id
-                        sender.name = topic
-                        sender.pc = peer.pc
-
-                        self.get_logger().info(f'Created video sender for peer={id_peer} {topic}, track_id=={sender._track_id}, capabilities: {str(sender.getCapabilities(kind="video"))}')
-
-                        @sender.track.on('ended')
-                        async def on_sender_track_ended():
-                            self.get_logger().warn(f'Sender video track ended for peer={id_peer} {topic}, track_id=={str(sender._track_id)}')
-
-                        peer.video_tracks[topic] = sender
-                        # await sender.track.set_frame(av.VideoFrame(width=640, height=480, format='rgb24'))
-
-                    if not self.image_topic_read_subscriptions[topic].start(id_peer, peer.video_tracks[topic]):
-                        self.get_logger().error(f'Image topic {topic} failed to subscribe, peer={id_peer}')
-                        return { 'err': 2, 'msg': f'Image topic {topic} failed to subscribe'}
-
-                    res_subscribed.append([topic, peer.video_tracks[topic]._track_id, msg_type ])
 
                     # if not topic in peer.outbound_data_channels.keys():
                     #     self.wrtc_nextChannelId += 1
@@ -799,55 +1046,34 @@ class BridgeController(Node, BridgeControllerConfig):
                     # # sender.pause(False);
                     # res_subscribed.append([topic, sender._track_id ]) #id is generated str
 
-            else: # unsubscribe
+            # else: # unsubscribe
 
-                if topic in peer.outbound_data_channels.keys():
-                    self.get_logger().debug(f'Peer {id_peer} no longer subscribing to {topic}')
-                    id_closed_dc = peer.outbound_data_channels[topic].id
-                    peer.outbound_data_channels[topic].close()
-                    peer.outbound_data_channels.pop(topic)
-                    res_unsubscribed.append([ topic, id_closed_dc ])
+        # reply_data = {
+        #     'success': 1,
+        #     'subscribed': res_subscribed,
+        #     'unsubscribed': res_unsubscribed,
+        #     'err': res_err
+        # }
 
-                # data topics
-                if topic in self.topic_read_subscriptions.keys():
-                    self.get_logger().debug(f'Peer {id_peer} no longer subscribing to {topic}')
-                    res_unsubscribed.append([ topic ])
-                    if self.topic_read_subscriptions[topic].stop(id_peer):
-                        self.topic_read_subscriptions.pop(topic)
+        # if negotiation_needed:
+        #     self.get_logger().info(c(f'Creating SDP offer for peer={id_peer}', 'cyan'))
 
-                # image topics
-                if topic in self.image_topic_read_subscriptions.keys():
-                    self.get_logger().debug(f'Peer {id_peer} no longer subscribing to {topic}')
-                    res_unsubscribed.append([ topic ])
-                    if self.image_topic_read_subscriptions[topic].stop(id_peer): # subscriber destroyed
-                        self.image_topic_read_subscriptions.pop(topic)
+        #     if not await self.peer_signalling_stable_checker(peer):
+        #         self.get_logger().err(f'Timed out waiting for stable signalling stat for peer={id_peer}')
+        #         return { 'err': 2, 'msg': 'Timed out waiting for stable signalling state' }
 
-        reply_data = {
-            'success': 1,
-            'subscribed': res_subscribed,
-            'unsubscribed': res_unsubscribed,
-            'err': res_err
-        }
+        #     offer = await peer.pc.createOffer()
+        #     await peer.pc.setLocalDescription(offer)
 
-        if negotiation_needed:
-            self.get_logger().info(c(f'Creating SDP offer for peer={id_peer}', 'cyan'))
+        #     if not await self.peer_ice_checker(peer):
+        #         return { 'err': 2, 'msg': 'Timed out waiting for ICE gathering' }
 
-            if not await self.peer_signalling_stable_checker(peer):
-                self.get_logger().err(f'Timed out waiting for stable signalling stat for peer={id_peer}')
-                return { 'err': 2, 'msg': 'Timed out waiting for stable signalling state' }
+        #     if self.log_sdp:
+        #         self.get_logger().info(c(peer.pc.localDescription.sdp, 'dark_grey'))
 
-            offer = await peer.pc.createOffer()
-            await peer.pc.setLocalDescription(offer)
+        #     reply_data['offer_sdp'] = offer.sdp
 
-            if not await self.peer_ice_checker(peer):
-                return { 'err': 2, 'msg': 'Timed out waiting for ICE gathering' }
-
-            if self.log_sdp:
-                self.get_logger().info(c(peer.pc.localDescription.sdp, 'dark_grey'))
-
-            reply_data['offer_sdp'] = offer.sdp
-
-        return reply_data
+        # return reply_data
 
 
     def make_publisher_dc(self, peer, topic, protocol) -> RTCDataChannel:
@@ -868,14 +1094,53 @@ class BridgeController(Node, BridgeControllerConfig):
     ###
     async def on_write_subscription_change(self, peer:WRTCPeer, data:dict) -> {}:
 
-        if not 'topics' in data:
-            self.get_logger().error(f'No topics specified in on_write_subscription_change, peer={id_peer}')
-            return { 'err': 2, 'msg': 'No topics specified' }
+        pass
+        # return
 
-        # TODO: Is this necessary here? We open DCs on both ends so no need for SPD exchange or blocking?
-        # negotiation_needed = False
+        # if not 'topics' in data:
+        #     self.get_logger().error(f'No topics specified in on_write_subscription_change, peer={id_peer}')
+        #     return { 'err': 2, 'msg': 'No topics specified' }
+
+        # # TODO: Is this necessary here? We open DCs on both ends so no need for SPD exchange or blocking?
+        # # negotiation_needed = False
+        # # for topic_data in data['topics']: # : [ topic, subscribe, ...]
+        # #     if int(topic_data[1]) > 0: #subscribe
+        # #         negotiation_needed = True
+        # #         break
+
+        # # if negotiation_needed and not await self.peer_signalling_stable_checker(peer):
+        # #     self.get_logger().err(f'Timed out waiting for stable signalling stat for peer={id_peer}')
+        # #     return { 'err': 2, 'msg': 'Timed out waiting for stable signalling state' }
+
+        # res_subscribed:list[tuple[str,int]] = list() # [ topic, id_ch ]
+        # res_unsubscribed:list[tuple[str,int]] = list()
+
         # for topic_data in data['topics']: # : [ topic, subscribe, ...]
-        #     if int(topic_data[1]) > 0: #subscribe
+        #     topic:str = topic_data[0]
+        #     subscribe:bool = int(topic_data[1]) > 0
+        #     protocol:str = topic_data[2]
+
+        #     if protocol == None:
+        #         self.get_logger().error(f'Protocol not specified for {topic} in on_write_subscription_change, peer={id_peer}')
+        #         return { 'err': 2, 'msg': f'Protocol not specified for {topic}' }
+
+
+        # return { 'success': 1, 'subscribed': res_subscribed, 'unsubscribed': res_unsubscribed}
+
+
+    ##
+    # Camera feed subscriptions
+    ##
+    async def on_camera_subscription_change(self, peer:WRTCPeer, data:dict):
+
+        pass
+        # self.get_logger().info(f'Peer {id_peer} subscriptoin change for cameras: {str(data["cameras"])}')
+
+        # return
+
+        # negotiation_needed = False
+        # for camera_data in data['cameras']: # : [ topic, subscribe, ...]
+        #     if int(camera_data[1]) > 0: #subscribe
         #         negotiation_needed = True
         #         break
 
@@ -883,196 +1148,84 @@ class BridgeController(Node, BridgeControllerConfig):
         #     self.get_logger().err(f'Timed out waiting for stable signalling stat for peer={id_peer}')
         #     return { 'err': 2, 'msg': 'Timed out waiting for stable signalling state' }
 
-        res_subscribed:list[tuple[str,int]] = list() # [ topic, id_ch ]
-        res_unsubscribed:list[tuple[str,int]] = list()
+        # res_subscribed:list[tuple[str,int]] = list() # [ cam, id_ch ]
+        # res_unsubscribed:list[tuple[str,int]] = list()
+        # res_err:list[tuple[str,str]] = list()
 
-        for topic_data in data['topics']: # : [ topic, subscribe, ...]
-            topic:str = topic_data[0]
-            subscribe:bool = int(topic_data[1]) > 0
-            protocol:str = topic_data[2]
+        # #  self.get_logger().warn(f'setRemoteDescription {data["offer"]}')
 
-            if protocol == None:
-                self.get_logger().error(f'Protocol not specified for {topic} in on_write_subscription_change, peer={id_peer}')
-                return { 'err': 2, 'msg': f'Protocol not specified for {topic}' }
+        # for camera_data in data['cameras']: # : [ cam, subscribe, ...]
+        #     id_cam:str = camera_data[0]
+        #     subscribe:bool = int(camera_data[1]) > 0
 
-            if subscribe:
+        #     if subscribe:
 
-                if not topic in self.topic_write_publishers:
-                    self.topic_write_publishers[topic] = TopicWritePublisher(node=self,
-                                                                              topic=topic,
-                                                                              protocol=protocol,
-                                                                              log_message_every_sec=self.log_message_every_sec)
-
-                if not self.topic_write_publishers[topic].start(id_peer):
-                    self.get_logger().error(f'Topic {topic} failed to start publisher in on_write_subscription_change, peer={id_peer}')
-                    return { 'err': 2, 'msg': f'Topic {topic} failed to create publisher'}
-
-                if not topic in peer.inbound_data_channels.keys():
-                    dc = self.make_publisher_dc(peer, topic, protocol)
-                    peer.inbound_data_channels[topic] = dc
-                    self.get_logger().debug(f'Peer {id_peer} publishing into {topic} (protocol={protocol}, ch_id={dc.id})')
-
-                res_subscribed.append([topic, peer.inbound_data_channels[topic].id, protocol])
-
-            else: # unsubscribe
-
-                if topic in peer.inbound_data_channels.keys():
-                    self.get_logger().debug(f'Peer {id_peer} no longer publishing into {topic}')
-                    id_closed_dc = peer.inbound_data_channels[topic].id
-                    peer.inbound_data_channels[topic].close()
-                    peer.inbound_data_channels.pop(topic)
-                    res_unsubscribed.append([ topic, id_closed_dc ])
-
-                if topic in self.topic_write_publishers:
-                    if self.topic_write_publishers[topic].stop(id_peer):
-                        self.topic_write_publishers.pop(topic)
-
-        return { 'success': 1, 'subscribed': res_subscribed, 'unsubscribed': res_unsubscribed}
+        #         if id_cam.startswith('/picam2'):
+        #             if picam2 is None:
+        #                 res_err.append([id_cam, 'Picamera2 not available'])
+        #                 continue
+        #             if not picam2_has_camera(picam2, id_cam):
+        #                 res_err.append([id_cam, 'Not available via Picamera2'])
+        #                 continue
+        #         else:
+        #             res_err.append([id_cam, 'Unsupported camera type'])
+        #             continue
 
 
-    ##
-    # Camera feed subscriptions
-    ##
-    async def on_camera_subscription_change(self, peer:WRTCPeer, data:dict):
-        # self.get_logger().info(f'Peer {id_peer} subscriptoin change for cameras: {str(data["cameras"])}')
+        #     else: # unsubscribe
 
-        negotiation_needed = False
-        for camera_data in data['cameras']: # : [ topic, subscribe, ...]
-            if int(camera_data[1]) > 0: #subscribe
-                negotiation_needed = True
-                break
 
-        if negotiation_needed and not await self.peer_signalling_stable_checker(peer):
-            self.get_logger().err(f'Timed out waiting for stable signalling stat for peer={id_peer}')
-            return { 'err': 2, 'msg': 'Timed out waiting for stable signalling state' }
+        #     #     self.unsubscribe_topic(topic, id_peer)
 
-        res_subscribed:list[tuple[str,int]] = list() # [ cam, id_ch ]
-        res_unsubscribed:list[tuple[str,int]] = list()
-        res_err:list[tuple[str,str]] = list()
+        #     #     if id_peer in self.wrtc_peer_read_channels and topic in self.wrtc_peer_read_channels[id_peer]:
+        #     #         self.get_logger().info(f'Peer {id_peer} unsubscribed from {topic} R')
+        #     #         id_closed_dc = self.wrtc_peer_read_channels[id_peer][topic].id
+        #     #         self.wrtc_peer_read_channels[id_peer][topic].close()
+        #     #         self.wrtc_peer_read_channels[id_peer].pop(topic)
+        #     #         res_unsubscribed.append([ topic, id_closed_dc ])
 
-        #  self.get_logger().warn(f'setRemoteDescription {data["offer"]}')
+        #     #     if id_peer in self.wrtc_peer_video_tracks and topic in self.wrtc_peer_video_tracks[id_peer]:
+        #     #         self.get_logger().info(f'Peer {id_peer} unsubscribed from {topic} /R IMG (NOT EVEN pausing stream)')
+        #     #         # self.wrtc_peer_video_tracks[id_peer][topic].pause()
+        #     #         # self.wrtc_peer_video_tracks[id_peer][topic].pause()
+        #     #         # id_closed_track = self.wrtc_peer_video_tracks[id_peer][topic].track.id # str generated
+        #     #         # if id_peer in self.wrtc_peer_video_tracks:
+        #     #         #     if topic in self.wrtc_peer_video_tracks[id_peer]:
+        #     #         #         if self.wrtc_peer_video_tracks[id_peer][topic].track:
+        #     #         #             self.get_logger().info(f'Peer {id_peer} stopping topic {topic}...')
+        #     #         #             await pc.removeTrack(self.wrtc_peer_video_tracks[id_peer][topic])
+        #     #         #             # await self.wrtc_peer_video_tracks[id_peer][topic].stop()
+        #     #         #             self.get_logger().info(f'Peer {id_peer} stopped topic {topic}...')
+        #     #         #         if topic in self.wrtc_peer_video_tracks[id_peer]:
+        #     #         #             self.wrtc_peer_video_tracks[id_peer].pop(topic)
+        #     #         res_unsubscribed.append([ topic ])
 
-        for camera_data in data['cameras']: # : [ cam, subscribe, ...]
-            id_cam:str = camera_data[0]
-            subscribe:bool = int(camera_data[1]) > 0
+        # reply_data = {
+        #     'success': 1,
+        #     'subscribed': res_subscribed,
+        #     'unsubscribed': res_unsubscribed,
+        #     'err': res_err
+        # }
 
-            if subscribe:
+        # if negotiation_needed:
+        #     self.get_logger().info(c(f'Creating SDP offer for peer={id_peer}', 'cyan'))
 
-                if id_cam.startswith('picam2'):
-                    if picam2 is None:
-                        res_err.append([id_cam, 'Picamera2 not available'])
-                        continue
-                    if not picam2_has_camera(picam2, id_cam):
-                        res_err.append([id_cam, 'Not available via Picamera2'])
-                        continue
-                else:
-                    res_err.append([id_cam, 'Unsupported camera type'])
-                    continue
+        #     if not await self.peer_signalling_stable_checker(peer):
+        #         self.get_logger().error(f'Timed out waiting for stable signalling stat for peer={id_peer}')
+        #         return { 'err': 2, 'msg': 'Timed out waiting for stable signalling state' }
 
-                if not id_cam in self.camera_subscriptions:
-                     self.camera_subscriptions[id_cam] = Picamera2Subscription(id_camera=id_cam,
-                                                                               picam2=picam2,
-                                                                               hflip=self.get_parameter('picam_hflip').get_parameter_value().bool_value,
-                                                                               vflip=self.get_parameter('picam_vflip').get_parameter_value().bool_value,
-                                                                               bitrate=self.get_parameter('picam_bitrate').get_parameter_value().integer_value,
-                                                                               framerate=self.get_parameter('picam_framerate').get_parameter_value().integer_value,
-                                                                               logger=self.get_logger(),
-                                                                               bridge_time_started_ns=self.time_started_ns,
-                                                                               log_message_every_sec=self.log_message_every_sec
-                                                                            ) #TODO config
+        #     offer = await peer.pc.createOffer()
+        #     await peer.pc.setLocalDescription(offer)
 
-                if not id_cam in peer.video_tracks:
-                    track = CameraVideoStreamTrack()
-                    sender:RTCRtpSender = peer.pc.addTrack(track)
+        #     if not await self.peer_ice_checker(peer):
+        #         return { 'err': 2, 'msg': 'Timed out waiting for ICE gathering' }
 
-                    # set transciever's preference to H264
-                    transcievers = peer.pc.getTransceivers()
-                    for t in transcievers:
-                        if t.sender == sender:
-                            capabilities = RTCRtpSender.getCapabilities("video")
-                            preferences = list(filter(lambda x: x.mimeType == "video/H264", capabilities.codecs))
-                            # preferences = list(filter(lambda x: x.name == "H264", capabilities.codecs))
-                            t.setCodecPreferences(preferences)
+        #     if self.log_sdp:
+        #         self.get_logger().info(c(f'SDP OFFER: {peer.pc.localDescription.sdp}', 'dark_grey'))
 
-                    sender._stream_id = sender._track_id
-                    sender.name = id_cam
-                    sender.pc = peer.pc
+        #     reply_data['offer_sdp'] = peer.pc.localDescription.sdp
 
-                    self.get_logger().info(f'Created video sender for peer={id_peer} {id_cam}, track_id=={sender._track_id}, capabilities: {str(sender.getCapabilities(kind="video"))}')
-
-                    @sender.track.on('ended')
-                    async def on_sender_track_ended():
-                        self.get_logger().warn(f'Sender video track ended for peer={id_peer} {id_cam}, track_id=={str(sender._track_id)}')
-
-                    peer.video_tracks[id_cam] = sender
-                    # await sender.track.set_frame(av.VideoFrame(width=640, height=480, format='rgb24'))
-
-                if not await self.camera_subscriptions[id_cam].start(id_peer, peer.video_tracks[id_cam]):
-                    self.get_logger().error(f'Camera {id_cam} failed to subscribe, peer={id_peer}')
-                    return { 'err': 2, 'msg': f'Camera {id_cam} failed to subscribe'}
-
-                res_subscribed.append([id_cam, peer.video_tracks[id_cam]._track_id ]) #id is generated str
-
-            else: # unsubscribe
-
-                if id_cam in peer.video_tracks.keys():
-                    self.get_logger().debug(f'Peer {id_peer} no longer subscribed to {id_cam}; leavimg channel open')
-
-                if id_cam in self.camera_subscriptions:
-                    if self.camera_subscriptions[id_cam].stop(id_peer): # cam destroyed
-                        self.camera_subscriptions.pop(id_cam)
-
-            #     self.unsubscribe_topic(topic, id_peer)
-
-            #     if id_peer in self.wrtc_peer_read_channels and topic in self.wrtc_peer_read_channels[id_peer]:
-            #         self.get_logger().info(f'Peer {id_peer} unsubscribed from {topic} R')
-            #         id_closed_dc = self.wrtc_peer_read_channels[id_peer][topic].id
-            #         self.wrtc_peer_read_channels[id_peer][topic].close()
-            #         self.wrtc_peer_read_channels[id_peer].pop(topic)
-            #         res_unsubscribed.append([ topic, id_closed_dc ])
-
-            #     if id_peer in self.wrtc_peer_video_tracks and topic in self.wrtc_peer_video_tracks[id_peer]:
-            #         self.get_logger().info(f'Peer {id_peer} unsubscribed from {topic} /R IMG (NOT EVEN pausing stream)')
-            #         # self.wrtc_peer_video_tracks[id_peer][topic].pause()
-            #         # self.wrtc_peer_video_tracks[id_peer][topic].pause()
-            #         # id_closed_track = self.wrtc_peer_video_tracks[id_peer][topic].track.id # str generated
-            #         # if id_peer in self.wrtc_peer_video_tracks:
-            #         #     if topic in self.wrtc_peer_video_tracks[id_peer]:
-            #         #         if self.wrtc_peer_video_tracks[id_peer][topic].track:
-            #         #             self.get_logger().info(f'Peer {id_peer} stopping topic {topic}...')
-            #         #             await pc.removeTrack(self.wrtc_peer_video_tracks[id_peer][topic])
-            #         #             # await self.wrtc_peer_video_tracks[id_peer][topic].stop()
-            #         #             self.get_logger().info(f'Peer {id_peer} stopped topic {topic}...')
-            #         #         if topic in self.wrtc_peer_video_tracks[id_peer]:
-            #         #             self.wrtc_peer_video_tracks[id_peer].pop(topic)
-            #         res_unsubscribed.append([ topic ])
-
-        reply_data = {
-            'success': 1,
-            'subscribed': res_subscribed,
-            'unsubscribed': res_unsubscribed,
-            'err': res_err
-        }
-
-        if negotiation_needed:
-            self.get_logger().info(c(f'Creating SDP offer for peer={id_peer}', 'cyan'))
-
-            if not await self.peer_signalling_stable_checker(peer):
-                self.get_logger().error(f'Timed out waiting for stable signalling stat for peer={id_peer}')
-                return { 'err': 2, 'msg': 'Timed out waiting for stable signalling state' }
-
-            offer = await peer.pc.createOffer()
-            await peer.pc.setLocalDescription(offer)
-
-            if not await self.peer_ice_checker(peer):
-                return { 'err': 2, 'msg': 'Timed out waiting for ICE gathering' }
-
-            if self.log_sdp:
-                self.get_logger().info(c(f'SDP OFFER: {peer.pc.localDescription.sdp}', 'dark_grey'))
-
-            reply_data['offer_sdp'] = peer.pc.localDescription.sdp
-
-        return reply_data
+        # return reply_data
 
 
     ##
@@ -1575,7 +1728,7 @@ async def main_async():
         iw_monitor_task = asyncio.get_event_loop().create_task(bridge_node.iw.start_monitor())
 
         # concurrently execute both tasks on this process
-        await asyncio.wait([ sio_task, read_data_task ], return_when=asyncio.ALL_COMPLETED)
+        await asyncio.wait([ sio_task, read_data_task, iw_monitor_task ], return_when=asyncio.ALL_COMPLETED)
 
     except Exception as e:
         print(c('Exception in main_async()', 'red'))

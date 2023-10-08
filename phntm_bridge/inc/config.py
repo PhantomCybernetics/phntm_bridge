@@ -26,7 +26,9 @@ class BridgeControllerConfig():
             "turn:turn.phntm.io:3478",
             "turn:turn.phntm.io:5349"
             ])
+        self.declare_parameter('ice_credential', 'robopass')
         self.ice_server_urls = self.get_parameter('ice_server_urls').get_parameter_value().string_array_value
+        self.ice_credential = self.get_parameter('ice_credential').get_parameter_value().string_array_value
 
         # SOCKET.IO
         self.declare_parameter('sio_address', 'https://api.phntm.io')

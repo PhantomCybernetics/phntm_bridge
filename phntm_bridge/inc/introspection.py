@@ -11,10 +11,15 @@ from termcolor import colored as c
 import time
 import docker
 import json
+from .peer import WRTCPeer
 
-class Introspection:
+from pyee.base import EventEmitter
+from pyee.asyncio import AsyncIOEventEmitter
+
+class Introspection (AsyncIOEventEmitter):
 
     def __init__(self, period:float, stop_after:float, ctrl_node:Node, picam2:Picamera2, docker_client:docker.DockerClient, sio:socketio.AsyncClient):
+        super().__init__()
         self.period:float = period
         self.stop_after:float = stop_after
 
@@ -32,6 +37,15 @@ class Introspection:
         self.sio:socketio.AsyncClient = sio
         self.running:bool = False
 
+        self.waiting_peers:list = []
+
+    def add_waiting_peer(self, peer:WRTCPeer):
+        if not peer in self.waiting_peers:
+            self.waiting_peers.append(peer)
+
+    def remove_waiting_peer(self, peer:WRTCPeer):
+        if peer in self.waiting_peers:
+            self.waiting_peers.remove(peer)
 
     async def start(self):
         self.started_time = time.time()
@@ -39,15 +53,19 @@ class Introspection:
         await self.report_introspection()
 
         while self.running:
-            await self.run_discovery()
+            new_discoveries = await self.run_discovery() # True if cameras or topics discovered
+
+            something_missing = len(self.waiting_peers) > 0
             await asyncio.sleep(self.period)
-            if self.period <= 0: # one shot
-                await self.stop(report=True)
-                return
-            if self.stop_after > 0.0 and self.started_time+self.stop_after < time.time():
-                self.logger.info(c(f'Introspection stopped after {self.stop_after}s', 'dark_grey'))
-                await self.stop(report=True)
-                return
+
+            if not something_missing: #keep discovering until all is found (TODO or user hits stop)
+                if self.period <= 0: # one shot
+                    await self.stop(report=True)
+                    return
+                if self.stop_after > 0.0 and self.started_time+self.stop_after < time.time():
+                    self.logger.info(c(f'Introspection stopped after {self.stop_after}s', 'dark_grey'))
+                    await self.stop(report=True)
+                    return
 
 
     async def stop(self, report:bool = True):
@@ -58,9 +76,9 @@ class Introspection:
 
 
     # spinned by timer
-    async def run_discovery(self):
+    async def run_discovery(self) -> bool:
 
-        self.logger.info(c(f'Introspecting...', 'dark_grey'))
+        self.logger.info(c(f'Introspecting... ({len(self.waiting_peers)} peers waiting)', 'dark_grey'))
 
         #topics
         topics_changed = False
@@ -128,6 +146,9 @@ class Introspection:
         if docker_containers_changed:
             await self.report_docker()
 
+        return topics_changed or cameras_changed
+
+
     def get_topics_data(self):
         data = []
         for topic in self.discovered_topics.keys():
@@ -138,6 +159,10 @@ class Introspection:
         return data
 
     async def report_topics(self):
+
+        print('introspection has new topics')
+        self.emit('topics', self.discovered_topics.keys())
+
         if not self.sio or not self.sio.connected:
             return
 

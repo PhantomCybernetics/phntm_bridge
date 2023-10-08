@@ -22,7 +22,8 @@ RUN pip install setuptools==58.2.0 \
                 python-socketio \
                 opencv-python \
                 termcolor \
-                aiohttp
+                aiohttp \
+                PyEventEmitter
 		# aiortc #forked
                 # aiohttp #forker
 

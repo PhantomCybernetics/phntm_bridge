@@ -25,8 +25,12 @@ class WRTCPeer:
 
     # self.wrtc_peer_video_tracks:dict[str,dict[str,RTCRtpSender]] = dict() # id_peer => [ topic => peer read webrtc video track ]
     # self.video_track_tmp:ROSVideoStreamTrack = None
-    def __init__(self, id_peer:str, ctrl_node:Node, ice_server_urls:list):
+    def __init__(self, id_peer:str, id_app:str, id_instance:str, ctrl_node:Node, ice_server_urls:list, ice_credential:str):
+
         self.id:str = id_peer
+        self.id_app = id_app
+        self.id_instance = id_instance
+
         self.node:Node = ctrl_node
         self.logger:RcutilsLogger = ctrl_node.get_logger()
 
@@ -41,17 +45,19 @@ class WRTCPeer:
         self.read_subs:list(str) = []
         self.write_subs:list(list(str)) = []
 
+        # self.all_discovered:bool = True # keeps introspection running if False
+
         config = RTCConfiguration(
             iceServers=[
                 RTCIceServer(
                     urls=ice_server_urls,
-                    credential="robopass",
+                    credential=ice_credential,
                 ),
             ]
         )
         self.pc:RTCPeerConnection = RTCPeerConnection(config)
 
-        self.logger.info(f'Initial IceConnectionState: {self.pc.iceConnectionState} IceGatheringState: {self.pc.iceGatheringState}')
+        self.logger.info(f'Initial IceConnectionState: {self.pc.iceConnectionState},  IceGatheringState: {self.pc.iceGatheringState}')
 
         if self.pc.connectionState in ['closed', 'failed']:
             self.logger.error(f'Peer WebRTC connection is closed or failed for {id_peer}')
@@ -69,17 +75,8 @@ class WRTCPeer:
         async def on_signalingstatechange():
             self.logger.warn(f'WebRTC (peer={id_peer}) Signaling State: %s' % self.pc.signalingState)
 
-    async def process_subs(self):
-        subs = {
-
-        }
-        for sub in self.read_subs:
-            pass
-
-        for sub in self.write_subs:
-            pass
-
-        return subs
+    def __str__(self):
+        return f'Peer {self.id}'
 
     def GetId(data:dict) -> str:
         id_peer:str = None

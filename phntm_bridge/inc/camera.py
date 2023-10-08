@@ -27,6 +27,11 @@ SRC_VIDEO_TIME_BASE = fractions.Fraction(1, NS_TO_SEC)
 from aiortc.mediastreams import VIDEO_TIME_BASE, convert_timebase
 from aiortc.codecs.h264 import H264Encoder as aiortcH264Encoder
 
+def IsPiCameraId(id_topic_od_camera:str) -> bool:
+    if id_topic_od_camera.startswith('/picam2'):
+        return True
+    return False
+
 class Picamera2Subscription:
 
     def __init__(self, id_camera:str, picam2:Picamera2, logger:RcutilsLogger, bridge_time_started_ns:int, hflip:bool=False, vflip:bool=False, bitrate:int=5000000, framerate:int = 30, log_message_every_sec:float=5.0):
@@ -109,7 +114,7 @@ def get_camera_info(picam2:Picamera2) -> List[Tuple[str, dict]]:
 
     for c in info:
         cam_data = [
-            f'picam2{c["Id"]}', #our id
+            f'/picam2{c["Id"]}', #our id
             c,
             # msg types follow
         ]
