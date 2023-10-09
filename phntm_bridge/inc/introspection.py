@@ -33,6 +33,12 @@ class Introspection (AsyncIOEventEmitter):
         self.discovered_services:dict[str: dict['msg_types':list[str]]] = {}
         self.discovered_cameras:dict[str: any] = {}
         self.discovered_docker_containers:dict[str: [ docker.models.containers.Container, str ]] = {}
+        self.discovered_nodes:dict[str: dict[
+            'namespace':str,
+            'publishers':dict[str:list[str]],
+            'subscribers':dict[str:list[str]],
+            'services':dict[str:list[str]]
+        ]] =  {}
 
         self.sio:socketio.AsyncClient = sio
         self.running:bool = False
@@ -48,8 +54,12 @@ class Introspection (AsyncIOEventEmitter):
             self.waiting_peers.remove(peer)
 
     async def start(self):
+        if self.running:
+            return False
+
         self.started_time = time.time()
         self.running = True
+        self.logger.info(c(f'Introspection started', 'dark_grey'))
         await self.report_introspection()
 
         while self.running:
@@ -63,13 +73,14 @@ class Introspection (AsyncIOEventEmitter):
                     await self.stop(report=True)
                     return
                 if self.stop_after > 0.0 and self.started_time+self.stop_after < time.time():
-                    self.logger.info(c(f'Introspection stopped after {self.stop_after}s', 'dark_grey'))
+                    self.logger.info(c(f'Introspection stopped automatically', 'dark_grey'))
                     await self.stop(report=True)
                     return
 
 
     async def stop(self, report:bool = True):
         if self.running:
+            self.logger.info(c(f'Introspection stopped', 'dark_grey'))
             self.running = False
             if report:
                 await self.report_introspection()
@@ -79,6 +90,58 @@ class Introspection (AsyncIOEventEmitter):
     async def run_discovery(self) -> bool:
 
         self.logger.info(c(f'Introspecting... ({len(self.waiting_peers)} peers waiting)', 'dark_grey'))
+
+        nodes_changed = False
+        new_nodes = self.ctrl_node.get_node_names_and_namespaces()
+
+        for node_info in new_nodes:
+            node = node_info[0]
+            namespace = node_info[1]
+            if not node in self.discovered_nodes.keys():
+                self.logger.info(c(f'Discovered node {node} ns={namespace}', 'light_green'))
+                self.discovered_nodes[node] = {
+                    'namespace': namespace
+                }
+                nodes_changed = True
+
+            publishers = self.ctrl_node.get_publisher_names_and_types_by_node(node, namespace)
+            for publisher in publishers:
+                topic = publisher[0]
+                msg_types = publisher[1]
+                if not 'publishers' in self.discovered_nodes[node]:
+                    self.discovered_nodes[node]['publishers'] = {}
+                if not topic in self.discovered_nodes[node]['publishers'].keys() \
+                    or self.discovered_nodes[node]['publishers'][topic] != msg_types:
+                    self.discovered_nodes[node]['publishers'][topic] = msg_types
+                    self.logger.info(c(f'{node} > {topic} {msg_types}', 'light_green'))
+                    nodes_changed = True
+
+            new_subscribers = self.ctrl_node.get_subscriber_names_and_types_by_node(node, namespace)
+            for subscriber in new_subscribers:
+                topic = subscriber[0]
+                msg_types = subscriber[1]
+                if not 'subscribers' in self.discovered_nodes[node]:
+                    self.discovered_nodes[node]['subscribers'] = {}
+                if not topic in self.discovered_nodes[node]['subscribers'].keys() \
+                    or self.discovered_nodes[node]['subscribers'][topic] != msg_types:
+                    self.discovered_nodes[node]['subscribers'][topic] = msg_types
+                    self.logger.info(c(f'{node} < {topic} {msg_types}', 'light_green'))
+                    nodes_changed = True
+
+            new_services = self.ctrl_node.get_service_names_and_types_by_node(node, namespace)
+            for service_info in new_services:
+                id_service = service_info[0]
+                msg_types = service_info[1]
+                if not 'services' in self.discovered_nodes[node]:
+                    self.discovered_nodes[node]['services'] = {}
+                if not id_service in self.discovered_nodes[node]['services'].keys() \
+                    or self.discovered_nodes[node]['services'][id_service] != msg_types:
+                    self.discovered_nodes[node]['services'][id_service] = msg_types
+                    self.logger.info(c(f'{node} <> {id_service} {msg_types}', 'light_green'))
+                    nodes_changed = True
+
+        if nodes_changed:
+            await self.report_nodes()
 
         #topics
         topics_changed = False
@@ -137,17 +200,35 @@ class Introspection (AsyncIOEventEmitter):
             if not container.id in self.discovered_docker_containers.keys():
                 self.discovered_docker_containers[container.id] = [ container, container.status ]
                 docker_containers_changed = True
-                self.logger.info(c(f'Discovered Docker container {container.name} aka {container.short_id} {container.status}', 'dark_grey'))
+                self.logger.info(c(f'Discovered Docker container {container.name} aka {container.short_id} {container.status}', 'blue'))
             elif self.discovered_docker_containers[container.id][1] != container.status:
                 self.discovered_docker_containers[container.id][0] = container
                 self.discovered_docker_containers[container.id][1] = f'{container.status}' #copy
                 docker_containers_changed = True
-                self.logger.info(c(f'Docker container {container.name} aka {container.short_id} changed status to {container.status}', 'dark_grey'))
+                self.logger.info(c(f'Docker container {container.name} aka {container.short_id} changed status to {container.status}', 'blue'))
         if docker_containers_changed:
             await self.report_docker()
 
         return topics_changed or cameras_changed
 
+    def get_nodes_data(self):
+        return self.discovered_nodes
+
+    async def report_nodes(self):
+
+        self.emit('nodes', self.discovered_nodes.keys())
+
+        if not self.sio or not self.sio.connected:
+            return
+
+        data = self.get_nodes_data()
+        self.logger.info(c(f'Reporting {len(data)} nodes', 'dark_grey'))
+
+        await self.sio.emit(
+            event='nodes',
+            data=data,
+            callback=None
+            )
 
     def get_topics_data(self):
         data = []
@@ -160,14 +241,13 @@ class Introspection (AsyncIOEventEmitter):
 
     async def report_topics(self):
 
-        print('introspection has new topics')
         self.emit('topics', self.discovered_topics.keys())
 
         if not self.sio or not self.sio.connected:
             return
 
         data = self.get_topics_data()
-        self.logger.info(f'Reporting {len(data)} topics')
+        self.logger.info(c(f'Reporting {len(data)} topics', 'dark_grey'))
 
         await self.sio.emit(
             event='topics',
@@ -185,11 +265,14 @@ class Introspection (AsyncIOEventEmitter):
         return data
 
     async def report_services(self):
+
+        self.emit('services', self.discovered_services.keys())
+
         if not self.sio or not self.sio.connected:
             return
 
         data = self.get_services_data()
-        self.logger.info(f'Reporting {len(data)} services')
+        self.logger.info(c(f'Reporting {len(data)} services', 'dark_grey'))
 
         await self.sio.emit(
             event='services',
@@ -198,17 +281,20 @@ class Introspection (AsyncIOEventEmitter):
             )
 
     def get_cameras_data(self):
-        data = []
+        data = {}
         for id_cam in self.discovered_cameras.keys():
-            data.append( [ id_cam,  self.discovered_cameras[id_cam] ])
+            data[id_cam] = self.discovered_cameras[id_cam]
         return data
 
     async def report_cameras(self):
+
+        self.emit('cameras', self.discovered_cameras.keys())
+
         if not self.sio or not self.sio.connected:
             return
 
         data = self.get_cameras_data()
-        self.logger.info(f'Reporting {len(data)} cameras')
+        self.logger.info(c(f'Reporting {len(data)} cameras', 'dark_grey'))
 
         await self.sio.emit(
             event='cameras',
@@ -231,11 +317,14 @@ class Introspection (AsyncIOEventEmitter):
         return data
 
     async def report_docker(self):
+
+        self.emit('docker', self.discovered_docker_containers.keys())
+
         if not self.sio or not self.sio.connected:
             return
 
         data = self.get_docker_data()
-        self.logger.info(f'Reporting {len(data)} docker containers')
+        self.logger.info(c(f'Reporting {len(data)} docker containers', 'dark_grey'))
 
         await self.sio.emit(
             event='docker',
@@ -244,10 +333,13 @@ class Introspection (AsyncIOEventEmitter):
             )
 
     async def report_introspection(self):
+
+        self.emit('introspection', self.running)
+
         if not self.sio or not self.sio.connected:
             return
 
-        self.logger.info(f'Reporting introspection running: {self.running}')
+        self.logger.info(c(f'Reporting introspection {"running" if self.running else "stopped"}', 'dark_grey'))
 
         await self.sio.emit(
             event='introspection',

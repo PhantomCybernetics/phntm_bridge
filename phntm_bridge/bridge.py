@@ -168,7 +168,8 @@ class BridgeController(Node, BridgeControllerConfig):
             if self.conn_led != None:
                 self.conn_led.on()
 
-            # TODO: maybe report to clients without server caching?
+            # push introspection result to the server
+            asyncio.get_event_loop().create_task(self.introspection.report_nodes())
             asyncio.get_event_loop().create_task(self.introspection.report_cameras())
             asyncio.get_event_loop().create_task(self.introspection.report_topics())
             asyncio.get_event_loop().create_task(self.introspection.report_services())
