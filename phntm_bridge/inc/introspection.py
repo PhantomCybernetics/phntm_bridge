@@ -54,10 +54,12 @@ class Introspection (AsyncIOEventEmitter):
             self.waiting_peers.remove(peer)
 
     async def start(self):
-        if self.running:
-            return False
 
         self.started_time = time.time()
+
+        if self.running:
+            return False # only renew timer
+
         self.running = True
         self.logger.info(c(f'Introspection started', 'dark_grey'))
         await self.report_introspection()
