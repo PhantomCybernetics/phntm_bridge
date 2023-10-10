@@ -59,21 +59,21 @@ class WRTCPeer:
 
         self.logger.info(f'Initial IceConnectionState: {self.pc.iceConnectionState},  IceGatheringState: {self.pc.iceGatheringState}')
 
-        if self.pc.connectionState in ['closed', 'failed']:
-            self.logger.error(f'Peer WebRTC connection is closed or failed for {id_peer}')
-            return
+        @self.pc.on("connectionstatechange")
+        async def on_connectionstatechange():
+            self.logger.warn(f"WebRTC {self} Connection State: {self.pc.connectionState}")
 
         @self.pc.on("icegatheringstatechange")
         async def on_icegatheringstatechange():
-            self.logger.warn(f'WebRTC(peer={id_peer}) Ice Gathering State: %s' % self.pc.iceGatheringState)
+            self.logger.warn(f'"WebRTC {self} Ice Gathering State: {self.pc.iceGatheringState}')
 
         @self.pc.on("iceconnectionstatechange")
         async def on_iceconnectionstatechange():
-            self.logger.warn(f'WebRTC (peer={id_peer}) Ice Connection State: %s' % self.pc.iceConnectionState)
+            self.logger.warn(f'WebRTC {self} Ice Connection State: {self.pc.iceConnectionState}')
 
         @self.pc.on("signalingstatechange")
         async def on_signalingstatechange():
-            self.logger.warn(f'WebRTC (peer={id_peer}) Signaling State: %s' % self.pc.signalingState)
+            self.logger.warn(f'WebRTC {self} Signaling State: {self.pc.signalingState}')
 
     def __str__(self):
         return f'Peer {self.id}'

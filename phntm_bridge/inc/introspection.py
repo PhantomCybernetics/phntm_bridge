@@ -67,6 +67,10 @@ class Introspection (AsyncIOEventEmitter):
         while self.running:
             new_discoveries = await self.run_discovery() # True if cameras or topics discovered
 
+            # if new_discoveries:
+            #     for peer in self.waiting_peers:
+            #         await ctrl_node.process_peer_subscriptions(peer, send_update=True)
+
             something_missing = len(self.waiting_peers) > 0
             await asyncio.sleep(self.period)
 

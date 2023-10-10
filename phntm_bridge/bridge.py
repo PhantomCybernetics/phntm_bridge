@@ -488,7 +488,6 @@ class BridgeController(Node, BridgeControllerConfig):
 
         @peer.pc.on("connectionstatechange")
         async def on_connectionstatechange():
-            self.get_logger().warn(f"WebRTC (peer={id_peer}) Connection state: {peer.pc.connectionState}")
             if peer.pc.connectionState == "failed":
                await self.remove_peer(peer.id, wait=True)
 
@@ -535,10 +534,9 @@ class BridgeController(Node, BridgeControllerConfig):
                 self.get_logger().info(c(f'{peer} missing {sub}, not discovered yet', 'dark_grey'))
                 all_topics_discovered = False # introspection will keep running
 
-        if not all_topics_discovered:
-            self.introspection.once('topics', lambda topics: self.process_peer_subscriptions(peer, send_update=True))
+        disconnected = peer.pc.connectionState == "failed"
 
-        if not all_topics_discovered or not all_cameras_discovered:
+        if not disconnected and (not all_topics_discovered or not all_cameras_discovered):
             self.introspection.add_waiting_peer(peer)
         else:
             self.introspection.remove_waiting_peer(peer)
@@ -551,14 +549,14 @@ class BridgeController(Node, BridgeControllerConfig):
             res['write_data_channels'].append([ topic, id_dc, msg_type ]) # topic, msg_type, channel
 
         # unsubscribe from data channels
-        for topic in peer.outbound_data_channels.keys():
+        for topic in list(peer.outbound_data_channels.keys()):
             if not topic in peer.read_subs:
                 self.get_logger().info(f'{peer} unsubscribing from {topic}')
                 await self.unsubscribe_data_topic(topic, peer)
                 res['read_data_channels'].append([ topic ]) # no id => unsubscribed
 
         # unsubscribe from video streams
-        for sub in peer.video_tracks.keys():
+        for sub in list(peer.video_tracks.keys()):
             if not sub in peer.read_subs:
                 if IsPiCameraId(sub):
                     self.get_logger().info(f'{peer} unsubscribing from camera {sub}')
@@ -569,11 +567,14 @@ class BridgeController(Node, BridgeControllerConfig):
                 res['read_video_streams'].append([ sub ]) # no id => unsubscribed
 
         #close write channels
-        for topic in peer.inbound_data_channels.keys():
+        for topic in list(peer.inbound_data_channels.keys()):
             if not topic in peer.write_subs:
                 self.get_logger().info(f'{peer} stopped writing into {topic}')
                 await self.close_write_channel(topic, peer)
                 res['write_data_channels'].append([ topic ]) # no id => unsubscribed
+
+        if disconnected:
+            return True #all done
 
         if len(res) == 0:
             self.get_logger().debug(c(f'{peer} connected, nothing else to do here', 'dark_grey'))
@@ -601,6 +602,13 @@ class BridgeController(Node, BridgeControllerConfig):
             self.get_logger().info(c(peer.pc.localDescription.sdp, 'dark_grey'))
 
         res['offer'] = peer.pc.localDescription.sdp
+
+        # call this again when more topics / cameras are found
+        # TODO this might be a silly way of dong this
+        if not all_topics_discovered:
+            self.introspection.once('topics', lambda topics: asyncio.get_event_loop().create_task(self.process_peer_subscriptions(peer, send_update=True)))
+        if not all_cameras_discovered:
+            self.introspection.once('cameras', lambda topics: asyncio.get_event_loop().create_task(self.process_peer_subscriptions(peer, send_update=True)))
 
         if not send_update:
             return res
@@ -640,15 +648,13 @@ class BridgeController(Node, BridgeControllerConfig):
         if not id_peer in self.wrtc_peers.keys():
             return
 
-        self.introspection.remove_waiting_peer(self.wrtc_peers[id_peer])
-
         peer = self.wrtc_peers[id_peer]
 
         if wait:
             self.get_logger().info(f'{peer} seems to be disconnected (waiting 10s...)')
 
             self.paused = True
-            await asyncio.sleep(10.0) #wait a bit for reconnects
+            await asyncio.sleep(10.0) #wait a bit for reconnects (?!)
 
             if not id_peer in self.wrtc_peers.keys():
                 return # already removed
@@ -663,7 +669,7 @@ class BridgeController(Node, BridgeControllerConfig):
         peer.read_subs = []
         peer.write_subs = []
 
-        self.process_peer_subscriptions(peer) #unsubscribes
+        await self.process_peer_subscriptions(peer) #unsubscribes
 
         if id_peer in self.wrtc_peers.keys():
             try:
