@@ -247,21 +247,43 @@ class BridgeController(Node, BridgeControllerConfig):
 
             return { 'success': 1 }
 
-        # subscribe and unsubscribe data channels
-        # bcs the negotionation doesn't seem to be implemented well at the moment
-        # it's be nice to do thisvia webrtc tho
-        @self.sio.on('subscription:read')
-        async def on_read_subscription(data:dict):
+        # subscribe topics and cameras
+        @self.sio.on('subscribe')
+        async def on_subscribe(data:dict):
             id_peer = WRTCPeer.GetId(data)
             if id_peer == None:
                 return { 'err': 2, 'msg': 'No valid peer id provided' }
             peer:WRTCPeer = self.wrtc_peers[id_peer]
             if not peer:
                 return { 'err': 2, 'msg': 'Peer not connected' }
-            if not 'topics' in data:
-                self.get_logger().error(f'No topics specified in on_read_subscriptions_change, peer={id_peer}')
+            if not 'sources' in data:
+                self.get_logger().error(f'No subscribe sources specified by {peer}')
                 return { 'err': 2, 'msg': 'No topics specified' }
-            # return await event_loop.create_task(self.on_read_subscriptions_change(peer, data))
+
+            for src in data['sources']:
+                if not src in peer.read_subs:
+                    peer.read_subs.append(src)
+
+            await self.process_peer_subscriptions(peer, send_update=True)
+
+        # unsubscribe topics and cameras
+        @self.sio.on('unsubscribe')
+        async def on_unsubscribe(data:dict):
+            id_peer = WRTCPeer.GetId(data)
+            if id_peer == None:
+                return { 'err': 2, 'msg': 'No valid peer id provided' }
+            peer:WRTCPeer = self.wrtc_peers[id_peer]
+            if not peer:
+                return { 'err': 2, 'msg': 'Peer not connected' }
+            if not 'sources' in data:
+                self.get_logger().error(f'No unsubscribe sources specified by {peer}')
+                return { 'err': 2, 'msg': 'No topics specified' }
+
+            for src in data['sources']:
+                if src in peer.read_subs:
+                    peer.read_subs.remove(src)
+
+            await self.process_peer_subscriptions(peer, send_update=True)
 
         # subscribe and unsubscribe camera streams
         @self.sio.on('cameras:read')
