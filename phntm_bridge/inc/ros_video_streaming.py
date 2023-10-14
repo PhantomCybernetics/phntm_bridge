@@ -202,9 +202,21 @@ class ImageTopicReadSubscription:
             log_msg = True
             self.last_log = self.last_msg_time #last logged now
 
-        for id_peer in self.peers.keys():
+        for id_peer in dict.fromkeys(self.peers.keys(),[]):
+
+            if not self.peers[id_peer].pc or self.peers[id_peer].pc.connectionState == 'failed' \
+            or self.peers[id_peer].transport.state == "closed":
+                self.logger.info(f'👁️  Sending {self.topic} to id_peer={id_peer} / id_stream= {str(self.peers[id_peer]._stream_id)} failed; pc={self.peers[id_peer].pc.connectionState}, transport={self.peers[id_peer].transport.state}')
+                if self.peers[id_peer].transport.state != "closed":
+                    self.event_loop.create_task(self.peers[id_peer].transport.close())
+                del self.peers[id_peer]
+                continue
+
+            if self.peers[id_peer].pc.connectionState != 'connected':
+                continue
+
             if log_msg:
-                self.ctrl_node.get_logger().info(f'👁️  △ Sending {len(frame_packets)} pkts of {self.topic} to id_peer={id_peer} / id_stream= {str(self.peers[id_peer]._stream_id)}, total received: {self.num_received}, ts={timestamp}, sender={str(id(self.peers[id_peer]))}')
+                self.ctrl_node.get_logger().info(f'👁️  Sending {len(frame_packets)} pkts of {self.topic} to id_peer={id_peer} / id_stream= {str(self.peers[id_peer]._stream_id)}, total received: {self.num_received}, ts={timestamp}, sender={str(id(self.peers[id_peer]))}, pc={self.peers[id_peer].pc.connectionState} transport={self.peers[id_peer].transport.state}')
             # if timestamp == 0:
             #     offset_ns = time.time_ns()-self.bridge_time_started_ns
             #     self.peers[id_peer].timestamp_origin = convert_timebase(offset_ns, SRC_VIDEO_TIME_BASE, VIDEO_TIME_BASE)

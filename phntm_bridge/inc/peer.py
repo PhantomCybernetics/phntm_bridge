@@ -30,6 +30,17 @@ class WRTCPeer:
         self.id:str = id_peer
         self.id_app = id_app
         self.id_instance = id_instance
+        self.sio_connected = True
+
+        config = RTCConfiguration(
+            iceServers=[
+                RTCIceServer(
+                    urls=ice_server_urls,
+                    credential=ice_credential,
+                ),
+            ]
+        )
+        self.pc:RTCPeerConnection = RTCPeerConnection(config)
 
         self.node:Node = ctrl_node
         self.logger:RcutilsLogger = ctrl_node.get_logger()
@@ -44,18 +55,6 @@ class WRTCPeer:
 
         self.read_subs:list(str) = []
         self.write_subs:list(list(str)) = []
-
-        # self.all_discovered:bool = True # keeps introspection running if False
-
-        config = RTCConfiguration(
-            iceServers=[
-                RTCIceServer(
-                    urls=ice_server_urls,
-                    credential=ice_credential,
-                ),
-            ]
-        )
-        self.pc:RTCPeerConnection = RTCPeerConnection(config)
 
         self.logger.info(f'Initial IceConnectionState: {self.pc.iceConnectionState},  IceGatheringState: {self.pc.iceGatheringState}')
 

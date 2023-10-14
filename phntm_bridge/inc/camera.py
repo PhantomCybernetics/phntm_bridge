@@ -191,10 +191,22 @@ class PacketsOutput(FileOutput):
         payloads, stamp_converted = self.aiortc_encoder.pack(packet)
 
         self.last_frame = timestamp
-        for id_peer in self.sub.peers.keys():
+        for id_peer in dict.fromkeys(self.sub.peers.keys(),[]):
+
+            if not self.sub.peers[id_peer].pc or self.sub.peers[id_peer].pc.connectionState == 'failed' \
+            or self.sub.peers[id_peer].transport.state == "closed":
+                self.logger.info(f'👁️  Sending {self.sub.id_camera} to id_peer={id_peer} / id_stream= {str(self.sub.peers[id_peer]._stream_id)} failed; pc={self.sub.peers[id_peer].pc.connectionState}, transport={self.sub.peers[id_peer].transport.state}')
+                if self.sub.peers[id_peer].transport.state != "closed":
+                    self.sub.event_loop.create_task(self.sub.peers[id_peer].transport.close())
+                del self.sub.peers[id_peer]
+                continue
+
+            if self.sub.peers[id_peer].pc.connectionState != 'connected':
+                continue
+
             # fut = self.sub.event_loop.create_future()
             if log_msg:
-                self.logger.info(f'👁️  △ Sending {len(frame_bytes)}B / {len(payloads)} pkgs of {self.sub.id_camera} to id_peer={id_peer} / id_stream= {str(self.sub.peers[id_peer]._stream_id)}, total received: {self.num_received}, ts={timestamp}, sender={str(id(self.sub.peers[id_peer]))}')
+                self.logger.info(f'👁️  Sending {len(frame_bytes)}B / {len(payloads)} pkgs of {self.sub.id_camera} to id_peer={id_peer} / id_stream= {str(self.sub.peers[id_peer]._stream_id)}, total received: {self.num_received}, ts={timestamp}, sender={str(id(self.sub.peers[id_peer]))}, pc={self.sub.peers[id_peer].pc.connectionState} transport={self.sub.peers[id_peer].transport.state}')
             # if timestamp == 0:
                 # offset_ns = time.time_ns()-self.bridge_time_started_ns
                 # self.sub.peers[id_peer].timestamp_origin = convert_timebase(offset_ns, SRC_VIDEO_TIME_BASE, VIDEO_TIME_BASE)

@@ -356,6 +356,7 @@ class BridgeController(Node, BridgeControllerConfig):
                 return { 'err': 2, 'msg': 'No valid peer id provided' }
             if not id_peer in self.wrtc_peers.keys():
                 return { 'err': 2, 'msg': 'Peer not connected' }
+            self.wrtc_peers[id_peer].sio_connected = False
             self.get_logger().warn(f'Peer {id_peer} disconnected from Socket.io server (fyi, ignoring)')
 
         @self.sio.on('message')
@@ -595,7 +596,7 @@ class BridgeController(Node, BridgeControllerConfig):
                 await self.close_write_channel(topic, peer)
                 res['write_data_channels'].append([ topic ]) # no id => unsubscribed
 
-        if disconnected:
+        if disconnected or not peer.sio_connected:
             return True #all done
 
         if len(res) == 0:
@@ -619,6 +620,9 @@ class BridgeController(Node, BridgeControllerConfig):
                 return None
             else:
                 return { 'err': 2, 'msg': 'Timed out waiting for ICE gathering state' }
+
+        if not peer.sio_connected:
+            return False
 
         if self.log_sdp:
             self.get_logger().info(c(peer.pc.localDescription.sdp, 'dark_grey'))
@@ -844,8 +848,9 @@ class BridgeController(Node, BridgeControllerConfig):
     async def unsubscribe_image_topic(self, topic:str, peer:WRTCPeer):
 
         if topic in peer.video_tracks.keys():
-            self.get_logger().debug(f'Peer {id_peer} no longer subscribed to {topic}; TODO CLOSE!')
-            #TODO close channel!
+            self.get_logger().debug(f'{peer} no longer subscribed to {topic}; removing track')
+            peer.video_tracks[topic].stop()
+            peer.video_tracks.pop(topic)
 
         if topic in self.image_topic_read_subscriptions.keys():
             if self.image_topic_read_subscriptions[topic].stop(peer.id): # subscriber destroyed
@@ -909,8 +914,9 @@ class BridgeController(Node, BridgeControllerConfig):
     # UNSUBSCRIBE Pi camera stream
     async def unsubscribe_picamera(self, id_cam:str, peer:WRTCPeer):
         if id_cam in peer.video_tracks.keys():
-            self.get_logger().debug(f'{peer} no longer subscribed to {id_cam}; TODO CLOSE!')
-            #TODO CLOSE!
+            self.get_logger().debug(f'{peer} no longer subscribed to {id_cam}; removing video track')
+            peer.video_tracks[id_cam].stop()
+            peer.video_tracks.pop(id_cam)
 
         if id_cam in self.camera_subscriptions:
             if self.camera_subscriptions[id_cam].stop(peer.id): # cam destroyed

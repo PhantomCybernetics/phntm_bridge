@@ -126,7 +126,7 @@ class TopicReadSubscription:
             dc:RTCDataChannel = self.peers[id_peer]
             if dc.readyState == 'open':
                 if log_msg:
-                    self.ctrl_node.get_logger().info(f'⚡️ △ Sending {len(reader_res["msg"])}B into {self.topic} for id_peer={id_peer} / dc= {str(id(dc))}, total received: {self.num_received}')
+                    self.ctrl_node.get_logger().info(f'⚡️ Sending {len(reader_res["msg"])}B into {self.topic} for id_peer={id_peer} / dc= {str(id(dc))}, total received: {self.num_received}')
                 # print(f' hello! {self.topic}')
                 try:
                     # await self.event_loop.create_task(dc.send(msg)) #always raw bytes bcs fast
