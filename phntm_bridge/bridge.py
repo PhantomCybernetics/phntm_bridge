@@ -161,7 +161,7 @@ class BridgeController(Node, BridgeControllerConfig):
 
         @self.sio.on('connect')
         async def on_connect():
-            self.get_logger().info('Socket.io connection established, auth successful')
+            self.get_logger().debug('Socket.io connection established, auth successful')
 
             self.sio.connected = True #socket.io sets this after callback, makes report calls work immediately
 
@@ -495,11 +495,12 @@ class BridgeController(Node, BridgeControllerConfig):
     ##
     async def on_peer_connect(self, id_peer:str, peer_data:dict):
 
-        self.get_logger().debug(c(f'Peer {id_peer} connected...', 'magenta'))
+        self.get_logger().debug(c(f'Peer {id_peer} connected... w peer_data={peer_data}', 'magenta'))
 
         if id_peer in self.wrtc_peers.keys():
-            self.get_logger().warn(f'Peer {id_peer} was already connected, restarting...')
-            await self.remove_peer(id_peer, wait=False)
+            peer = self.wrtc_peers[id_peer]
+            self.get_logger().warn(f'{peer} was already connected, restarting...')
+            return await self.process_peer_subscriptions(peer, send_update=False)
 
         # pc.addTransceiver('video', direction='sendonly') #must have at least one
         peer = WRTCPeer(id_peer=id_peer,
@@ -518,13 +519,14 @@ class BridgeController(Node, BridgeControllerConfig):
         peer.read_subs = peer_data['read'] if 'read' in peer_data.keys() else []
         peer.write_subs = peer_data['write'] if 'write' in peer_data.keys() else []
 
-        subscriptions_changes = await self.process_peer_subscriptions(peer, send_update=False)
-        return subscriptions_changes
+        return await self.process_peer_subscriptions(peer, send_update=False)
 
 
     async def process_peer_subscriptions(self, peer:WRTCPeer, send_update=False) -> dict:
         self.get_logger().warn(f'Processing read {peer.read_subs}')
         self.get_logger().warn(f'Processing write {peer.write_subs}')
+
+        disconnected = peer.pc.connectionState == "failed" or not peer.sio_connected
 
         res = {
             'read_video_streams': [],
@@ -532,8 +534,8 @@ class BridgeController(Node, BridgeControllerConfig):
             'write_data_channels': []
         }
 
-        all_topics_discovered = True
-        all_cameras_discovered = True
+        peer.topics_not_discovered = []
+        peer.cameras_not_discovered = []
         for sub in peer.read_subs:
             if IsPiCameraId(sub):
                 if sub in self.introspection.discovered_cameras.keys():
@@ -541,7 +543,7 @@ class BridgeController(Node, BridgeControllerConfig):
                     res['read_video_streams'].append([sub, id_track])
                 else:
                     self.get_logger().info(c(f'{peer} missing {sub}, not discovered yet', 'dark_grey'))
-                    all_cameras_discovered = False
+                    peer.cameras_not_discovered.append(sub) # introspection will keep running
 
             elif sub in self.introspection.discovered_topics.keys():
                 msg_type = self.introspection.discovered_topics[sub]['msg_types'][0]
@@ -555,12 +557,12 @@ class BridgeController(Node, BridgeControllerConfig):
 
             else: #topic not discovered yet
                 self.get_logger().info(c(f'{peer} missing {sub}, not discovered yet', 'dark_grey'))
-                all_topics_discovered = False # introspection will keep running
+                peer.topics_not_discovered.append(sub) # introspection will keep running
 
-        disconnected = peer.pc.connectionState == "failed"
-
-        if not disconnected and (not all_topics_discovered or not all_cameras_discovered):
+        if not disconnected and (len(peer.topics_not_discovered) > 0 or len(peer.cameras_not_discovered) > 0):
             self.introspection.add_waiting_peer(peer)
+            if not self.introspection.running:
+                asyncio.get_event_loop().create_task(self.introspection.start())
         else:
             self.introspection.remove_waiting_peer(peer)
 
@@ -596,8 +598,8 @@ class BridgeController(Node, BridgeControllerConfig):
                 await self.close_write_channel(topic, peer)
                 res['write_data_channels'].append([ topic ]) # no id => unsubscribed
 
-        if disconnected or not peer.sio_connected:
-            return True #all done
+        if disconnected:
+            return True #all cleanup done
 
         if len(res) == 0:
             self.get_logger().debug(c(f'{peer} connected, nothing else to do here', 'dark_grey'))
@@ -621,20 +623,13 @@ class BridgeController(Node, BridgeControllerConfig):
             else:
                 return { 'err': 2, 'msg': 'Timed out waiting for ICE gathering state' }
 
-        if not peer.sio_connected:
+        if not peer.sio_connected and peer.pc.connectionState != "failed":
             return False
 
         if self.log_sdp:
             self.get_logger().info(c(peer.pc.localDescription.sdp, 'dark_grey'))
 
         res['offer'] = peer.pc.localDescription.sdp
-
-        # call this again when more topics / cameras are found
-        # TODO this might be a silly way of dong this
-        if not all_topics_discovered:
-            self.introspection.once('topics', lambda topics: asyncio.get_event_loop().create_task(self.process_peer_subscriptions(peer, send_update=True)))
-        if not all_cameras_discovered:
-            self.introspection.once('cameras', lambda topics: asyncio.get_event_loop().create_task(self.process_peer_subscriptions(peer, send_update=True)))
 
         if not send_update:
             return res
@@ -692,6 +687,7 @@ class BridgeController(Node, BridgeControllerConfig):
 
         self.get_logger().info(c(f'{peer} disconnected, cleaning up', 'red'))
 
+        self.introspection.remove_waiting_peer(peer)
         peer.read_subs = []
         peer.write_subs = []
 

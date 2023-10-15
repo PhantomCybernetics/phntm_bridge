@@ -32,6 +32,9 @@ class WRTCPeer:
         self.id_instance = id_instance
         self.sio_connected = True
 
+        self.topics_not_discovered:list[str] = []
+        self.cameras_not_discovered:list[str] = []
+
         config = RTCConfiguration(
             iceServers=[
                 RTCIceServer(

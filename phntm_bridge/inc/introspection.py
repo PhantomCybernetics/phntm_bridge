@@ -67,9 +67,9 @@ class Introspection (AsyncIOEventEmitter):
         while self.running:
             new_discoveries = await self.run_discovery() # True if cameras or topics discovered
 
-            # if new_discoveries:
-            #     for peer in self.waiting_peers:
-            #         await ctrl_node.process_peer_subscriptions(peer, send_update=True)
+            if new_discoveries:
+                for peer in self.waiting_peers:
+                    await self.ctrl_node.process_peer_subscriptions(peer, send_update=True)
 
             something_missing = len(self.waiting_peers) > 0
             await asyncio.sleep(self.period)
@@ -95,7 +95,14 @@ class Introspection (AsyncIOEventEmitter):
     # spinned by timer
     async def run_discovery(self) -> bool:
 
-        self.logger.info(c(f'Introspecting... ({len(self.waiting_peers)} peers waiting)', 'dark_grey'))
+        wating_for = set()
+        for peer in self.waiting_peers:
+            for topic in peer.topics_not_discovered:
+                wating_for.add(topic)
+            for cam in peer.cameras_not_discovered:
+                wating_for.add(cam)
+
+        self.logger.info(c(f'Introspecting... ({len(self.waiting_peers)} peers waiting{(" for " + ", ".join(set(wating_for))) if len(wating_for) > 0 else ""})', 'dark_grey'))
 
         nodes_changed = False
         new_nodes = self.ctrl_node.get_node_names_and_namespaces()
