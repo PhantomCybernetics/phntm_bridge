@@ -49,6 +49,7 @@ class BridgeControllerConfig():
             self.declare_parameter(f'{topic_override}.durability', 0)
             self.declare_parameter(f'{topic_override}.raw', True)
             self.declare_parameter(f'{topic_override}.reliability', 0)
+            self.declare_parameter(f'{topic_override}.lifespan', 1) #1s by default; -1 for infinity
 
         self.declare_parameter('log_sdp', False)
         self.log_sdp = self.get_parameter('log_sdp').get_parameter_value().bool_value

@@ -28,7 +28,7 @@ from queue import Empty, Full
 class TopicReadSubscription:
 
     # def __init__(self, sub:Subscription, peers:list[str], frame_processor, processed_frames_h264:mp.Queue, processed_frames_v8:mp.Queue, make_keyframe_shared:mp.Value, make_h264_shared:mp.Value, make_v8_shared:mp.Value):
-    def __init__(self, ctrl_node:Node, reader_ctrl_queue:mp.Queue, topic:str, protocol:str, reliability:QoSReliabilityPolicy, durability:DurabilityPolicy, event_loop:object, log_message_every_sec:float):
+    def __init__(self, ctrl_node:Node, reader_ctrl_queue:mp.Queue, topic:str, protocol:str, reliability:QoSReliabilityPolicy, durability:DurabilityPolicy, lifespan_sec:int, event_loop:object, log_message_every_sec:float):
 
         self.sub:Subscription|bool = None
         self.ctrl_node:Node = ctrl_node
@@ -46,6 +46,7 @@ class TopicReadSubscription:
 
         self.reliability:QoSReliabilityPolicy = reliability
         self.durability:DurabilityPolicy = durability
+        self.lifespan_sec:int = lifespan_sec
 
         self.on_msg_cb:Callable = None
         self.event_loop = event_loop
@@ -58,6 +59,7 @@ class TopicReadSubscription:
 
         if self.sub != None:
             self.peers[id_peer] = dc
+
             return True #all done, one sub for all
 
         if self.reader_ctrl_queue: # subscribe on processor's process
@@ -66,7 +68,8 @@ class TopicReadSubscription:
                                                'topic': self.topic,
                                                'msg_type': self.protocol,
                                                'reliability': self.reliability,
-                                               'durability': self.durability
+                                               'durability': self.durability,
+                                               'lifespan': self.lifespan_sec
                                                })
             self.sub = True
 
@@ -115,7 +118,7 @@ class TopicReadSubscription:
         #print(f'TopicReadSubscription:on_msg() {threading.get_ident()}')
 
         log_msg = False
-        if self.num_received == 1: # first data in
+        if self.num_received == 1 or self.lifespan_sec == -1: # first data in
             self.ctrl_node.get_logger().debug(f'⚡️ Receiving {type(reader_res["msg"]).__name__} from {self.topic}')
 
         if self.last_log < 0 or self.last_msg_time-self.last_log > self.log_message_every_sec:
@@ -126,7 +129,7 @@ class TopicReadSubscription:
             dc:RTCDataChannel = self.peers[id_peer]
             if dc.readyState == 'open':
                 if log_msg:
-                    self.ctrl_node.get_logger().info(f'⚡️ Sending {len(reader_res["msg"])}B into {self.topic} for id_peer={id_peer} / dc= {str(id(dc))}, total received: {self.num_received}')
+                    self.ctrl_node.get_logger().info(f'⚡️ Sending {len(self.last_msg)}B into {self.topic} for id_peer={id_peer} / dc= {str(id(dc))}, total received: {self.num_received}')
                 # print(f' hello! {self.topic}')
                 try:
                     # await self.event_loop.create_task(dc.send(msg)) #always raw bytes bcs fast
@@ -160,16 +163,27 @@ class TopicReadSubscription:
             self.ctrl_node.get_logger().debug(f'on_msg_cb is {self.on_msg_cb}')
 
 
+    # this might send a message twice or hang when there's nothing in the topic (exits when peer disconnects)
+    # only used to ensure delivery of reliable topics
     async def report_latest_when_ready(self, id_peer:str):
         while True:
             if not id_peer in self.peers.keys():
                 return
+            dc:RTCDataChannel = self.peers[id_peer]
+
             if self.last_msg == None:
-                return #nothing received yet, will report when we do
-            if self.peers[id_peer].readyState == 'open':
+                await asyncio.sleep(.5) # wait for data
+                continue
+
+            if dc.readyState == 'open':
                 # asyncio.get_event_loop().create_task(self.peers[id_peer].send())
-                self.event_loop.run_in_executor(None, lambda: self.peers[id_peer].send(self.last_msg))
-                return #all done
+                self.ctrl_node.get_logger().debug(f'⚡️ Sending latest {len(self.last_msg)}B msg of {self.topic} to {id_peer}')
+                try:
+                    dc.send(self.last_msg)
+                    return #all done
+                except Exception as e:
+                    self.ctrl_node.get_logger().debug(f'⚡️ Exception while sending latest of {self.topic} to {id_peer}: {e}')
+                    await asyncio.sleep(.5) #wait until dc opens
             else:
                 await asyncio.sleep(.5) #wait until dc opens
 

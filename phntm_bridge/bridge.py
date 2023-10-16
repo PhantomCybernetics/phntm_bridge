@@ -741,32 +741,37 @@ class BridgeController(Node, BridgeControllerConfig):
         if not topic in self.topic_read_subscriptions:
             reliability = self.get_parameter_or(f'{topic}.reliability', Parameter(name='', value=QoSReliabilityPolicy.BEST_EFFORT)).get_parameter_value().integer_value
             durability = self.get_parameter_or(f'{topic}.durability', Parameter(name='', value=DurabilityPolicy.VOLATILE)).get_parameter_value().integer_value
+            lifespan = self.get_parameter_or(f'{topic}.lifespan', Parameter(name='', value=1)).get_parameter_value().integer_value
             self.topic_read_subscriptions[topic] = TopicReadSubscription(ctrl_node=self,
                                                                             reader_ctrl_queue=self.reader_ctrl_queue,
                                                                             topic=topic,
                                                                             protocol=msg_type,
                                                                             reliability=reliability,
                                                                             durability=durability,
+                                                                            lifespan_sec=lifespan,
                                                                             event_loop=asyncio.get_event_loop(),
                                                                             log_message_every_sec=self.log_message_every_sec)
             self.topic_read_subscriptions[topic].on_msg_cb = self.on_msg_blink # blinker
 
+        reliable = self.get_parameter_or(f'{topic}.reliability', Parameter(name='', value=0)).get_parameter_value().integer_value == 1 # 1=RELIABLE
         if not topic in peer.outbound_data_channels.keys():
             self.wrtc_nextChannelId += 1
             dc:RTCDataChannel = peer.pc.createDataChannel(topic,
                                                             id=self.wrtc_nextChannelId,
                                                             protocol=msg_type,
                                                             negotiated=True,
-                                                            ordered=False,
-                                                            maxRetransmits=None)
+                                                            ordered=False if not reliable else True,
+                                                            maxRetransmits=None if not reliable else 2)
             peer.outbound_data_channels[topic] = dc
-            self.get_logger().debug(f'{peer} subscribed to {topic} (protocol={msg_type}, ch_id={dc.id})')
+            self.get_logger().debug(f'{peer} subscribed to {topic} (protocol={msg_type}, ch_id={dc.id}); reliable={reliable}')
 
         if not self.topic_read_subscriptions[topic].start(peer.id, peer.outbound_data_channels[topic]):
             self.get_logger().error(f'Topic {topic} failed to subscribee in on_read_subscriptions_change, {peer}')
             return None
 
-        asyncio.get_event_loop().create_task(self.topic_read_subscriptions[topic].report_latest_when_ready(peer.id))
+        if reliable:
+            asyncio.get_event_loop().create_task(self.topic_read_subscriptions[topic].report_latest_when_ready(peer.id))
+
         return peer.outbound_data_channels[topic].id
 
     # UNSUBSCRIBE data topic
@@ -911,7 +916,7 @@ class BridgeController(Node, BridgeControllerConfig):
     async def unsubscribe_picamera(self, id_cam:str, peer:WRTCPeer):
         if id_cam in peer.video_tracks.keys():
             self.get_logger().debug(f'{peer} no longer subscribed to {id_cam}; removing video track')
-            peer.video_tracks[id_cam].stop()
+            await peer.video_tracks[id_cam].stop()
             peer.video_tracks.pop(id_cam)
 
         if id_cam in self.camera_subscriptions:

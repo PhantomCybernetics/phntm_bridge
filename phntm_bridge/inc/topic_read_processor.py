@@ -140,7 +140,7 @@ async def TopicReadProcessorLoop(reader_node, rcl_executor, running_shared:mp.Va
         newest_messages_by_topic.clear()
         await asyncio.sleep(.01)
 
-    spin_future.set_result(True)
+    # spin_future.set_result(True)
 
 
 def on_cmd(reader_node:Node, ctrl_cmd:dict, active_subs:dict[str:dict], newest_messages_by_topic:dict[str:list]):
@@ -158,6 +158,14 @@ def on_cmd(reader_node:Node, ctrl_cmd:dict, active_subs:dict[str:dict], newest_m
         msg_type = ctrl_cmd['msg_type']
         reliability = ctrl_cmd['reliability']
         durability = ctrl_cmd['durability']
+        # reader_node.get_logger().error(f'Topic Reader: {topic} raw lifespan={ctrl_cmd["lifespan"]}')
+        if 'lifespan' in ctrl_cmd.keys():
+            if ctrl_cmd['lifespan'] == -1:
+                lifespan = Infinite
+            else:
+                lifespan = Duration(seconds=ctrl_cmd['lifespan'])
+        else:
+            lifespan = Duration(seconds=1)
         pipe = ctrl_cmd['pipe'] if 'pipe' in ctrl_cmd.keys() else None
 
         message_class = None
@@ -169,13 +177,14 @@ def on_cmd(reader_node:Node, ctrl_cmd:dict, active_subs:dict[str:dict], newest_m
             reader_node.get_logger().error(f'Topic Reader: NOT subscribing to topic {topic}, msg class {msg_type} not loaded')
             return
 
-        qosProfile = QoSProfile(history=QoSHistoryPolicy.KEEP_LAST,
+        qosProfile = QoSProfile(
+                        history=QoSHistoryPolicy.KEEP_LAST,
                         depth=1,
                         reliability=reliability,
                         durability=durability,
-                        lifespan=Duration(seconds=1)
+                        lifespan=lifespan
                         )
-        reader_node.get_logger().warn(f'Topic Reader: Subscribing to topic {topic} {msg_type}')
+        reader_node.get_logger().warn(f'Topic Reader: Subscribing to topic {topic} {msg_type} reliability={reliability} durability={durability} lifespan={lifespan}')
         no_skip:bool = ctrl_cmd['no_skip'] if 'no_skip' in ctrl_cmd.keys() else False
         sub = reader_node.create_subscription(
                         msg_type=message_class,

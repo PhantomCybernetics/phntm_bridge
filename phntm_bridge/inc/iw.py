@@ -99,7 +99,8 @@ class IW:
             self.last_access_point = msg.access_point
             self.last_frequency = msg.frequency
 
-            asyncio.get_event_loop().run_in_executor(None, self.pub.publish, msg)
+            if self.node.context.ok():
+                asyncio.get_event_loop().run_in_executor(None, self.pub.publish, msg)
 
         except Exception as e:
             print (c(f'Error while generating IWStatus: {e}', 'red'))

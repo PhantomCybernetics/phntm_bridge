@@ -197,7 +197,7 @@ class PacketsOutput(FileOutput):
             or self.sub.peers[id_peer].transport.state == "closed":
                 self.logger.info(f'👁️  Sending {self.sub.id_camera} to id_peer={id_peer} / id_stream= {str(self.sub.peers[id_peer]._stream_id)} failed; pc={self.sub.peers[id_peer].pc.connectionState}, transport={self.sub.peers[id_peer].transport.state}')
                 if self.sub.peers[id_peer].transport.state != "closed":
-                    self.sub.event_loop.create_task(self.sub.peers[id_peer].transport.close())
+                    self.sub.event_loop.create_task(self.sub.peers[id_peer].transport.stop())
                 del self.sub.peers[id_peer]
                 continue
 
