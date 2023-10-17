@@ -285,29 +285,58 @@ class BridgeController(Node, BridgeControllerConfig):
 
             await self.process_peer_subscriptions(peer, send_update=True)
 
-        # subscribe and unsubscribe camera streams
-        @self.sio.on('cameras:read')
-        async def on_cameras_subscription(data:dict):
-            id_peer = WRTCPeer.GetId(data)
-            if id_peer == None:
-                return { 'err': 2, 'msg': 'No valid peer id provided' }
-            peer:WRTCPeer = self.wrtc_peers[id_peer]
-            if not peer:
-                return { 'err': 2, 'msg': 'Peer not connected' }
-            if not 'cameras' in data:
-                return { 'err': 2, 'msg': 'No cameras specified' }
-            # return await self.on_camera_subscription_change(peer, data)
+        # # subscribe and unsubscribe camera streams
+        # @self.sio.on('cameras:read')
+        # async def on_cameras_subscription(data:dict):
+        #     id_peer = WRTCPeer.GetId(data)
+        #     if id_peer == None:
+        #         return { 'err': 2, 'msg': 'No valid peer id provided' }
+        #     peer:WRTCPeer = self.wrtc_peers[id_peer]
+        #     if not peer:
+        #         return { 'err': 2, 'msg': 'Peer not connected' }
+        #     if not 'cameras' in data:
+        #         return { 'err': 2, 'msg': 'No cameras specified' }
+        #     # return await self.on_camera_subscription_change(peer, data)
 
         # WRITE SUBS
-        @self.sio.on('subscription:write')
-        async def on_write_subscription(data:dict):
+        @self.sio.on('subscribe:write')
+        async def on_subscribe_write(data:dict):
             id_peer = WRTCPeer.GetId(data)
             if id_peer == None:
                 return { 'err': 2, 'msg': 'No valid peer id provided' }
             peer:WRTCPeer = self.wrtc_peers[id_peer]
             if not peer:
                 return { 'err': 2, 'msg': 'Peer not connected' }
-            # return await self.on_write_subscription_change(peer, data)
+
+            for src in data['sources']:
+                topic = src[0]
+                msg_type = src[1]
+                topic_active = False
+                for sub in peer.write_subs:
+                    if sub[0] == topic:
+                        topic_active = True
+                        break
+                if not topic_active:
+                    peer.write_subs.append([topic, msg_type])
+
+            await self.process_peer_subscriptions(peer, send_update=True)
+
+        # CLOSE WRITE SUBS
+        @self.sio.on('unsubscribe:write')
+        async def on_unsubscribe_write(data:dict):
+            id_peer = WRTCPeer.GetId(data)
+            if id_peer == None:
+                return { 'err': 2, 'msg': 'No valid peer id provided' }
+            peer:WRTCPeer = self.wrtc_peers[id_peer]
+            if not peer:
+                return { 'err': 2, 'msg': 'Peer not connected' }
+
+            for sub in list(peer.write_subs): #copy
+                if sub[0] in data['sources']:
+                    peer.write_subs.remove(sub)
+
+            await self.process_peer_subscriptions(peer, send_update=True)
+
 
         @self.sio.on('sdp:answer')
         async def on_sdp_answer(data:dict):
@@ -593,7 +622,12 @@ class BridgeController(Node, BridgeControllerConfig):
 
         #close write channels
         for topic in list(peer.inbound_data_channels.keys()):
-            if not topic in peer.write_subs:
+            topic_active = False
+            for sub in peer.write_subs:
+                if sub[0] == topic:
+                    topic_active = True
+                    break
+            if not topic_active:
                 self.get_logger().info(f'{peer} stopped writing into {topic}')
                 await self.close_write_channel(topic, peer)
                 res['write_data_channels'].append([ topic ]) # no id => unsubscribed
