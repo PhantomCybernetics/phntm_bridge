@@ -635,7 +635,7 @@ class BridgeController(Node, BridgeControllerConfig):
         if disconnected:
             return True #all cleanup done
 
-        if len(res) == 0:
+        if len(res['read_video_streams']) == 0 and len(res['read_data_channels']) == 0 and len(res['write_data_channels']) == 0:
             self.get_logger().debug(c(f'{peer} connected, nothing else to do here', 'dark_grey'))
             return {
                 'success' : 1 # SDF can't be generated
