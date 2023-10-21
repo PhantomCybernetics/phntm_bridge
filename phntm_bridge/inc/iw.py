@@ -123,7 +123,14 @@ class IW:
 
     async def scan(self, roam:bool):
         print(c(f'IW Monitor scanning... roam={roam}', 'cyan'))
-        results = await asyncio.get_event_loop().run_in_executor(None, iwlib.iwlist.scan, self.iface)
+        results = None
+
+        try:
+            results = await asyncio.get_event_loop().run_in_executor(None, iwlib.iwlist.scan, self.iface)
+        except Exception as e:
+             print(f'IW Monitor caught error: {e}')
+             return None
+
         res_data = []
         print(f'IW Monitor scan results: ')
 

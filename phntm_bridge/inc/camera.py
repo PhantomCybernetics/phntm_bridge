@@ -94,19 +94,20 @@ class Picamera2Subscription:
         if id_peer in self.peers.keys():
             self.peers.pop(id_peer)
 
-        if len(self.peers) == 0:
-            self.logger.info(c(f'Picam stopping', 'magenta'))
+        self.logger.info(c(f'Picam peers {self.peers}', 'magenta'))
 
-            self.picam2.stop_encoder()
-            self.picam2.stop()
-
-            self.encoder = None
-            self.output = None
-
-            return True #destroyed
-        else:
+        if len(self.peers) > 0:
             return False
 
+        self.logger.info(c(f'Picam stopping', 'magenta'))
+
+        self.picam2.stop_encoder()
+        self.picam2.stop()
+
+        self.encoder = None
+        self.output = None
+
+        return True #destroyed
 
 def get_camera_info(picam2:Picamera2) -> List[Tuple[str, dict]]:
     data = []

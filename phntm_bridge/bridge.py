@@ -892,7 +892,6 @@ class BridgeController(Node, BridgeControllerConfig):
                 self.get_logger().debug(f'No longer reading {topic}')
                 self.image_topic_read_subscriptions.pop(topic)
 
-
     # SUBSCRIBE Pi camera stream
     async def subscribe_picamera(self, id_cam:str, peer:WRTCPeer) -> str:
         if picam2 is None:
@@ -946,6 +945,7 @@ class BridgeController(Node, BridgeControllerConfig):
 
         return peer.video_tracks[id_cam]._track_id
 
+
     # UNSUBSCRIBE Pi camera stream
     async def unsubscribe_picamera(self, id_cam:str, peer:WRTCPeer):
         if id_cam in peer.video_tracks.keys():
@@ -953,7 +953,7 @@ class BridgeController(Node, BridgeControllerConfig):
             await peer.video_tracks[id_cam].stop()
             peer.video_tracks.pop(id_cam)
 
-        if id_cam in self.camera_subscriptions:
+        if id_cam in self.camera_subscriptions.keys():
             if self.camera_subscriptions[id_cam].stop(peer.id): # cam destroyed
                 self.get_logger().debug(f'No longer reading {id_cam}')
                 self.camera_subscriptions.pop(id_cam)
