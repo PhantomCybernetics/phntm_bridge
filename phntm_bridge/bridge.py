@@ -552,8 +552,7 @@ class BridgeController(Node, BridgeControllerConfig):
 
 
     async def process_peer_subscriptions(self, peer:WRTCPeer, send_update=False) -> dict:
-        self.get_logger().warn(f'Processing read {peer.read_subs}')
-        self.get_logger().warn(f'Processing write {peer.write_subs}')
+        self.get_logger().info(f'Processing {peer} subs, read={peer.read_subs} write={peer.write_subs}')
 
         disconnected = peer.pc.connectionState == "failed" or not peer.sio_connected
 
@@ -572,7 +571,8 @@ class BridgeController(Node, BridgeControllerConfig):
                     res['read_video_streams'].append([sub, id_track])
                 else:
                     self.get_logger().info(c(f'{peer} missing {sub}, not discovered yet', 'dark_grey'))
-                    peer.cameras_not_discovered.append(sub) # introspection will keep running
+                    if not sub in peer.cameras_not_discovered:
+                        peer.cameras_not_discovered.append(sub) # introspection will keep running
 
             elif sub in self.introspection.discovered_topics.keys():
                 msg_type = self.introspection.discovered_topics[sub]['msg_types'][0]
@@ -586,7 +586,8 @@ class BridgeController(Node, BridgeControllerConfig):
 
             else: #topic not discovered yet
                 self.get_logger().info(c(f'{peer} missing {sub}, not discovered yet', 'dark_grey'))
-                peer.topics_not_discovered.append(sub) # introspection will keep running
+                if not sub in peer.topics_not_discovered:
+                    peer.topics_not_discovered.append(sub) # introspection will keep running
 
         if not disconnected and (len(peer.topics_not_discovered) > 0 or len(peer.cameras_not_discovered) > 0):
             self.introspection.add_waiting_peer(peer)

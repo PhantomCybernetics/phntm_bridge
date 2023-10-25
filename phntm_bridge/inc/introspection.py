@@ -68,7 +68,8 @@ class Introspection (AsyncIOEventEmitter):
             new_discoveries = await self.run_discovery() # True if cameras or topics discovered
 
             if new_discoveries:
-                for peer in self.waiting_peers:
+                for peer in self.waiting_peers.copy():
+                    self.waiting_peers.remove(peer)
                     await self.ctrl_node.process_peer_subscriptions(peer, send_update=True)
 
             something_missing = len(self.waiting_peers) > 0
@@ -83,11 +84,11 @@ class Introspection (AsyncIOEventEmitter):
                     await self.stop(report=True)
                     return
 
-
     async def stop(self, report:bool = True):
         if self.running:
             self.logger.info(c(f'Introspection stopped', 'dark_grey'))
             self.running = False
+            self.waiting_peers = []
             if report:
                 await self.report_introspection()
 

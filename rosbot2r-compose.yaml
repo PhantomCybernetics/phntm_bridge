@@ -16,7 +16,7 @@ services:
       - ~/phntm_interfaces:/ros2_ws/src/phntm_interfaces
       - ~/aioice:/ros2_ws/aioice
       - ~/aiortc:/ros2_ws/aiortc
-      - ~/marcel_launch_params.yaml:/ros2_ws/phntm_bridge_params.yaml
+      - ~/phntm_bridge.yaml:/ros2_ws/phntm_bridge_params.yaml
       - /var/run:/host_run
       - /tmp:/tmp
     devices:
@@ -40,7 +40,7 @@ services:
       - /dev/ttyAMA1:/dev/ttyAMA1
     command: >
       ros2 launch sllidar_ros2 sllidar_launch.py
-        serial_port:=/dev/ttyAMA1 serial_baudrate:=256000 pwm_pin:=13
+         serial_port:=/dev/ttyAMA1 serial_baudrate:=256000 pwm_pin:=13
 
   microros:
     image: husarion/micro-ros-agent:humble
