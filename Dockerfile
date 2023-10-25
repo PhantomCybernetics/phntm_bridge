@@ -27,81 +27,11 @@ RUN pip install setuptools==58.2.0 \
 		# aiortc #forked
                 # aiohttp #forker
 
-# generate entrypoint script
-RUN echo '#!/bin/bash \n \
-set -e \n \
-\n \
-# setup ros environment \n \
-source "/opt/ros/'$ROS_DISTRO'/setup.bash" \n \
-test -f "/ros2_ws/install/setup.bash" && source "/ros2_ws/install/setup.bash" \n \
-\n \
-exec "$@"' > /ros_entrypoint.sh
-
-RUN chmod a+x /ros_entrypoint.sh
-
-# source underlay on every login
-RUN echo 'source /opt/ros/'$ROS_DISTRO'/setup.bash' >> /root/.bashrc
-RUN echo 'test -f "/ros2_ws/install/setup.bash" && source "/ros2_ws/install/setup.bash"' >> /root/.bashrc
-
-# init workspace
-
-ENV ROS_WS /ros2_ws
-RUN mkdir -p $ROS_WS/src
-
-WORKDIR $ROS_WS
-
-# install aiortc fork from phntm github here
-# RUN git clone git@github.com:PhantomCybernetics/aiortc.git phntm-aiortc
-
-# select bash as default shell
-#SHELL ["/bin/bash", "-c"]
-
-# mount forked ~/aiortc repo and install with pip
-# needs rw access to regenerate src/aiortc/codecs/*.so
-
-# mount forked ~/aioice repo and install with pip
-RUN --mount=type=bind,rw=true,source=./aioice,target=/ros2_ws/aioice \
-        pip install -e /ros2_ws/aioice
-
-RUN --mount=type=bind,rw=true,source=./aiortc,target=/ros2_ws/aiortc \
-        pip install -e /ros2_ws/aiortc
-
-RUN --mount=type=bind,source=./phntm_interfaces,target=/ros2_ws/src/phntm_interfaces \
-        . /opt/ros/$ROS_DISTRO/setup.sh && \
-        rosdep update --rosdistro $ROS_DISTRO && \
-        rosdep install -i --from-path src/phntm_interfaces --rosdistro $ROS_DISTRO -y && \
-        colcon build --symlink-install --packages-select phntm_interfaces
-
-# mount ~/phntm_webrtc_bridge repo and buidl the pkg for the first time
-RUN --mount=type=bind,source=./phntm_bridge,target=/ros2_ws/src/phntm_bridge \
-        . /opt/ros/$ROS_DISTRO/setup.sh && \
-	. /ros2_ws/install/setup.sh && \
-        rosdep update --rosdistro $ROS_DISTRO && \
-        rosdep install -i --from-path src/phntm_bridge --rosdistro $ROS_DISTRO -y && \
-        colcon build --symlink-install --packages-select phntm_bridge
-
-# RUN . install/local_setup.bash
-# RUN ros2 run phntm_bridge phntm_bridge
-
-# modprobe bcm2835-v4l2 on host!!, then start container
-
-#WORKDIR /root/
-#RUN git clone https://github.com/raspberrypi/userland.git
-#WORKDIR /root/userland
-#RUN ./buildme --aarch64
-#RUN echo "export LD_LIBRARY_PATH=/opt/vc/lib:$LD_LIBRARY_PATH" >> /root/.bashrc
-
-#RUN apt-get install -y libcap-dev python3-prctl libcamera-dev
-# RUN pip install picamera2
-# RUN apt-get install -y libbcm2835-dev
-
-#
-RUN apt-get install -y ffmpeg
-
 #raspi
 RUN apt-get install -y libraspberrypi0 libraspberrypi-dev libraspberrypi-bin
 
-RUN apt-get install -y v4l-utils
+# video stuffs
+RUN apt-get install -y v4l-utils ffmpeg
 
 #libcamera deps
 RUN pip3 install --user meson
@@ -113,10 +43,15 @@ RUN apt-get install -y libevent-dev
 RUN apt-get install -y libgstreamer1.0-dev libgstreamer-plugins-base1.0-de
 RUN echo "export PATH=\$PATH:/root/.local/bin" >> /root/.bashrc
 
+# init workspace
+ENV ROS_WS /ros2_ws
+RUN mkdir -p $ROS_WS/src
+
 # libcamera from src
 WORKDIR $ROS_WS
 RUN git clone https://git.libcamera.org/libcamera/libcamera.git
 WORKDIR $ROS_WS/libcamera
+RUN git checkout v0.1.0
 RUN /root/.local/bin/meson setup build -D pycamera=enabled -D v4l2=True --reconfigure
 RUN ninja -C build install
 RUN echo "export PYTHONPATH=\$PYTHONPATH:/ros2_ws/libcamera/build/src/py" >> /root/.bashrc
@@ -132,7 +67,7 @@ RUN ninja -C build
 RUN echo "export PYTHONPATH=\$PYTHONPATH:/ros2_ws/kmsxx/build/py" >> /root/.bashrc
 RUN echo "export LD_LIBRARY_PATH=\$LD_LIBRARY_PATH:/usr/local/lib/aarch64-linux-gnu" >> /root/.bashrc
 
-# picamera2 (picamera seems to fail on libmmal.so which is not awailable for arm64 atm)
+# picamera2, 0.3.12 works with libcamera v0.1.0
 RUN apt-get install -y libcap-dev
 RUN pip install picamera2
 
@@ -150,6 +85,49 @@ RUN apt-get install -y wireless-tools libiw-dev
 RUN pip install iwlib
 # wifi ctrl via shared /var/run/wpa_supplicant/ (also needs shared /tmp)
 RUN apt-get install -y wpasupplicant
+
+# generate entrypoint script
+RUN echo '#!/bin/bash \n \
+set -e \n \
+\n \
+# setup ros environment \n \
+source "/opt/ros/'$ROS_DISTRO'/setup.bash" \n \
+test -f "/ros2_ws/install/setup.bash" && source "/ros2_ws/install/setup.bash" \n \
+\n \
+exec "$@"' > /ros_entrypoint.sh
+
+RUN chmod a+x /ros_entrypoint.sh
+
+# source underlay on every login
+RUN echo 'source /opt/ros/'$ROS_DISTRO'/setup.bash' >> /root/.bashrc
+RUN echo 'test -f "/ros2_ws/install/setup.bash" && source "/ros2_ws/install/setup.bash"' >> /root/.bashrc
+
+
+WORKDIR $ROS_WS
+
+# clone forked aioice repo and install with pip
+RUN git clone https://github.com/PhantomCybernetics/aioice.git /ros2_ws/aioice
+RUN pip install -e /ros2_ws/aioice
+
+# install aiortc fork from phntm github
+RUN git clone -b perf_fixes https://github.com/PhantomCybernetics/aiortc.git /ros2_ws/aiortc
+RUN pip install -e /ros2_ws/aiortc
+
+# clone and install phntm interfaces and bridge
+RUN git clone https://github.com/PhantomCybernetics/phntm_interfaces.git /ros2_ws/src/phntm_interfaces
+RUN . /opt/ros/$ROS_DISTRO/setup.sh && \
+    rosdep update --rosdistro $ROS_DISTRO && \
+    rosdep install -i --from-path src/phntm_interfaces --rosdistro $ROS_DISTRO -y && \
+    colcon build --symlink-install --packages-select phntm_interfaces
+
+RUN git clone https://github.com/PhantomCybernetics/phntm_bridge.git /ros2_ws/src/phntm_bridge
+RUN . /opt/ros/$ROS_DISTRO/setup.sh && \
+    . /ros2_ws/install/setup.sh && \
+    rosdep install -i --from-path src/phntm_bridge --rosdistro $ROS_DISTRO -y && \
+    colcon build --symlink-install --packages-select phntm_bridge
+
+RUN --mount=type=bind,source=/dev,target=/dev \
+    . /ros2_ws/src/phntm_bridge/scripts/reload-devices.sh
 
 # pimp up prompt with hostame and color
 RUN echo "PS1='\${debian_chroot:+(\$debian_chroot)}\\[\\033[01;35m\\]\\u@\\h\\[\\033[00m\\] \\[\\033[01;34m\\]\\w\\[\\033[00m\\] 🦄 '"  >> /root/.bashrc

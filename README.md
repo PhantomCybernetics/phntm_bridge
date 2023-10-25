@@ -1,6 +1,6 @@
 # Phantom Bridge
 
-Fast WebRTC + Socket.io ROS2 bridge written in Python for real-time data and video streaming, teleoperation, HRI, and remote monitoring. Comes with Docker Container control, CPU and Wifi monitoring capabilities and customizable Web UI and peer client API.
+Fast WebRTC + Socket.io ROS2 bridge written in Python for real-time data and video streaming, teleoperation, HRI, and remote monitoring. Comes with Docker Container control for the host machine, CPU and Wifi monitoring, customizable Web UI and peer client API.
 
 ## Features
 - ROS Topic and Service discovery
@@ -39,6 +39,8 @@ This registers a new robot on the Cloud Bridge and returns default config file y
 cd ~
 wget https://raw.githubusercontent.com/PhantomCybernetics/phntm_bridge/main/Dockerfile -O phntm-bridge.Dockerfile
 docker build -f phntm-bridge.Dockerfile -t phntm/bridge:humble .
+# docker download and builds several packages from source, this will take a minute
+# TODO: docker pull
 ```
 
 Add phntm_bridge service to your compose.yaml file with ~/phntm_bridge.yaml mounted in the container:
@@ -75,7 +77,7 @@ Clone this repo:
 cd ~
 git clone git@github.com:PhantomCybernetics/phntm_bridge.git phntm_bridge
 ```
-Make the following changes to your docker compose service in compose.yaml. This overwrites /ros2_ws/src/phntm_bridge with live git repo you can then edit from the host filesystem:
+Make the following changes to your docker compose service in compose.yaml. This overwrites /ros2_ws/src/phntm_bridge with live git repo so that you can edit source code from the host filesystem easily:
 ```
 services:
   phntm_bridge:

@@ -48,7 +48,7 @@ class Picamera2Subscription:
         self.picam2:Picamera2 = picam2
         self.encoder:H264Encoder = None
         self.output:PacketsOutput = None
-        self.event_loop = None
+        self.event_loop = asyncio.get_event_loop()
 
         self.bridge_time_started_ns:int = bridge_time_started_ns
         self.log_message_every_sec:float = log_message_every_sec
@@ -65,14 +65,11 @@ class Picamera2Subscription:
         #                                                         queue=False
         #                                                         )
 
-        self.event_loop = asyncio.get_event_loop()
-
         # video_config = self.picam2.create_preview_configuration(queue=False,
         #
         # full res has much lowerr latency (?)
-        video_config = self.picam2.create_video_configuration(queue=False,
-                                                              transform=libcamera.Transform(hflip=1 if self.hflip else 0,
-                                                                                            vflip=1 if self.vflip else 0))
+        transform = libcamera.Transform(hflip=1 if self.hflip else 0, vflip=1 if self.vflip else 0)
+        video_config = self.picam2.create_video_configuration(queue=False, transform=transform)
         self.picam2.configure(video_config)
         self.encoder = H264Encoder(bitrate=self.bitrate, framerate=self.framerate)
         self.output = PacketsOutput(sub=self, bridge_time_started_ns=self.bridge_time_started_ns, logger=self.logger, log_message_every_sec=self.log_message_every_sec)
