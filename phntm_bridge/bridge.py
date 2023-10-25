@@ -17,7 +17,6 @@ except Exception as e:
     print(c(f'Failed to init docker client with {host_docker_socket} {e}', 'red'))
     pass
 
-
 import fractions
 
 from rcl_interfaces.msg import ParameterDescriptor
@@ -29,25 +28,12 @@ import netifaces
 
 import contextvars
 
-try:
-    from picamera2 import Picamera2
-except Exception as e:
-    print(c('Failed to import picamera2', 'red'), e)
-    pass
-
 # if picam_detected:
 from picamera2.encoders import H264Encoder
 from picamera2.outputs import FileOutput
 from picamera2 import Picamera2
 import time
 from .inc.camera import get_camera_info, picam2_has_camera, CameraVideoStreamTrack, Picamera2Subscription, IsPiCameraId
-
-picam2 = None
-try:
-    picam2 = Picamera2()
-    print (c(f'Picamera2 global info: ', 'cyan') + str(picam2.global_camera_info()))
-except Exception as e:
-    print('Picamera2 not active')
 
 from .inc.ros_video_streaming import ImageTopicReadSubscription, IsImageType
 
@@ -82,6 +68,8 @@ from .inc.introspection import Introspection
 from .inc.config import BridgeControllerConfig
 from .inc.iw import IW
 
+import subprocess
+
 ROOT = os.path.dirname(__file__)
 
 class BridgeController(Node, BridgeControllerConfig):
@@ -89,11 +77,12 @@ class BridgeController(Node, BridgeControllerConfig):
     ##
     # node constructor
     ##
-    def __init__(self, reader_ctrl_queue:mp.Queue=None):
+    def __init__(self, reader_ctrl_queue:mp.Queue=None, picam2:Picamera2=None):
         super().__init__('phntm_bridge_ctrl')
 
         self.shutting_down:bool = False
         self.paused:bool = False
+        self.picam2:Picamera2 = picam2
 
         self.get_logger().set_level(rclpy.logging.LoggingSeverity.DEBUG)
         self.load_config(self.get_logger())
@@ -125,7 +114,7 @@ class BridgeController(Node, BridgeControllerConfig):
         self.introspection:Introspection = Introspection(period=discovery_period,
                                                          stop_after=stop_discovery_after,
                                                          ctrl_node=self,
-                                                         picam2=picam2,
+                                                         picam2=self.picam2,
                                                          docker_client=docker_client,
                                                          sio=self.sio)
 
@@ -895,18 +884,18 @@ class BridgeController(Node, BridgeControllerConfig):
 
     # SUBSCRIBE Pi camera stream
     async def subscribe_picamera(self, id_cam:str, peer:WRTCPeer) -> str:
-        if picam2 is None:
+        if self.picam2 is None:
             self.get_logger().error(f'Picamera2 not available')
             return None
 
-        if not picam2_has_camera(picam2, id_cam):
+        if not picam2_has_camera(self.picam2, id_cam):
             self.get_logger().error(f'{id_cam} Not available via Picamera2')
             return None
 
         if not id_cam in self.camera_subscriptions:
             self.get_logger().info(f'Subscribing to camera {id_cam}')
             self.camera_subscriptions[id_cam] = Picamera2Subscription(id_camera=id_cam,
-                                                                      picam2=picam2,
+                                                                      picam2=self.picam2,
                                                                       hflip=self.get_parameter('picam_hflip').get_parameter_value().bool_value,
                                                                       vflip=self.get_parameter('picam_vflip').get_parameter_value().bool_value,
                                                                       bitrate=self.get_parameter('picam_bitrate').get_parameter_value().integer_value,
@@ -1773,10 +1762,30 @@ async def main_async():
 
     rclpy.init()
 
+    if not os.path.exists('/ros2_ws/phntm_devices_initialized'):
+        print(c('First run, initializing udev rules for /dev (bcs Picam)', 'magenta'))
+        process = subprocess.Popen([f'{ROOT}/../scripts/reload-devices.sh'])
+        process.wait()
+        print(c('Udev rules initialized', 'magenta'))
+        await asyncio.sleep(1.0) # needs a bit for the udev rules to take effect and picam init sucessfuly
+
+    try:
+        from picamera2 import Picamera2
+    except Exception as e:
+        print(c('Failed to import picamera2', 'red'), e)
+        pass
+
+    picam2 = None
+    try:
+        picam2 = Picamera2()
+        print (c(f'Picamera2 global info: ', 'cyan') + str(picam2.global_camera_info()))
+    except Exception as e:
+        print(c('Picamera2 inactive', 'cyan'))
+
     # priority_executor = concurrent.futures.ThreadPoolExecutor()
 
     try:
-        bridge_node = BridgeController(reader_ctrl_queue=reader_ctrl_queue)
+        bridge_node = BridgeController(reader_ctrl_queue=reader_ctrl_queue, picam2=picam2)
 
         bridge_node.iw = IW(iface=bridge_node.get_parameter('iw_interface').get_parameter_value().string_value,
                             monitor_period_s=bridge_node.get_parameter('iw_monitor_period_sec').get_parameter_value().double_value,
@@ -1848,6 +1857,7 @@ class MyPolicy(asyncio.DefaultEventLoopPolicy):
         return asyncio.SelectorEventLoop(selector)
 
 def main(): # ros2 calls this, so init here
+
     asyncio.set_event_loop_policy(MyPolicy())
     asyncio.run(main_async())
 

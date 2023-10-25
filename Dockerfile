@@ -41,7 +41,8 @@ RUN apt-get install -y libyaml-dev python3-yaml python3-ply python3-jinja2
 RUN apt-get install -y libudev-dev
 RUN apt-get install -y libevent-dev
 RUN apt-get install -y libgstreamer1.0-dev libgstreamer-plugins-base1.0-de
-RUN echo "export PATH=\$PATH:/root/.local/bin" >> /root/.bashrc
+# RUN echo "export PATH=\$PATH:/root/.local/bin" >> /root/.bashrc
+ENV PATH="$PATH:/root/.local/bin"
 
 # init workspace
 ENV ROS_WS /ros2_ws
@@ -54,7 +55,8 @@ WORKDIR $ROS_WS/libcamera
 RUN git checkout v0.1.0
 RUN /root/.local/bin/meson setup build -D pycamera=enabled -D v4l2=True --reconfigure
 RUN ninja -C build install
-RUN echo "export PYTHONPATH=\$PYTHONPATH:/ros2_ws/libcamera/build/src/py" >> /root/.bashrc
+# RUN echo "export PYTHONPATH=\$PYTHONPATH:/ros2_ws/libcamera/build/src/py" >> /root/.bashrc
+ENV PYTHONPATH="$PYTHONPATH:/ros2_ws/libcamera/build/src/py"
 
 # kms++ from source (for picamera2)
 RUN apt-get install -y libdrm-common libdrm-dev
@@ -64,8 +66,10 @@ WORKDIR $ROS_WS/kmsxx
 RUN git submodule update --init
 RUN /root/.local/bin/meson build
 RUN ninja -C build
-RUN echo "export PYTHONPATH=\$PYTHONPATH:/ros2_ws/kmsxx/build/py" >> /root/.bashrc
-RUN echo "export LD_LIBRARY_PATH=\$LD_LIBRARY_PATH:/usr/local/lib/aarch64-linux-gnu" >> /root/.bashrc
+# RUN echo "export PYTHONPATH=\$PYTHONPATH:/ros2_ws/kmsxx/build/py" >> /root/.bashrc
+# RUN echo "export LD_LIBRARY_PATH=\$LD_LIBRARY_PATH:/usr/local/lib/aarch64-linux-gnu" >> /root/.bashrc
+ENV PYTHONPATH="$PYTHONPATH:/ros2_ws/kmsxx/build/py"
+ENV LD_LIBRARY_PATH="$LD_LIBRARY_PATH:/usr/local/lib/aarch64-linux-gnu"
 
 # picamera2, 0.3.12 works with libcamera v0.1.0
 RUN apt-get install -y libcap-dev
@@ -102,7 +106,6 @@ RUN chmod a+x /ros_entrypoint.sh
 RUN echo 'source /opt/ros/'$ROS_DISTRO'/setup.bash' >> /root/.bashrc
 RUN echo 'test -f "/ros2_ws/install/setup.bash" && source "/ros2_ws/install/setup.bash"' >> /root/.bashrc
 
-
 WORKDIR $ROS_WS
 
 # clone forked aioice repo and install with pip
@@ -125,9 +128,6 @@ RUN . /opt/ros/$ROS_DISTRO/setup.sh && \
     . /ros2_ws/install/setup.sh && \
     rosdep install -i --from-path src/phntm_bridge --rosdistro $ROS_DISTRO -y && \
     colcon build --symlink-install --packages-select phntm_bridge
-
-RUN --mount=type=bind,source=/dev,target=/dev \
-    . /ros2_ws/src/phntm_bridge/scripts/reload-devices.sh
 
 # pimp up prompt with hostame and color
 RUN echo "PS1='\${debian_chroot:+(\$debian_chroot)}\\[\\033[01;35m\\]\\u@\\h\\[\\033[00m\\] \\[\\033[01;34m\\]\\w\\[\\033[00m\\] 🦄 '"  >> /root/.bashrc

@@ -11,6 +11,8 @@ services:
     network_mode: host
     cpuset: '0,1,2'
     shm_size: 200m #more room for shared camera frames
+    environment:
+      - TERM=xterm
     volumes:
       - ~/phntm_bridge:/ros2_ws/src/phntm_bridge
       #- ~/phntm_interfaces:/ros2_ws/src/phntm_interfaces
@@ -22,9 +24,9 @@ services:
     devices:
       - /dev:/dev
     command:
-      # ros2 launch phntm_bridge bridge_launch.py
+      ros2 launch phntm_bridge bridge_launch.py
       #nice --19 ros2 launch phntm_bridge bridge_launch.py
-      /bin/sh -c "while sleep 1000; do :; done"
+      # /bin/sh -c "while sleep 1000; do :; done"
 
   rplidar:
     image: phntm/rplidar:humble
