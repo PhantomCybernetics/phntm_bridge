@@ -3,25 +3,25 @@
 Fast WebRTC + Socket.io ROS2 bridge written in Python for real-time data and video streaming, teleoperation, HRI, and remote monitoring. Comes with Docker Container control for the host machine, CPU and Wifi monitoring, customizable Web UI and peer client API.
 
 ## Features
-- ROS Topic and Service discovery
-- Fast streamimg of binary ROS2 messages via UDP
-- Fast hw-encoded H264 video steraming (Pi Cam + Pi, TODO: OAK, suggestions?)
-- Stream sw-encoded ROS Image messages as H264 video (CPU cost, 3-10 FPS max on Pi4B)
-- Docker container discovery & reliable control (start/stop/restart) via Socket.io
-- Reliable ROS service calls via Socket.io
-- Robot's wifi signal strength monitoring, scan & AP roaming
-- Connects P2P or via a TURN server
-- ~10-30ms RTT on the same wifi local network, ~50ms RTT remote operation
-- Multiple peers can connect to the same machine at very low extra CPU cost (incl. video streams)
-- Works with rosbag, and sims like Gazebo or Webots
-
-- TODO: File upload from any running Docker container (STL, etc)
-- TODO: System load + Docker stats monitoring
-- TODO: Variable bitrate for video streams
-- TODO: USB camera support
-
-- See @cloud_bridge Cloud Bridge server facilitates peer handshakes and signalling
-- See @bridge_ui Web UI, customizabe dashboard for data+video stream visualization and interaction with a ROS-enabled systems in a web browser in real time
+- ROS Topic and Service discovery  
+- Fast streamimg of binary ROS2 messages via UDP  
+- Fast hw-encoded H264 video steraming (Pi Cam + Pi, TODO: OAK, suggestions?)  
+- Stream sw-encoded ROS Image messages as H264 video (CPU cost, 3-10 FPS max on Pi4B)  
+- Docker container discovery & reliable control (start/stop/restart) via Socket.io  
+- Reliable ROS service calls via Socket.io  
+- Robot's wifi signal strength monitoring, scan & AP roaming  
+- Connects P2P or via a TURN server  
+- ~10-30ms RTT on the same wifi local network, ~50ms RTT remote operation  
+- Multiple peers can connect to the same machine at very low extra CPU cost (incl. video streams)  
+- Works with rosbag, and sims like Gazebo or Webots  
+  
+- TODO: File upload from any running Docker container (STL, etc)  
+- TODO: System load + Docker stats monitoring  
+- TODO: Variable bitrate for video streams  
+- TODO: USB camera support  
+  
+- See @cloud_bridge Cloud Bridge server facilitates peer handshakes and signalling  
+- See @bridge_ui Web UI, customizabe dashboard for data+video stream visualization and interaction with a ROS-enabled systems in a web browser in real time  
 
 # Install
 
