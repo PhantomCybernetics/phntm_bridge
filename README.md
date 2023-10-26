@@ -71,7 +71,7 @@ services:
 
 ### Run
 ```
-docker compose up phntm_bridge -d
+docker compose up phntm_bridge
 ```
 
 # Dev Mode
