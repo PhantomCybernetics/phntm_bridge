@@ -23,26 +23,28 @@ Fast WebRTC + Socket.io ROS2 bridge written in Python for real-time data and vid
 - See @cloud_bridge Cloud Bridge server facilitates peer handshakes and signalling
 - See @bridge_ui Web UI, customizabe dashboard for data+video stream visualization and interaction with a ROS-enabled systems in a web browser in real time
 
-### Install Docker & Compose
+# Install
+
+### Install Docker & Docker Compose
 ```
 sudo apt install docker docker-buildx docker-compose-v2
 ```
 
-## Register New Machine & Get Config from Cloud Bridge
-```
-wget -O phntm_bridge.yaml https://bridge.phntm.io:1337/robot/register?yaml
-```
-This registers a new robot on the Cloud Bridge and returns default config file you can then further edit. Unique id_robot and key are generated at this step. More about the config file @here.
-
-## Install Phantom Bridge
+### Build Docker Image (TODO: docker pull)
 ```
 cd ~
 wget https://raw.githubusercontent.com/PhantomCybernetics/phntm_bridge/main/Dockerfile -O phntm-bridge.Dockerfile
 docker build -f phntm-bridge.Dockerfile -t phntm/bridge:humble .
 # docker download and builds several packages from source, this will take a minute
-# TODO: docker pull
 ```
 
+### Register new Machine on Cloud Bridge
+This registers a new robot on the Cloud Bridge and returns default config file you can then edit further. Unique id_robot and key are generated in this step. More about the config file @here.
+```
+wget -O phntm_bridge.yaml https://bridge.phntm.io:1337/robot/register?yaml
+```
+
+### Add service to compose.yaml
 Add phntm_bridge service to your compose.yaml file with ~/phntm_bridge.yaml mounted in the container:
 ```
 services:
@@ -62,21 +64,23 @@ services:
       - /var/run:/host_run # docker control needs this
       - /tmp:/tmp
     devices:
-      - /dev:/dev
+      - /dev:/dev # cameras need this
     command:
       ros2 launch phntm_bridge bridge_launch.py
 ```
-## Run
+
+### Run
 ```
 docker compose up phntm_bridge -d
 ```
 
-## Install Phantom Bridge in Dev Mode
-Clone this repo:
+# Dev Mode
+Dev mode mapps live git repo on the host machine to the container so that you can make changes more conventinetly.
 ```
 cd ~
 git clone git@github.com:PhantomCybernetics/phntm_bridge.git phntm_bridge
 ```
+
 Make the following changes to your docker compose service in compose.yaml. This overwrites /ros2_ws/src/phntm_bridge with live git repo so that you can edit source code from the host filesystem easily:
 ```
 services:
@@ -86,12 +90,10 @@ services:
       # launching manually to prevent Docker from exiting on crash
       /bin/sh -c "while sleep 1000; do :; done"
 ```
-### Dev Mode Run:
+
+Launch manually for better control:
 ```
 docker compose up phntm_bridge -d
 docker exec -it phntm-bridge bash
-./scripts/reload-devices.sh # on first run (?!)
 ros2 launch phntm_bridge bridge_launch.py
 ```
-
-
