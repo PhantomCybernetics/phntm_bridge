@@ -35,7 +35,7 @@ sudo apt install docker docker-buildx docker-compose-v2
 cd ~
 wget https://raw.githubusercontent.com/PhantomCybernetics/phntm_bridge/main/Dockerfile -O phntm-bridge.Dockerfile
 docker build -f phntm-bridge.Dockerfile -t phntm/bridge:humble .
-# docker download and builds several packages from source, this will take a minute
+# docker download and builds several packages from source, this may take a while (about ~25 minutes on Pi 4B)
 ```
 
 ### Register new Machine on Cloud Bridge
