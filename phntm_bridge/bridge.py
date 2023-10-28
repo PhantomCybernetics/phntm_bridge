@@ -25,6 +25,7 @@ import time
 import sys
 import traceback
 import netifaces
+import uuid 
 
 import contextvars
 
@@ -517,13 +518,16 @@ class BridgeController(Node, BridgeControllerConfig):
 
         if id_peer in self.wrtc_peers.keys():
             peer = self.wrtc_peers[id_peer]
-            self.get_logger().warn(f'{peer} was already connected, restarting...')
+            self.get_logger().warn(f'{peer} was already connected, reusing session...')
+            # self.get_logger().warn(f'{self.wrtc_peers[id_peer]} was already connected, killing old...')
+            # await self.remove_peer(id_peer, False)
             return await self.process_peer_subscriptions(peer, send_update=False)
 
         # pc.addTransceiver('video', direction='sendonly') #must have at least one
         peer = WRTCPeer(id_peer=id_peer,
                         id_app=peer_data['id_app'] if 'id_app' in peer_data.keys() else None,
                         id_instance=peer_data['id_instance'] if 'id_instance' in peer_data.keys() else None,
+                        session=uuid.uuid4(),    
                         ctrl_node=self,
                         ice_server_urls=self.ice_server_urls,
                         ice_credential=self.ice_credential)
@@ -546,6 +550,7 @@ class BridgeController(Node, BridgeControllerConfig):
         disconnected = peer.pc.connectionState == "failed" or not peer.sio_connected
 
         res = {
+            'session': peer.session.hex,
             'read_video_streams': [],
             'read_data_channels': [],
             'write_data_channels': []

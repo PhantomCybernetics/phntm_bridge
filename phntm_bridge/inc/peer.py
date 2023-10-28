@@ -25,13 +25,14 @@ class WRTCPeer:
 
     # self.wrtc_peer_video_tracks:dict[str,dict[str,RTCRtpSender]] = dict() # id_peer => [ topic => peer read webrtc video track ]
     # self.video_track_tmp:ROSVideoStreamTrack = None
-    def __init__(self, id_peer:str, id_app:str, id_instance:str, ctrl_node:Node, ice_server_urls:list, ice_credential:str):
+    def __init__(self, id_peer:str, id_app:str, id_instance:str, session:str, ctrl_node:Node, ice_server_urls:list, ice_credential:str):
 
         self.id:str = id_peer
         self.id_app = id_app
         self.id_instance = id_instance
         self.sio_connected = True
-
+        self.session = session
+        
         self.topics_not_discovered:list[str] = []
         self.cameras_not_discovered:list[str] = []
 
