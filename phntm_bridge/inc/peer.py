@@ -25,7 +25,7 @@ class WRTCPeer:
 
     # self.wrtc_peer_video_tracks:dict[str,dict[str,RTCRtpSender]] = dict() # id_peer => [ topic => peer read webrtc video track ]
     # self.video_track_tmp:ROSVideoStreamTrack = None
-    def __init__(self, id_peer:str, id_app:str, id_instance:str, session:str, ctrl_node:Node, ice_server_urls:list, ice_credential:str):
+    def __init__(self, id_peer:str, id_app:str, id_instance:str, session:str, ctrl_node:Node, ice_servers:list, ice_username:str, ice_credential:str):
 
         self.id:str = id_peer
         self.id_app = id_app
@@ -39,8 +39,9 @@ class WRTCPeer:
         config = RTCConfiguration(
             iceServers=[
                 RTCIceServer(
-                    urls=ice_server_urls,
-                    credential=ice_credential,
+                    urls=ice_servers,
+                    username=ice_username,
+                    credential=ice_credential
                 ),
             ]
         )
@@ -55,7 +56,7 @@ class WRTCPeer:
         self.outbound_data_channels:dict[str:RTCDataChannel] = {}
         self.video_tracks:dict[str:RTCRtpSender] = {}
 
-        self.logger.info(c(f'Creating peer with iceServers={str(ice_server_urls)}', 'cyan'))
+        self.logger.info(c(f'Creating peer with iceServers={str(ice_servers)}', 'cyan'))
 
         self.read_subs:list(str) = []
         self.write_subs:list(list(str)) = []

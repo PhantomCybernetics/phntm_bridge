@@ -529,7 +529,8 @@ class BridgeController(Node, BridgeControllerConfig):
                         id_instance=peer_data['id_instance'] if 'id_instance' in peer_data.keys() else None,
                         session=uuid.uuid4(),    
                         ctrl_node=self,
-                        ice_server_urls=self.ice_server_urls,
+                        ice_servers=self.ice_servers,
+                        ice_username=self.ice_username,
                         ice_credential=self.ice_credential)
 
         @peer.pc.on("connectionstatechange")
