@@ -21,9 +21,9 @@ class BridgeControllerConfig():
             exit(1)
 
         #webrtc
-        self.declare_parameter('ice_servers', [  'turn:turn.phntm.io:3478', 'turn:turn.phntm.io:5349', 'turn:turn.phntm.io:5349' ])
+        self.declare_parameter('ice_servers', [  'turn:turn.phntm.io:3478', 'turn:turn.phntm.io:3479'  ])
         self.declare_parameter('ice_username', 'robo')
-        self.declare_parameter('ice_credential', 'robopass')
+        self.declare_parameter('ice_credential', 'pass')
         self.ice_servers = self.get_parameter('ice_servers').get_parameter_value().string_array_value
         self.ice_username = self.get_parameter('ice_username').get_parameter_value().string_value
         self.ice_credential = self.get_parameter('ice_credential').get_parameter_value().string_value

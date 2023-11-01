@@ -28,12 +28,12 @@ See also:
 # Install
 
 ### Install Docker & Docker Compose
-```
+```bash
 sudo apt install docker docker-buildx docker-compose-v2
 ```
 
 ### Build Docker Image (TODO: docker pull)
-```
+```bash
 cd ~
 wget https://raw.githubusercontent.com/PhantomCybernetics/phntm_bridge/main/Dockerfile -O phntm-bridge.Dockerfile
 docker build -f phntm-bridge.Dockerfile -t phntm/bridge:humble .
@@ -42,13 +42,14 @@ docker build -f phntm-bridge.Dockerfile -t phntm/bridge:humble .
 
 ### Register new Machine on Cloud Bridge
 This registers a new robot on the Cloud Bridge and returns default config file you can then edit further. Unique id_robot and key are generated in this step. More about the config file @here.
-```
+```bash
 wget -O phntm_bridge.yaml https://bridge.phntm.io:1337/robot/register?yaml
+# edit the file to give your robot a name and configure the bridge
 ```
 
 ### Add service to compose.yaml
 Add phntm_bridge service to your compose.yaml file with ~/phntm_bridge.yaml mounted in the container:
-```
+```yaml
 services:
  phntm_bridge:
     image: phntm/bridge:humble
@@ -72,19 +73,19 @@ services:
 ```
 
 ### Run
-```
+```bash
 docker compose up phntm_bridge
 ```
 
 # Dev Mode
 Dev mode mapps live git repo on the host machine to the container so that you can make changes more conventinetly.
-```
+```bash
 cd ~
 git clone git@github.com:PhantomCybernetics/phntm_bridge.git phntm_bridge
 ```
 
 Make the following changes to your docker compose service in compose.yaml. This overwrites /ros2_ws/src/phntm_bridge with live git repo so that you can edit source code from the host filesystem easily:
-```
+```yaml
 services:
   phntm_bridge:
       - ~/phntm_bridge:/ros2_ws/src/phntm_bridge
@@ -94,7 +95,7 @@ services:
 ```
 
 Launch manually for better control:
-```
+```bash
 docker compose up phntm_bridge -d
 docker exec -it phntm-bridge bash
 ros2 launch phntm_bridge bridge_launch.py
