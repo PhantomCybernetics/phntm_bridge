@@ -61,6 +61,8 @@ class WRTCPeer:
         self.read_subs:list(str) = []
         self.write_subs:list(list(str)) = []
 
+        self.processing_subscriptions:bool = False
+        
         self.logger.info(f'Initial IceConnectionState: {self.pc.iceConnectionState},  IceGatheringState: {self.pc.iceGatheringState}')
 
         @self.pc.on("connectionstatechange")
@@ -69,7 +71,7 @@ class WRTCPeer:
 
         @self.pc.on("icegatheringstatechange")
         async def on_icegatheringstatechange():
-            self.logger.warn(f'"WebRTC {self} Ice Gathering State: {self.pc.iceGatheringState}')
+            self.logger.warn(f'WebRTC {self} Ice Gathering State: {self.pc.iceGatheringState}')
 
         @self.pc.on("iceconnectionstatechange")
         async def on_iceconnectionstatechange():
@@ -89,3 +91,21 @@ class WRTCPeer:
         if 'id_instance' in data:
             id_peer = data['id_instance']
         return id_peer
+    
+    async def on_answer_reply(self, reply_data):
+        if 'err' in reply_data.keys():
+            msg = reply_data['msg'] if 'msg' in reply_data.keys() else None
+            self.logger.error(f'Client returned error: {msg}')
+            self.processing_subscriptions = False
+            return
+
+        if self.pc.signalingState != 'have-local-offer':
+            self.logger.error(f'Not setting SDP answer from {self}, signalingState={self.pc.signalingState}')
+            self.processing_subscriptions = False
+            return
+        
+        self.logger.info(c(f'Got peer answer:', 'cyan'))
+        print(reply_data)
+        answer = RTCSessionDescription(sdp=reply_data['sdp'], type='answer')
+        await self.pc.setRemoteDescription(answer)
+        self.processing_subscriptions = False

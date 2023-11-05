@@ -122,7 +122,7 @@ class TopicWritePublisher:
                 self.node.get_logger().info(f' 🐵 ▼ {self.topic} got message: {len(msg)}, from id_peer={id_peer}, total rcvd: {self.num_received}, written={self.num_written}')
 
         self.num_written += 1
-        asyncio.get_event_loop().call_soon(self.pub.publish,self.last_msg)
+        self.pub.publish(self.last_msg)
         # self.pub.publish(self.last_msg)
 
     def stop(self, id_peer:str) -> bool:

@@ -106,8 +106,10 @@ class ImageTopicReadSubscription:
 
     def start(self, id_peer:str, sender:RTCRtpSender) -> bool:
 
-        if self.sub != None:
+        if self.sub != None: #running
             self.peers[id_peer] = sender
+            self.ctrl_node.get_logger().warn(f'Streamer was already running for {self.topic} adding peer')
+            print(self.peers.keys())
             return True #all done, one sub for all
 
         if self.reader_ctrl_queue: # subscribe on processor's process
@@ -169,16 +171,15 @@ class ImageTopicReadSubscription:
     async def read_piped_images(self):
         while True:
             try:
-
-                res = await asyncio.get_event_loop().run_in_executor(None, self.pipe_out.recv) #blocks
+                res = await self.event_loop.run_in_executor(None, self.pipe_out.recv) #blocks
                 await self.on_msg(res)
 
             except (KeyboardInterrupt, asyncio.CancelledError):
+                print(f'read_piped_images for {self.topic} got err')
                 return
             except Exception as e:
-                self.get_logger().error(f'Exception while reading latest from queue: {str(e)}')
-                print(traceback.format_exc())
-                return
+                self.ctrl_node.get_logger().error(f'Exception while reading latest from queue: {str(e)}')
+                pass
 
     # called either by ctrl node's process or when data is received via reader_out_queue (called on ctrl node's process)
     async def on_msg(self, reader_res:dict):
@@ -201,12 +202,12 @@ class ImageTopicReadSubscription:
         if self.last_log < 0 or self.last_msg_time-self.last_log > self.log_message_every_sec:
             log_msg = True
             self.last_log = self.last_msg_time #last logged now
-
+    
         for id_peer in dict.fromkeys(self.peers.keys(),[]):
-
+            
             if not self.peers[id_peer].pc or self.peers[id_peer].pc.connectionState == 'failed' \
             or self.peers[id_peer].transport.state == "closed":
-                self.logger.info(f'👁️  Sending {self.topic} to id_peer={id_peer} / id_stream= {str(self.peers[id_peer]._stream_id)} failed; pc={self.peers[id_peer].pc.connectionState}, transport={self.peers[id_peer].transport.state}')
+                self.ctrl_node.get_logger().info(f'👁️  Sending {self.topic} to id_peer={id_peer} / id_stream= {str(self.peers[id_peer]._stream_id)} failed; pc={self.peers[id_peer].pc.connectionState}, transport={self.peers[id_peer].transport.state}')
                 if self.peers[id_peer].transport.state != "closed":
                     self.event_loop.create_task(self.peers[id_peer].transport.close())
                 del self.peers[id_peer]
@@ -221,7 +222,11 @@ class ImageTopicReadSubscription:
             #     offset_ns = time.time_ns()-self.bridge_time_started_ns
             #     self.peers[id_peer].timestamp_origin = convert_timebase(offset_ns, SRC_VIDEO_TIME_BASE, VIDEO_TIME_BASE)
 
-            await self.peers[id_peer].send_direct(frame_data=frame_packets, stamp_converted=timestamp, keyframe=keyframe)
+            try:
+                await self.peers[id_peer].send_direct(frame_data=frame_packets, stamp_converted=timestamp, keyframe=keyframe)
+            except Exception as e:
+                self.logger.error(f'👁️  Exception while sending {self.topic} to id_peer={id_peer} / id_stream= {str(self.peers[id_peer]._stream_id)}, {e}; pc={self.peers[id_peer].pc.connectionState}, transport={self.peers[id_peer].transport.state}')
+                pass
 
         if self.on_msg_cb is not None:
             self.on_msg_cb()
@@ -233,7 +238,7 @@ class ImageTopicReadSubscription:
         if id_peer in self.peers.keys():
             self.peers.pop(id_peer)
 
-        if len(self.peers) > 0:
+        if len(self.peers.keys()) > 0:
             return False
 
         if self.sub == True: #mp

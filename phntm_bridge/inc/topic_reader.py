@@ -193,7 +193,7 @@ class TopicReadSubscription:
         if id_peer in self.peers.keys():
             self.peers.pop(id_peer)
 
-        if len(self.peers) > 0:
+        if len(self.peers.keys()) > 0:
             return False
 
         if self.sub == True:

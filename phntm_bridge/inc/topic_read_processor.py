@@ -97,7 +97,8 @@ async def TopicReadProcessorLoop(reader_node, rcl_executor, running_shared:mp.Va
 
     active_subs:dict[str:dict] = {}
     newest_messages_by_topic:dict[str:list] = {}
-
+    image_push_tasks:dict[str:asyncio.Future] = {} 
+    
     asyncio.get_event_loop().create_task(SpinNode(reader_node, rcl_executor, running_shared))
 
     while running_shared.value > 0:
@@ -126,7 +127,7 @@ async def TopicReadProcessorLoop(reader_node, rcl_executor, running_shared:mp.Va
                         if 'processing_task' in active_subs[topic].keys() and not active_subs[topic]['processing_task'].done():
                             continue #skip this frame as the previous one hasn't been consumed yet
                         # reader_node.get_logger().info(f'Processing {topic}')
-                        image_task = asyncio.get_event_loop().create_task(on_image_data(topic=topic, msg=msg, out_pipe=active_subs[topic]['pipe'], subscription=active_subs[topic]))
+                        image_task = asyncio.get_event_loop().create_task(on_image_data(topic=topic, msg=msg, out_pipe=active_subs[topic]['pipe'], subscription=active_subs[topic], image_push_tasks=image_push_tasks))
                         active_subs[topic]['processing_task'] = image_task
 
                     else:
@@ -225,9 +226,13 @@ def save_newest_msg(topic:str, msg:any, newest_messages_by_topic:dict[str:list],
         newest_messages_by_topic[topic] = [ msg ]
 
 
-async def on_image_data(topic:str, msg:any, out_pipe:Connection, subscription:dict):
+async def on_image_data(topic:str, msg:any, out_pipe:Connection, subscription:dict, image_push_tasks:dict[str:asyncio.Future]):
 
     if 'ignore' in subscription:
+        return
+    
+    if topic in image_push_tasks.keys() and not image_push_tasks[topic].done():
+        print(f'Processsor skipping frame of {topic}, last not yet consumed')
         return
 
     # print(f'Topic reader got {len(msg)}B image data for {topic}w args: {str(subscription["args"])}')
@@ -341,16 +346,17 @@ async def on_image_data(topic:str, msg:any, out_pipe:Connection, subscription:di
     # print(f'Topic Reader: processed frame of {topic} {im.encoding}>H264 {im.width}x{im.height} {len(msg)}B > {len(packets)} pkts' + (c(' [KF]', 'magenta') if keyframe else f' {ns_since_last_keyframe} ns since KF') + ' in '+c(time.time()-debug_fp_start, 'yellow'))
 
     try:
-        await asyncio.get_event_loop().run_in_executor(None, out_pipe.send, { # blocks intil read and no processing of the same topic takes place
+        # print(f'Processor pushing image for {topic}')
+        image_push_tasks[topic] = asyncio.get_event_loop().run_in_executor(None, out_pipe.send, { # blocks intil read and no processing of the same topic takes place
             'topic': topic,
             'frame_packets': packets,
             'timestamp': timestamp,
             'keyframe': force_keyframe, #don't skip keyframes
         }) #blocks
-
+        await image_push_tasks[topic];
         # chill a bit while skipping frames of this topic
         # this affects fps of the output
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.01)
 
     except Full:
         print(c(f'Topic Reader: output queue full (writing {topic})', 'red'))

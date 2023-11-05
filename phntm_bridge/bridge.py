@@ -546,7 +546,13 @@ class BridgeController(Node, BridgeControllerConfig):
 
 
     async def process_peer_subscriptions(self, peer:WRTCPeer, send_update=False) -> dict:
-        self.get_logger().info(f'Processing {peer} subs, read={peer.read_subs} write={peer.write_subs}')
+        
+        if not await self.peer_processing_state_checker(peer):
+            self.get_logger().error(f'Failed to process {peer} subs, peer busy. read={peer.read_subs} write={peer.write_subs}; signalingState={peer.pc.signalingState} iceGatheringState={peer.pc.iceGatheringState}')
+            return None
+        
+        peer.processing_subscriptions = True 
+        self.get_logger().info(f'Processing {peer} subs, read={peer.read_subs} write={peer.write_subs}; signalingState={peer.pc.signalingState} iceGatheringState={peer.pc.iceGatheringState}')
 
         disconnected = peer.pc.connectionState == "failed" or not peer.sio_connected
 
@@ -629,15 +635,18 @@ class BridgeController(Node, BridgeControllerConfig):
                 res['write_data_channels'].append([ topic ]) # no id => unsubscribed
 
         if disconnected:
+            peer.processing_subscriptions = False
             return True #all cleanup done
 
         if len(res['read_video_streams']) == 0 and len(res['read_data_channels']) == 0 and len(res['write_data_channels']) == 0:
             self.get_logger().debug(c(f'{peer} connected, nothing else to do here', 'dark_grey'))
+            peer.processing_subscriptions = False
             return {
                 'success' : 1 # SDF can't be generated
             }
 
         if not await self.peer_signalling_stable_checker(peer):
+            peer.processing_subscriptions = False
             if send_update:
                 return None
             else:
@@ -648,12 +657,14 @@ class BridgeController(Node, BridgeControllerConfig):
         await peer.pc.setLocalDescription(offer)
 
         if not await self.peer_ice_checker(peer):
+            peer.processing_subscriptions = False
             if send_update:
                 return None
             else:
                 return { 'err': 2, 'msg': 'Timed out waiting for ICE gathering state' }
 
         if not peer.sio_connected and peer.pc.connectionState != "failed":
+            peer.processing_subscriptions = False
             return False
 
         if self.log_sdp:
@@ -662,6 +673,7 @@ class BridgeController(Node, BridgeControllerConfig):
         res['offer'] = peer.pc.localDescription.sdp
 
         if not send_update:
+            peer.processing_subscriptions = False
             return res
         else:
             return await self.update_peer(peer, res)
@@ -676,21 +688,7 @@ class BridgeController(Node, BridgeControllerConfig):
         print(update_data)
         await self.sio.emit(event='peer:update',
                             data=update_data,
-                            callback=lambda reply_data: self.on_peer_update_reply(peer, reply_data))
-
-    def on_peer_update_reply(self, peer:WRTCPeer, reply_data):
-        if 'err' in reply_data.keys():
-            msg = reply_data['msg'] if 'msg' in reply_data.keys() else None
-            self.get_logger().error(f'Client returned error: {msg}')
-            return
-
-        if peer.pc.signalingState != 'have-local-offer':
-            self.get_logger().error(f'Not setting SDP answer from {peer}, signalingState={peer.pc.signalingState}')
-            return
-        self.get_logger().info(c(f'Got peer answer:', 'cyan'))
-        print(reply_data)
-        answer = RTCSessionDescription(sdp=reply_data['sdp'], type='answer')
-        asyncio.get_event_loop().create_task(peer.pc.setRemoteDescription(answer))
+                            callback=peer.on_answer_reply)
 
 
     # WRTC peer disconnected
@@ -740,10 +738,19 @@ class BridgeController(Node, BridgeControllerConfig):
             self.get_logger().error(f'Timed out waiting for stable signalling, state={peer.pc.signalingState}, {peer}')
             return False
         return True
-
+    
+    async def peer_processing_state_checker(self, peer:WRTCPeer) -> bool:
+        timeout_sec = 10.0
+        while peer.processing_subscriptions and timeout_sec > 0.0:
+            await asyncio.sleep(.1)
+            timeout_sec -= .1
+        if timeout_sec <= 0.0:
+            self.get_logger().error(f'Timed out waiting for peer subs processing, state={peer.pc.signalingState}, {peer}')
+            return False
+        return True
 
     async def peer_ice_checker(self, peer:WRTCPeer) -> bool:
-        timeout_sec = 10.0
+        timeout_sec = 20.0
         while peer.pc.iceGatheringState != 'complete' and timeout_sec > 0.0:
             await asyncio.sleep(.1)
             timeout_sec -= .1
@@ -828,7 +835,7 @@ class BridgeController(Node, BridgeControllerConfig):
         if not IsImageType(msg_type):
             return None
 
-        if not topic in self.image_topic_read_subscriptions:
+        if not topic in self.image_topic_read_subscriptions.keys():
             reliability = self.get_parameter_or(f'{topic}.reliability', Parameter(name='', value=QoSReliabilityPolicy.BEST_EFFORT)).get_parameter_value().integer_value
             durability = self.get_parameter_or(f'{topic}.durability', Parameter(name='', value=DurabilityPolicy.VOLATILE)).get_parameter_value().integer_value
 
@@ -880,7 +887,7 @@ class BridgeController(Node, BridgeControllerConfig):
 
         if topic in peer.video_tracks.keys():
             self.get_logger().debug(f'{peer} no longer subscribed to {topic}; removing track')
-            peer.video_tracks[topic].stop()
+            await peer.video_tracks[topic].stop()
             peer.video_tracks.pop(topic)
 
         if topic in self.image_topic_read_subscriptions.keys():
