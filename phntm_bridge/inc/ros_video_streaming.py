@@ -101,6 +101,8 @@ class ImageTopicReadSubscription:
         self.time_base = time_base
         self.time_base_fraction = fractions.Fraction(time_base, clock_rate)
 
+        self.last_frame_tasks:dict[str:asyncio.Task] = {}
+        
         self.bridge_time_started_ns:int = bridge_time_started_ns
         #print(f'TopicReadSubscription:__init__() {threading.get_ident()}')
 
@@ -178,7 +180,7 @@ class ImageTopicReadSubscription:
                 print(f'read_piped_images for {self.topic} got err')
                 return
             except Exception as e:
-                self.ctrl_node.get_logger().error(f'Exception while reading latest from queue: {str(e)}')
+                self.ctrl_node.get_logger().error(f'Exception while reading latest from image pipe: {str(e)}')
                 pass
 
     # called either by ctrl node's process or when data is received via reader_out_queue (called on ctrl node's process)
@@ -205,6 +207,11 @@ class ImageTopicReadSubscription:
     
         for id_peer in dict.fromkeys(self.peers.keys(),[]):
             
+            if id_peer in self.last_frame_tasks.keys() \
+            and not self.last_frame_tasks[id_peer].done():
+                # and not keyframe:
+                continue
+            
             if not self.peers[id_peer].pc or self.peers[id_peer].pc.connectionState == 'failed' \
             or self.peers[id_peer].transport.state == "closed":
                 self.ctrl_node.get_logger().info(f'👁️  Sending {self.topic} to id_peer={id_peer} / id_stream= {str(self.peers[id_peer]._stream_id)} failed; pc={self.peers[id_peer].pc.connectionState}, transport={self.peers[id_peer].transport.state}')
@@ -223,7 +230,7 @@ class ImageTopicReadSubscription:
             #     self.peers[id_peer].timestamp_origin = convert_timebase(offset_ns, SRC_VIDEO_TIME_BASE, VIDEO_TIME_BASE)
 
             try:
-                await self.peers[id_peer].send_direct(frame_data=frame_packets, stamp_converted=timestamp, keyframe=keyframe)
+                self.last_frame_tasks[id_peer] = self.event_loop.create_task(self.peers[id_peer].send_direct(frame_data=frame_packets, stamp_converted=timestamp, keyframe=keyframe))                
             except Exception as e:
                 self.logger.error(f'👁️  Exception while sending {self.topic} to id_peer={id_peer} / id_stream= {str(self.peers[id_peer]._stream_id)}, {e}; pc={self.peers[id_peer].pc.connectionState}, transport={self.peers[id_peer].transport.state}')
                 pass

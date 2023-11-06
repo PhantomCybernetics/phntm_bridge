@@ -148,6 +148,7 @@ class PacketsOutput(FileOutput):
         # self.last_was_keyframe = False
         self.sub:Picamera2Subscription = sub
         self.last_frame:int = 0
+        self.last_frame_tasks:dict[str:asyncio.Task] = {}
         self.bridge_time_started_ns:int = bridge_time_started_ns
         self.num_received = 0
         self.logger:RcutilsLogger = logger
@@ -191,9 +192,14 @@ class PacketsOutput(FileOutput):
         self.last_frame = timestamp
         for id_peer in dict.fromkeys(self.sub.peers.keys(),[]):
 
+            # if id_peer in self.last_frame_tasks.keys() \
+            # and not self.last_frame_tasks[id_peer].done() \
+            # and not keyframe:
+            #     continue
+            
             if not self.sub.peers[id_peer].pc or self.sub.peers[id_peer].pc.connectionState == 'failed' \
             or self.sub.peers[id_peer].transport.state == "closed":
-                self.logger.info(f'👁️  Sending {self.sub.id_camera} to id_peer={id_peer} / id_stream= {str(self.sub.peers[id_peer]._stream_id)} failed; pc={self.sub.peers[id_peer].pc.connectionState}, transport={self.sub.peers[id_peer].transport.state}')
+                self.logger.info(c(f'👁️  Sending {self.sub.id_camera} to id_peer={id_peer} / id_stream= {str(self.sub.peers[id_peer]._stream_id)} failed; pc={self.sub.peers[id_peer].pc.connectionState}, transport={self.sub.peers[id_peer].transport.state}', 'red'))
                 if self.sub.peers[id_peer].transport.state != "closed":
                     self.sub.event_loop.create_task(self.sub.peers[id_peer].transport.stop())
                 del self.sub.peers[id_peer]
@@ -208,7 +214,9 @@ class PacketsOutput(FileOutput):
             # if timestamp == 0:
                 # offset_ns = time.time_ns()-self.bridge_time_started_ns
                 # self.sub.peers[id_peer].timestamp_origin = convert_timebase(offset_ns, SRC_VIDEO_TIME_BASE, VIDEO_TIME_BASE)
-            self.sub.event_loop.create_task(self.sub.peers[id_peer].send_direct(frame_data=payloads, stamp_converted=stamp_converted, keyframe=keyframe))
+            
+            self.last_frame_tasks[id_peer] = self.sub.event_loop.create_task(self.sub.peers[id_peer].send_direct(frame_data=payloads, stamp_converted=stamp_converted, keyframe=keyframe))
+            
 
         # if self.recording:
         #     if self._firstframe:

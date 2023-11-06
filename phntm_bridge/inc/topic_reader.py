@@ -64,7 +64,10 @@ class TopicReadSubscription:
 
         if self.reader_ctrl_queue: # subscribe on processor's process
 
+            self.pipe_out, self.pipe_worker = mp.Pipe()
+
             self.reader_ctrl_queue.put_nowait({'action': 'subscribe',
+                                               'pipe': self.pipe_worker,
                                                'topic': self.topic,
                                                'msg_type': self.protocol,
                                                'reliability': self.reliability,
@@ -72,6 +75,8 @@ class TopicReadSubscription:
                                                'lifespan': self.lifespan_sec
                                                })
             self.sub = True
+            
+            self.read_task = self.event_loop.create_task(self.read_piped_data())
 
         else: #subscribe here on ctrl node's process
             #print(f'TopicReadSubscription:start() {threading.get_ident()}')
@@ -109,8 +114,21 @@ class TopicReadSubscription:
 
         return True
 
+    async def read_piped_data(self):
+        while True:
+            try:
+                res = await self.event_loop.run_in_executor(None, self.pipe_out.recv) #blocks
+                await self.on_msg(res)
+
+            except (KeyboardInterrupt, asyncio.CancelledError):
+                print(f'read_piped_data for {self.topic} got err')
+                return
+            except Exception as e:
+                self.ctrl_node.get_logger().error(f'Exception while reading latest from data pipe: {str(e)}')
+                pass
+
     # called either by ctrl node's process or when data is received via reader_out_queue (called on ctrl node's process)
-    def on_msg(self, reader_res:dict):
+    async def on_msg(self, reader_res:dict):
         self.num_received += 1
         self.last_msg = reader_res['msg']
         self.last_msg_time = time.time()

@@ -98,8 +98,11 @@ async def TopicReadProcessorLoop(reader_node, rcl_executor, running_shared:mp.Va
     active_subs:dict[str:dict] = {}
     newest_messages_by_topic:dict[str:list] = {}
     image_push_tasks:dict[str:asyncio.Future] = {} 
+    data_push_tasks:dict[str:asyncio.Future] = {} 
     
     asyncio.get_event_loop().create_task(SpinNode(reader_node, rcl_executor, running_shared))
+    # spin_future = asyncio.Future()
+    # asyncio.get_event_loop().run_in_executor(None, lambda: rclpy.spin_until_future_complete(reader_node, spin_future, executor=rcl_executor, timeout_sec=0.1))
 
     while running_shared.value > 0:
         # print(c(f'yellow! {reader_node}', 'yellow'))
@@ -132,9 +135,11 @@ async def TopicReadProcessorLoop(reader_node, rcl_executor, running_shared:mp.Va
 
                     else:
                         # reader_node.get_logger().info(f'Pushing {topic}')
-                        data_out_queue.put_nowait({
-                            'topic': topic, 'msg': msg
-                        }) #put in output queue
+                        asyncio.get_event_loop().create_task(on_data(topic=topic, msg=msg, out_pipe=active_subs[topic]['pipe'], subscription=active_subs[topic], data_push_tasks=data_push_tasks))
+                        # active_subs[topic]['pipe'].
+                        # data_out_queue.put_nowait({
+                        #     'topic': topic, 'msg': msg
+                        # }) #put in output queue
                 except Full:
                     reader_node.get_logger().warn(f'Topic Reader: Output queue full, dropping {topic} msg')
                     pass
@@ -232,9 +237,9 @@ async def on_image_data(topic:str, msg:any, out_pipe:Connection, subscription:di
         return
     
     if topic in image_push_tasks.keys() and not image_push_tasks[topic].done():
-        print(f'Processsor skipping frame of {topic}, last not yet consumed')
+        # print(f'Processsor skipping frame of {topic}, last not yet consumed yet')
         return
-
+    
     # print(f'Topic reader got {len(msg)}B image data for {topic}w args: {str(subscription["args"])}')
 
     debug_fp_start = time.time()
@@ -332,7 +337,6 @@ async def on_image_data(topic:str, msg:any, out_pipe:Connection, subscription:di
     # _log_processed += 1
     # _log_cum_time += time.time() - debug_fp_start
 
-
     # if keyframe or _last_log_time < 0 or time.time()-_last_log_time > log_message_every_sec:
     #     _last_log_time = time.time() #last logged now
     #     # debug_times = f'Total: {"{:.5f}".format(_fp_4-_fp_start)}s\nIM: {"{:.5f}".format(_fp_1-_fp_start)}s\nConv: {"{:.5f}".format(_fp_2-_fp_1)}s\nVideoFrame {"{:.5f}".format(_fp_3-_fp_2)}s\nH264: {"{:.5f}".format(_fp_4-_fp_3)}s'
@@ -347,19 +351,42 @@ async def on_image_data(topic:str, msg:any, out_pipe:Connection, subscription:di
 
     try:
         # print(f'Processor pushing image for {topic}')
-        image_push_tasks[topic] = asyncio.get_event_loop().run_in_executor(None, out_pipe.send, { # blocks intil read and no processing of the same topic takes place
+        image_push_tasks[topic] = asyncio.get_event_loop().run_in_executor(None, out_pipe.send, {
             'topic': topic,
             'frame_packets': packets,
             'timestamp': timestamp,
             'keyframe': force_keyframe, #don't skip keyframes
-        }) #blocks
-        await image_push_tasks[topic];
+        }) # blocks until read, no more frames of this topic are processed until then
+        
+        await image_push_tasks[topic]
         # chill a bit while skipping frames of this topic
         # this affects fps of the output
-        await asyncio.sleep(0.01)
+        # await asyncio.sleep(0.01)
 
-    except Full:
-        print(c(f'Topic Reader: output queue full (writing {topic})', 'red'))
+    except Exception as e:
+        print(c(f'Topic Reader: output err for {topic}: {e}', 'red'))
 
 
+async def on_data(topic:str, msg:any, out_pipe:Connection, subscription:dict, data_push_tasks:dict[str:asyncio.Future]):
 
+    if 'ignore' in subscription:
+        return
+    
+    if topic in data_push_tasks.keys() and not data_push_tasks[topic].done():
+        # print(f'Processsor skipping frame of {topic}, last not yet consumed yet')
+        return
+    
+    try:
+        # print(f'Processor pushing image for {topic}')
+        data_push_tasks[topic] = asyncio.get_event_loop().run_in_executor(None, out_pipe.send, {
+            'topic': topic,
+            'msg': msg
+        }) # blocks until read, no more frames of this topic are processed until then
+        
+        await data_push_tasks[topic]
+        # chill a bit while skipping frames of this topic
+        # this affects fps of the output
+        # await asyncio.sleep(0.01)
+
+    except Exception as e:
+        print(c(f'Topic Reader: output err for {topic}: {e}', 'red'))

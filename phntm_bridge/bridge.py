@@ -78,7 +78,7 @@ class BridgeController(Node, BridgeControllerConfig):
     ##
     # node constructor
     ##
-    def __init__(self, reader_ctrl_queue:mp.Queue=None, picam2:Picamera2=None):
+    def __init__(self, image_reader_ctrl_queue:mp.Queue=None, data_reader_ctrl_queue:mp.Queue=None, picam2:Picamera2=None):
         super().__init__('phntm_bridge_ctrl')
 
         self.shutting_down:bool = False
@@ -131,7 +131,8 @@ class BridgeController(Node, BridgeControllerConfig):
             self.data_led = StatusLED('data', node=self, mode=StatusLED.Mode.OFF, topic=self.data_led_topic, qos=QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT))
             #self.data_led.off()
 
-        self.reader_ctrl_queue:mp.Queue = reader_ctrl_queue
+        self.image_reader_ctrl_queue:mp.Queue = image_reader_ctrl_queue
+        self.data_reader_ctrl_queue:mp.Queue = data_reader_ctrl_queue
         # self.reader_image_topic_pipes:dict = {}
 
         self.time_started_ns:int = time.time_ns() # used to synchronize all video stream stamps
@@ -780,7 +781,7 @@ class BridgeController(Node, BridgeControllerConfig):
             durability = self.get_parameter_or(f'{topic}.durability', Parameter(name='', value=DurabilityPolicy.VOLATILE)).get_parameter_value().integer_value
             lifespan = self.get_parameter_or(f'{topic}.lifespan', Parameter(name='', value=1)).get_parameter_value().integer_value
             self.topic_read_subscriptions[topic] = TopicReadSubscription(ctrl_node=self,
-                                                                            reader_ctrl_queue=self.reader_ctrl_queue,
+                                                                            reader_ctrl_queue=self.data_reader_ctrl_queue,
                                                                             topic=topic,
                                                                             protocol=msg_type,
                                                                             reliability=reliability,
@@ -840,7 +841,7 @@ class BridgeController(Node, BridgeControllerConfig):
             durability = self.get_parameter_or(f'{topic}.durability', Parameter(name='', value=DurabilityPolicy.VOLATILE)).get_parameter_value().integer_value
 
             self.image_topic_read_subscriptions[topic] = ImageTopicReadSubscription(ctrl_node=self,
-                                                                                    reader_ctrl_queue=self.reader_ctrl_queue,
+                                                                                    reader_ctrl_queue=self.image_reader_ctrl_queue,
                                                                                     topic=topic,
                                                                                     reliability=reliability,
                                                                                     durability=durability,
@@ -1752,15 +1753,23 @@ async def main_async():
 
     # reader runs on a separate process
     reader_on_flag = mp.Value('b', 1, lock=False)
-    reader_ctrl_queue = mp.Queue()
+    image_reader_ctrl_queue = mp.Queue()
+    data_reader_ctrl_queue = mp.Queue()
     reader_out_data_queue = mp.Queue()
     # reader_out_image_queue = mp.Queue()
-    topic_read_processor = mp.Process(target=TopicReadProcessor,
+    data_topic_read_processor = mp.Process(target=TopicReadProcessor,
                                       args=(reader_on_flag,
-                                            reader_ctrl_queue,
+                                            data_reader_ctrl_queue,
                                             reader_out_data_queue,
                                             None))
-    topic_read_processor.start()
+    data_topic_read_processor.start()
+    
+    image_topic_read_processor = mp.Process(target=TopicReadProcessor,
+                                      args=(reader_on_flag,
+                                            image_reader_ctrl_queue,
+                                            None, #writes into pipes (??)
+                                            None))
+    image_topic_read_processor.start()
 
     # rcl_ctx = Context()
     # rcl_ctx.init() # This must be done before any ROS nodes can be created.
@@ -1798,7 +1807,9 @@ async def main_async():
     # priority_executor = concurrent.futures.ThreadPoolExecutor()
 
     try:
-        bridge_node = BridgeController(reader_ctrl_queue=reader_ctrl_queue, picam2=picam2)
+        bridge_node = BridgeController(image_reader_ctrl_queue=image_reader_ctrl_queue,
+                                       data_reader_ctrl_queue=data_reader_ctrl_queue,
+                                       picam2=picam2)
 
         bridge_node.iw = IW(iface=bridge_node.get_parameter('iw_interface').get_parameter_value().string_value,
                             monitor_period_s=bridge_node.get_parameter('iw_monitor_period_sec').get_parameter_value().double_value,
@@ -1814,14 +1825,14 @@ async def main_async():
         # create tasks for spinning and sleeping
         # spin_task = asyncio.get_event_loop().create_task(bridge_node.spin_async())
         sio_task = asyncio.get_event_loop().create_task(bridge_node.spin_sio_client())
-        read_data_task = asyncio.get_event_loop().create_task(bridge_node.read_queued_data(out_queue=reader_out_data_queue))
+        # read_data_task = asyncio.get_event_loop().create_task(bridge_node.read_queued_data(out_queue=reader_out_data_queue))
         # read_images_task = asyncio.get_event_loop().create_task(bridge_node.read_queued_images(out_queue=reader_out_image_queue))
         # read_images_task = asyncio.get_event_loop().create_task(bridge_node.read_piped_images())
         initial_introspection_task = asyncio.get_event_loop().create_task(bridge_node.introspection.start())
         iw_monitor_task = asyncio.get_event_loop().create_task(bridge_node.iw.start_monitor())
 
         # concurrently execute both tasks on this process
-        await asyncio.wait([ sio_task, read_data_task, iw_monitor_task ], return_when=asyncio.ALL_COMPLETED)
+        await asyncio.wait([ sio_task, iw_monitor_task ], return_when=asyncio.ALL_COMPLETED)
 
     except Exception as e:
         print(c('Exception in main_async()', 'red'))
@@ -1835,8 +1846,10 @@ async def main_async():
     await bridge_node.iw.stop_monitor()
 
     reader_on_flag.value = 0 #stop readed thread
-    topic_read_processor.terminate()
-    topic_read_processor.join()
+    image_topic_read_processor.terminate()
+    image_topic_read_processor.join()
+    data_topic_read_processor.terminate()
+    data_topic_read_processor.join()
 
     # cancel tasks
     # if spin_task.cancel():
