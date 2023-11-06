@@ -65,14 +65,16 @@ class TopicReadSubscription:
         if self.reader_ctrl_queue: # subscribe on processor's process
 
             self.pipe_out, self.pipe_worker = mp.Pipe()
-
+            # no_skip:bool = self.protocol in [ 'std_msgs/msg/String', 'rcl_interfaces/msg/Log' ]
+            no_skip = True
             self.reader_ctrl_queue.put_nowait({'action': 'subscribe',
                                                'pipe': self.pipe_worker,
                                                'topic': self.topic,
                                                'msg_type': self.protocol,
                                                'reliability': self.reliability,
                                                'durability': self.durability,
-                                               'lifespan': self.lifespan_sec
+                                               'lifespan': self.lifespan_sec,
+                                               'no_skip': no_skip
                                                })
             self.sub = True
             
