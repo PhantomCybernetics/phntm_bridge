@@ -30,6 +30,8 @@ See also:
 ### Install Docker & Docker Compose
 ```bash
 sudo apt install docker docker-buildx docker-compose-v2
+sudo usermod -aG docker ${USER}
+#log out & back in
 ```
 
 ### Build Docker Image (TODO: docker pull)
