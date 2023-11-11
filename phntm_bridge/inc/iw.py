@@ -107,8 +107,6 @@ class IW:
             print (f'IW CFG was: {cfg}')
 
 
-
-
     async def stop_monitor(self):
         if not self.monitor_running:
             return

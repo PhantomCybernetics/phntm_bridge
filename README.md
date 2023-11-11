@@ -45,7 +45,7 @@ docker build -f phntm-bridge.Dockerfile -t phntm/bridge:humble .
 ### Register new Machine on Cloud Bridge
 This registers a new robot on the Cloud Bridge and returns default config file you can then edit further. Unique id_robot and key are generated in this step. More about the config file @here.
 ```bash
-wget -O phntm_bridge.yaml https://bridge.phntm.io:1337/robot/register?yaml
+wget -O phntm_bridge.yaml 'https://bridge.phntm.io:1337/robot/register?yaml' --no-check-certificate
 # edit the file to give your robot a name and configure the bridge
 ```
 

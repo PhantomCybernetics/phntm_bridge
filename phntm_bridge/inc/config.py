@@ -84,6 +84,8 @@ class BridgeControllerConfig():
         self.declare_parameter('iw_monitor_topic', '/iw_status')
 
         # picamera2
+        self.declare_parameter('picam_enabled', False)
+        self.picam_enabled = self.get_parameter('picam_enabled').get_parameter_value().bool_value
         self.declare_parameter('picam_hflip', False)
         self.declare_parameter('picam_vflip', False)
         self.declare_parameter('picam_bitrate', 5000000)

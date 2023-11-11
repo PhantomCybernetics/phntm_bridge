@@ -30,9 +30,11 @@ import uuid
 import contextvars
 
 # if picam_detected:
+
 from picamera2.encoders import H264Encoder
 from picamera2.outputs import FileOutput
 from picamera2 import Picamera2
+
 import time
 from .inc.camera import get_camera_info, picam2_has_camera, CameraVideoStreamTrack, Picamera2Subscription, IsPiCameraId
 
@@ -74,7 +76,6 @@ import subprocess
 ROOT = os.path.dirname(__file__)
 
 class BridgeController(Node, BridgeControllerConfig):
-
     ##
     # node constructor
     ##
@@ -83,10 +84,17 @@ class BridgeController(Node, BridgeControllerConfig):
 
         self.shutting_down:bool = False
         self.paused:bool = False
-        self.picam2:Picamera2 = picam2
-
+       
         self.get_logger().set_level(rclpy.logging.LoggingSeverity.DEBUG)
         self.load_config(self.get_logger())
+
+        self.picam2:Picamera2 = None
+        if self.picam_enabled:
+            try:
+                self.picam2 = Picamera2()
+                print (c(f'Picamera2 global info: ', 'cyan') + str(self.picam2.global_camera_info()))
+            except (Exception, AttributeError) as e:
+                print(c('Picamera2 init failed', 'red'))
 
         # separate process
         self.topic_read_subscriptions:dict[str: TopicReadSubscription] = {}
@@ -587,9 +595,12 @@ class BridgeController(Node, BridgeControllerConfig):
                     res['read_video_streams'].append([ sub, id_track ])
 
             else: #topic not discovered yet
-                self.get_logger().info(c(f'{peer} missing {sub}, not discovered yet', 'dark_grey'))
-                if not sub in peer.topics_not_discovered:
-                    peer.topics_not_discovered.append(sub) # introspection will keep running
+                if sub == '/iw_status' and not self.iw:
+                    self.get_logger().info(c(f'{peer} missing {sub}, ignoring', 'dark_grey'))
+                else:
+                    self.get_logger().info(c(f'{peer} missing {sub}, not discovered yet', 'dark_grey'))
+                    if not sub in peer.topics_not_discovered:
+                        peer.topics_not_discovered.append(sub) # introspection will keep running
 
         if not disconnected and (len(peer.topics_not_discovered) > 0 or len(peer.cameras_not_discovered) > 0):
             self.introspection.add_waiting_peer(peer)
@@ -1797,25 +1808,20 @@ async def main_async():
         print(c('Failed to import picamera2', 'red'), e)
         pass
 
-    picam2 = None
-    try:
-        picam2 = Picamera2()
-        print (c(f'Picamera2 global info: ', 'cyan') + str(picam2.global_camera_info()))
-    except Exception as e:
-        print(c('Picamera2 inactive', 'cyan'))
-
     # priority_executor = concurrent.futures.ThreadPoolExecutor()
 
     try:
         bridge_node = BridgeController(image_reader_ctrl_queue=image_reader_ctrl_queue,
-                                       data_reader_ctrl_queue=data_reader_ctrl_queue,
-                                       picam2=picam2)
-
-        bridge_node.iw = IW(iface=bridge_node.get_parameter('iw_interface').get_parameter_value().string_value,
-                            monitor_period_s=bridge_node.get_parameter('iw_monitor_period_sec').get_parameter_value().double_value,
-                            node=bridge_node,
-                            topic=bridge_node.get_parameter('iw_monitor_topic').get_parameter_value().string_value
-                            )
+                                       data_reader_ctrl_queue=data_reader_ctrl_queue)
+        try:
+            bridge_node.iw = IW(iface=bridge_node.get_parameter('iw_interface').get_parameter_value().string_value,
+                                monitor_period_s=bridge_node.get_parameter('iw_monitor_period_sec').get_parameter_value().double_value,
+                                node=bridge_node,
+                                topic=bridge_node.get_parameter('iw_monitor_topic').get_parameter_value().string_value
+                                )
+        except Exception as e:
+            bridge_node.iw = None
+            print(c('IW monitor init failed'))
 
         # rcl_executor.add_node(bridge_node)
         # rcl_cbg.add_entity(bridge_node)
@@ -1829,10 +1835,11 @@ async def main_async():
         # read_images_task = asyncio.get_event_loop().create_task(bridge_node.read_queued_images(out_queue=reader_out_image_queue))
         # read_images_task = asyncio.get_event_loop().create_task(bridge_node.read_piped_images())
         initial_introspection_task = asyncio.get_event_loop().create_task(bridge_node.introspection.start())
-        iw_monitor_task = asyncio.get_event_loop().create_task(bridge_node.iw.start_monitor())
+        if bridge_node.iw != None:
+            iw_monitor_task = asyncio.get_event_loop().create_task(bridge_node.iw.start_monitor())
 
         # concurrently execute both tasks on this process
-        await asyncio.wait([ sio_task, iw_monitor_task ], return_when=asyncio.ALL_COMPLETED)
+        await asyncio.wait([ sio_task ], return_when=asyncio.ALL_COMPLETED)
 
     except Exception as e:
         print(c('Exception in main_async()', 'red'))
@@ -1843,7 +1850,8 @@ async def main_async():
     print('SHUTTING DOWN')
     bridge_node.shutting_down = True
 
-    await bridge_node.iw.stop_monitor()
+    if bridge_node.iw:
+        await bridge_node.iw.stop_monitor()
 
     reader_on_flag.value = 0 #stop readed thread
     image_topic_read_processor.terminate()
@@ -1856,8 +1864,8 @@ async def main_async():
         # await spin_task
     if sio_task != None and sio_task.cancel():
         await sio_task
-    if read_data_task != None and read_data_task.cancel():
-        await read_data_task
+    # if read_data_task != None and read_data_task.cancel():
+    #     await read_data_task
 
     await bridge_node.shutdown_cleanup()
 
