@@ -214,14 +214,18 @@ class TopicReadSubscription:
             self.peers.pop(id_peer)
 
         if len(self.peers.keys()) > 0:
-            return False
+            return False # active subscribers
 
         if self.sub == True:
             self.reader_ctrl_queue.put_nowait({'action': 'unsubscribe', 'topic':self.topic })
         else:
             self.ctrl_node.get_logger().info(f'Destroying local subscriber for {self.topic}')
             self.ctrl_node.destroy_subscription(self.sub)
-
+        
+        if self.read_task and not self.read_task.cancelled():
+            self.ctrl_node.get_logger().info(f'Cancelling read task for subscriber of {self.topic}')
+            self.read_task.cancel()
+            
         self.sub = None
         self.topic = None
 

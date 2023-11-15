@@ -181,7 +181,7 @@ class PacketsOutput(FileOutput):
         log_msg = False
         if self.num_received == 1: # first data in
             log_msg = True
-            self.logger.debug(f'👁️  Receiving {len(frame_bytes)}B frame from camera {self.sub.id_camera}')
+            self.logger.debug(f'👁️  Receiving data from camera {self.sub.id_camera}, {len(frame_bytes)}B last frame')
 
         if self.last_log < 0 or time.time()-self.last_log > self.log_message_every_sec:
             log_msg = True
@@ -199,13 +199,14 @@ class PacketsOutput(FileOutput):
             
             if not self.sub.peers[id_peer].pc or self.sub.peers[id_peer].pc.connectionState == 'failed' \
             or self.sub.peers[id_peer].transport.state == "closed":
-                self.logger.info(c(f'👁️  Sending {self.sub.id_camera} to id_peer={id_peer} / id_stream= {str(self.sub.peers[id_peer]._stream_id)} failed; pc={self.sub.peers[id_peer].pc.connectionState}, transport={self.sub.peers[id_peer].transport.state}', 'red'))
+                self.logger.info(c(f'👁️  Stopping sending {self.sub.id_camera} to id_peer={id_peer} / id_stream= {str(self.sub.peers[id_peer]._stream_id)}; pc={self.sub.peers[id_peer].pc.connectionState}, transport={self.sub.peers[id_peer].transport.state}', 'red'))
                 if self.sub.peers[id_peer].transport.state != "closed":
                     self.sub.event_loop.create_task(self.sub.peers[id_peer].transport.stop())
                 del self.sub.peers[id_peer]
                 continue
 
             if self.sub.peers[id_peer].pc.connectionState != 'connected':
+                self.logger.info(c(f'👁️  Not sending {self.sub.id_camera} to id_peer={id_peer} / id_stream= {str(self.sub.peers[id_peer]._stream_id)}; pc={self.sub.peers[id_peer].pc.connectionState}, transport={self.sub.peers[id_peer].transport.state}', 'red'))
                 continue
 
             # fut = self.sub.event_loop.create_future()
