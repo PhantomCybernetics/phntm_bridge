@@ -133,7 +133,7 @@ TODO!
 
 ## Architecture
 
-![Infrastructure map](https://github.com/PhantomCybernetics/phntm_bridge/blob/main/PHNTM Bridge Architecture.png?raw=true)
+![Infrastructure map](https://github.com/PhantomCybernetics/phntm_bridge/blob/a1499ecf02909b20fa7101d9d415bca3d61ca667/docs/PHNTM%20Bridge%20Architecture.png)
 
 
 
