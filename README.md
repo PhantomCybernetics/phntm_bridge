@@ -131,6 +131,11 @@ ROS Image messages containing depth data can be processed and colorized for bett
 
 TODO!
 
+## Architecture
+
+![Infrastructure map](https://github.com/PhantomCybernetics/phntm_bridge/blob/main/PHNTM Bridge Architecture.png?raw=true)
+
+
 
 
 
