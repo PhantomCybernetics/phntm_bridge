@@ -12,6 +12,8 @@ from rclpy.qos import QoSHistoryPolicy, QoSReliabilityPolicy, DurabilityPolicy
 
 from termcolor import colored as c
 
+from .peer import WRTCPeer
+
 import rclpy
 
 from typing import Callable
@@ -185,29 +187,37 @@ class TopicReadSubscription:
 
     # this might send a message twice or hang when there's nothing in the topic (exits when peer disconnects)
     # only used to ensure delivery of reliable topics
-    async def report_latest_when_ready(self, id_peer:str):
+    async def report_latest_when_ready(self, peer:WRTCPeer):
         while True:
-            if not id_peer in self.peers.keys():
-                return
-            dc:RTCDataChannel = self.peers[id_peer]
+
+            if not peer.id in self.peers.keys():
+                return #unsubscribed already
+            
+            if peer.pc == None or peer.pc.signalingState != 'stable':
+                await asyncio.sleep(.5) # wait for stable
+                continue
+            
+            dc:RTCDataChannel = self.peers[peer.id]
 
             if self.last_msg == None:
                 await asyncio.sleep(.5) # wait for data
                 continue
 
-            if dc.readyState == 'open':
-                # asyncio.get_event_loop().create_task(self.peers[id_peer].send())
-                self.ctrl_node.get_logger().debug(f'⚡️ Sending latest {len(self.last_msg)}B msg of {self.topic} to {id_peer}')
-                try:
-                    dc.send(self.last_msg)
-                    return #all done
-                except Exception as e:
-                    self.ctrl_node.get_logger().debug(f'⚡️ Exception while sending latest of {self.topic} to {id_peer}: {e}')
-                    await asyncio.sleep(.5) #wait until dc opens
-            else:
+            if dc.readyState != 'open':
                 await asyncio.sleep(.5) #wait until dc opens
-
-
+                continue
+            
+            # asyncio.get_event_loop().create_task(self.peers[id_peer].send())
+            self.ctrl_node.get_logger().debug(f'⚡️ Sending latest {len(self.last_msg)}B msg of {self.topic} to {peer.id}')
+            try:
+                await asyncio.sleep(1.0) # wait for the dc to fully init (this could be better)
+                dc.send(self.last_msg)
+                return #all done
+            except Exception as e:
+                self.ctrl_node.get_logger().debug(f'⚡️ Exception while sending latest of {self.topic} to {peer.id}: {e}')
+                await asyncio.sleep(.5) #wait until dc opens
+                
+                
     def stop(self, id_peer:str) -> bool:
 
         if id_peer in self.peers.keys():
