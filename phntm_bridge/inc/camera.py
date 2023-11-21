@@ -24,8 +24,13 @@ NS_TO_SEC = 1000000000
 # VIDEO_PTIME = 1 / 30  # 30fps
 SRC_VIDEO_TIME_BASE = fractions.Fraction(1, NS_TO_SEC)
 
+from sensor_msgs.msg import Image 
+
 from aiortc.mediastreams import VIDEO_TIME_BASE, convert_timebase
 from aiortc.codecs.h264 import H264Encoder as aiortcH264Encoder
+
+from rclpy.node import Node, Parameter, Subscription, QoSProfile, Publisher
+from rclpy.qos import QoSHistoryPolicy, QoSReliabilityPolicy, DurabilityPolicy
 
 def IsPiCameraId(id_topic_od_camera:str) -> bool:
     if id_topic_od_camera.startswith('/picam2'):
@@ -34,11 +39,12 @@ def IsPiCameraId(id_topic_od_camera:str) -> bool:
 
 class Picamera2Subscription:
 
-    def __init__(self, id_camera:str, picam2:Picamera2, logger:RcutilsLogger, bridge_time_started_ns:int, hflip:bool=False, vflip:bool=False, bitrate:int=5000000, framerate:int = 30, log_message_every_sec:float=5.0):
+    def __init__(self, id_camera:str, picam2:Picamera2, node:Node, bridge_time_started_ns:int, hflip:bool=False, vflip:bool=False, bitrate:int=5000000, framerate:int = 30, log_message_every_sec:float=5.0):
         self.id_camera:str = id_camera
         self.num_received:int = 0
         self.peers:dict[str:RTCRtpSender] = {}
-        self.logger:RcutilsLogger = logger
+        self.node = node
+        self.logger:RcutilsLogger = node.get_logger()
 
         self.hflip = hflip
         self.vflip = vflip
@@ -53,6 +59,16 @@ class Picamera2Subscription:
         self.bridge_time_started_ns:int = bridge_time_started_ns
         self.log_message_every_sec:float = log_message_every_sec
 
+        self.recording = False # testing this only, keep to False
+        if self.recording:
+            qos = QoSProfile(history=QoSHistoryPolicy.KEEP_LAST, \
+                            depth=1, \
+                            reliability=QoSReliabilityPolicy.BEST_EFFORT \
+                            )
+            self.pub = self.node.create_publisher(Image, '/cam_recording', qos)
+            if self.pub == None:
+                self.get_logger().error(f'Failed creating publisher for cam recorder {id_camera}')
+        
     async def start(self, id_peer:str, sender:RTCRtpSender) -> bool:
 
         if self.output != None:
@@ -188,6 +204,17 @@ class PacketsOutput(FileOutput):
             self.last_log = time.time() #last logged now
 
         payloads, stamp_converted = self.aiortc_encoder.pack(packet)
+
+        if self.sub.recording and self.sub.pub:
+            im = Image()
+            im.header.frame_id = self.sub.id_camera
+            im.header.stamp.sec = timestamp // 1_000_000_000
+            im.header.stamp.nanosec = timestamp % 1_000_000_000
+            im.width = self.sub.encoder.width
+            im.height = self.sub.encoder.height
+            im.encoding = 'h.264'
+            im.data = frame_bytes
+            self.sub.pub.publish(im)
 
         self.last_frame = timestamp
         for id_peer in dict.fromkeys(self.sub.peers.keys(),[]):

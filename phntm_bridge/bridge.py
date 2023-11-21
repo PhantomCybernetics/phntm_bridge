@@ -929,7 +929,7 @@ class BridgeController(Node, BridgeControllerConfig):
                                                                       vflip=self.get_parameter('picam_vflip').get_parameter_value().bool_value,
                                                                       bitrate=self.get_parameter('picam_bitrate').get_parameter_value().integer_value,
                                                                       framerate=self.get_parameter('picam_framerate').get_parameter_value().integer_value,
-                                                                      logger=self.get_logger(),
+                                                                      node=self,
                                                                       bridge_time_started_ns=self.time_started_ns,
                                                                       log_message_every_sec=self.log_message_every_sec
                                                                     )
