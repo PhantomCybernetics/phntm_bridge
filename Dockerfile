@@ -63,21 +63,21 @@ RUN ninja -C build install
 # RUN echo "export PYTHONPATH=\$PYTHONPATH:/ros2_ws/libcamera/build/src/py" >> /root/.bashrc
 ENV PYTHONPATH="$PYTHONPATH:/ros2_ws/libcamera/build/src/py"
 
+# kms++ from source (for picamera2) \
+RUN apt-get install -y libdrm-common libdrm-dev
+WORKDIR $ROS_WS
+RUN git clone https://github.com/tomba/kmsxx.git
+WORKDIR $ROS_WS/kmsxx
+RUN git submodule update --init
 ENV PYTHONPATH="$PYTHONPATH:/ros2_ws/kmsxx/build/py"
 ENV LD_LIBRARY_PATH="$LD_LIBRARY_PATH:/usr/local/lib/$ARCH-linux-gnu"
-RUN if [ "$PI_EXTRAS" = "True" ]; then \
-        # kms++ from source (for picamera2) \
-        apt-get install -y libdrm-common libdrm-dev; \
-        cd $ROS_WS; \
-        git clone https://github.com/tomba/kmsxx.git; \
-        cd $ROS_WS/kmsxx; \
-        git submodule update --init; \
-        /root/.local/bin/meson build; \
-        ninja -C build; \
-        # picamera2, 0.3.12 works with libcamera v0.1.0 \
-        apt-get install -y libcap-dev; \
-        pip install picamera2; \
-    fi
+RUN /root/.local/bin/meson build
+RUN ninja -C build
+
+# picamera2, 0.3.12 works with libcamera v0.1.0
+# install always for easier code management
+RUN apt-get install -y libcap-dev
+RUN pip install picamera2
 
 # needed by reload-devies.sh (reloads docker devices after the container has been created)
 RUN apt-get install -y udev
