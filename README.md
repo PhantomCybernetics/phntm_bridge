@@ -139,10 +139,10 @@ ROS Image messages containing depth data can be processed and colorized for bett
 
 TODO!
 
-## Architecture
+# Architecture
 
 ![Infrastructure map](https://github.com/PhantomCybernetics/phntm_bridge/blob/a1499ecf02909b20fa7101d9d415bca3d61ca667/docs/PHNTM%20Bridge%20Architecture.png)
 
-## See Also
+## See also
 - [Cloud Bridge](https://github.com/PhantomCybernetics/cloud_bridge#readme) facilitates peer handshakes and signalling  
-- [Bridge UI](https://github.com/PhantomCybernetics/bridge_ui#readme) customizabe robot web UI/dashboard
+- [Bridge UI](https://github.com/PhantomCybernetics/bridge_ui#readme) customizable robot web UI/dashboard
