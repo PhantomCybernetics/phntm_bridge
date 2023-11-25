@@ -63,6 +63,8 @@ RUN ninja -C build install
 # RUN echo "export PYTHONPATH=\$PYTHONPATH:/ros2_ws/libcamera/build/src/py" >> /root/.bashrc
 ENV PYTHONPATH="$PYTHONPATH:/ros2_ws/libcamera/build/src/py"
 
+ENV PYTHONPATH="$PYTHONPATH:/ros2_ws/kmsxx/build/py"
+ENV LD_LIBRARY_PATH="$LD_LIBRARY_PATH:/usr/local/lib/$ARCH-linux-gnu"
 RUN if [ "$PI_EXTRAS" = "True" ]; then \
         # kms++ from source (for picamera2) \
         apt-get install -y libdrm-common libdrm-dev; \
@@ -72,11 +74,6 @@ RUN if [ "$PI_EXTRAS" = "True" ]; then \
         git submodule update --init; \
         /root/.local/bin/meson build; \
         ninja -C build; \
-        echo "export PYTHONPATH=\$PYTHONPATH:/ros2_ws/kmsxx/build/py" >> /root/.bashrc; \
-        echo "export LD_LIBRARY_PATH=\$LD_LIBRARY_PATH:/usr/local/lib/$ARCH-linux-gnu" >> /root/.bashrc; \
-        export PYTHONPATH="$PYTHONPATH:/ros2_ws/kmsxx/build/py"; \
-        export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:/usr/local/lib/$ARCH-linux-gnu"; \
-        \ 
         # picamera2, 0.3.12 works with libcamera v0.1.0 \
         apt-get install -y libcap-dev; \
         pip install picamera2; \
@@ -110,8 +107,6 @@ exec "$@"' > /ros_entrypoint.sh
 RUN chmod a+x /ros_entrypoint.sh
 
 # source underlay on every login
-RUN echo 'source /opt/ros/'$ROS_DISTRO'/setup.bash' >> /root/.bashrc
-RUN echo 'test -f "/ros2_ws/install/setup.bash" && source "/ros2_ws/install/setup.bash"' >> /root/.bashrc
 
 WORKDIR $ROS_WS
 
