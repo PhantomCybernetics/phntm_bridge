@@ -21,10 +21,6 @@ TODO
 - TODO: Variable bitrate for video streams  
 - TODO: USB camera support  
 
-See also:
-- See @cloud_bridge Cloud Bridge server facilitates peer handshakes and signalling  
-- See @bridge_ui Web UI, customizabe dashboard for data+video stream visualization and interaction with a ROS-enabled systems in a web browser in real time  
-
 # Install
 
 ### Install Docker & Docker Compose
@@ -147,7 +143,6 @@ TODO!
 
 ![Infrastructure map](https://github.com/PhantomCybernetics/phntm_bridge/blob/a1499ecf02909b20fa7101d9d415bca3d61ca667/docs/PHNTM%20Bridge%20Architecture.png)
 
-
-
-
-
+## See Also
+- [Cloud Bridge](https://github.com/PhantomCybernetics/cloud_bridge#readme) facilitates peer handshakes and signalling  
+- [Bridge UI](https://github.com/PhantomCybernetics/bridge_ui#readme) customizabe robot web UI/dashboard
