@@ -90,8 +90,9 @@ docker compose up phntm_bridge
 ```
 
 Then open https://bridge.phntm.io/YOUR_ROBOT_ID in your web browser ([Firefox has issues](https://github.com/PhantomCybernetics/bridge_ui/blob/main/FIREFOX_ISSUES.md)). \
-YOUR_ROBOT_ID can be found in the generated phntm_bridge.yaml file inder id_robot. \
-[Web UI is documented in detail here.](https://github.com/PhantomCybernetics/bridge_ui)
+YOUR_ROBOT_ID can be found in the generated phntm_bridge.yaml file under ros__parameters/id_robot. \
+ \
+[The web UI is documented in detail here.](https://github.com/PhantomCybernetics/bridge_ui)
 
 
 # Dev Mode
