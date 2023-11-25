@@ -89,8 +89,8 @@ services:
 docker compose up phntm_bridge
 ```
 
-Then open https://bridge.phntm.io/YOUR_ROBOT_ID in your web browser.
-[The web UI is documented in detail here.](https://github.com/PhantomCybernetics/bridge_ui) (TODO: user tutorial)
+Then open https://bridge.phntm.io/YOUR_ROBOT_ID in your web browser ([Firefox has issues](https://github.com/PhantomCybernetics/bridge_ui/blob/main/FIREFOX_ISSUES.md)). The robot ID can be found in the generated phntm_bridge.yaml file.\
+[The web UI is documented in detail here.](https://github.com/PhantomCybernetics/bridge_ui)
 
 
 # Dev Mode
