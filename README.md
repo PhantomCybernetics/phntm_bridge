@@ -35,7 +35,7 @@ sudo usermod -aG docker ${USER}
 ```
 
 ### Build Docker Image
-TODO: This will be via docker pull
+TODO: This will be via docker pull \
 Download Dockerfile:
 ```bash
 cd ~
