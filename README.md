@@ -34,13 +34,23 @@ sudo usermod -aG docker ${USER}
 #log out & back in
 ```
 
-### Build Docker Image (TODO: docker pull)
+### Build Docker Image
+TODO: This will be via docker pull
+Download Dockerfile:
 ```bash
 cd ~
 wget https://raw.githubusercontent.com/PhantomCybernetics/phntm_bridge/main/Dockerfile -O phntm-bridge.Dockerfile
-docker build -f phntm-bridge.Dockerfile -t phntm/bridge:humble .
-# docker download and builds several packages from source, this may take a while (about ~25 minutes on Pi 4B)
 ```
+Build Docker image, ROS_DISTRO should match your other ROS2 packages running on the system (defaults to humble). Use `--build-arg PI_EXTRAS=True` to enable harware video encoding on Raspberry Pi.
+```bash
+ROS_DISTRO=humble; \
+docker build -f phntm-bridge.Dockerfile -t phntm/bridge:$ROS_DISTRO \
+  --build-arg ROS_DISTRO=$ROS_DISTRO \
+  --build-arg PI_EXTRAS=False \
+  --build-arg ARCH=aarch64 \
+  . 
+```
+Docker downloads and builds several packages from source, this may take a while (about ~25 minutes on Pi 4B with PI_EXTRAS=True). Pre-built images will be hosted on Docker Hub as soon as I get to it.
 
 ### Register new Machine on Cloud Bridge
 This registers a new robot on the Cloud Bridge and returns default config file you can then edit further. Unique id_robot and key are generated in this step. More about the config file @here.

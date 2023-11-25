@@ -1,6 +1,9 @@
-ARG ROS_DISTRO=iron
-
+ARG ROS_DISTRO=humble
 FROM ros:$ROS_DISTRO
+ARG PI_EXTRAS=False
+ARG ARCH=aarch64
+
+RUN echo "Building docker image with ROS_DISTRO=$ROS_DISTRO, ARCH=$ARCH, PI_EXTRAS=$PI_EXTRAS"
 
 RUN apt-get update -y --fix-missing
 RUN apt-get install -y ssh \
@@ -28,7 +31,9 @@ RUN pip install setuptools==58.2.0 \
                 # aiohttp #forker
 
 #raspi
-RUN apt-get install -y libraspberrypi0 libraspberrypi-dev libraspberrypi-bin
+RUN if [ "$PI_EXTRAS" = "True" ]; then \
+        apt-get install -y libraspberrypi0 libraspberrypi-dev libraspberrypi-bin; \
+    fi
 
 # video stuffs
 RUN apt-get install -y v4l-utils ffmpeg
@@ -58,22 +63,24 @@ RUN ninja -C build install
 # RUN echo "export PYTHONPATH=\$PYTHONPATH:/ros2_ws/libcamera/build/src/py" >> /root/.bashrc
 ENV PYTHONPATH="$PYTHONPATH:/ros2_ws/libcamera/build/src/py"
 
-# kms++ from source (for picamera2)
-RUN apt-get install -y libdrm-common libdrm-dev
-WORKDIR $ROS_WS
-RUN git clone https://github.com/tomba/kmsxx.git
-WORKDIR $ROS_WS/kmsxx
-RUN git submodule update --init
-RUN /root/.local/bin/meson build
-RUN ninja -C build
-# RUN echo "export PYTHONPATH=\$PYTHONPATH:/ros2_ws/kmsxx/build/py" >> /root/.bashrc
-# RUN echo "export LD_LIBRARY_PATH=\$LD_LIBRARY_PATH:/usr/local/lib/aarch64-linux-gnu" >> /root/.bashrc
-ENV PYTHONPATH="$PYTHONPATH:/ros2_ws/kmsxx/build/py"
-ENV LD_LIBRARY_PATH="$LD_LIBRARY_PATH:/usr/local/lib/aarch64-linux-gnu"
-
-# picamera2, 0.3.12 works with libcamera v0.1.0
-RUN apt-get install -y libcap-dev
-RUN pip install picamera2
+RUN if [ "$PI_EXTRAS" = "True" ]; then \
+        # kms++ from source (for picamera2) \
+        apt-get install -y libdrm-common libdrm-dev; \
+        cd $ROS_WS; \
+        git clone https://github.com/tomba/kmsxx.git; \
+        cd $ROS_WS/kmsxx; \
+        git submodule update --init; \
+        /root/.local/bin/meson build; \
+        ninja -C build; \
+        echo "export PYTHONPATH=\$PYTHONPATH:/ros2_ws/kmsxx/build/py" >> /root/.bashrc; \
+        echo "export LD_LIBRARY_PATH=\$LD_LIBRARY_PATH:/usr/local/lib/$ARCH-linux-gnu" >> /root/.bashrc; \
+        export PYTHONPATH="$PYTHONPATH:/ros2_ws/kmsxx/build/py"; \
+        export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:/usr/local/lib/$ARCH-linux-gnu"; \
+        \ 
+        # picamera2, 0.3.12 works with libcamera v0.1.0 \
+        apt-get install -y libcap-dev; \
+        pip install picamera2; \
+    fi
 
 # needed by reload-devies.sh (reloads docker devices after the container has been created)
 RUN apt-get install -y udev
