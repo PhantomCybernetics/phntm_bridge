@@ -1,5 +1,6 @@
 ARG ROS_DISTRO=humble
 FROM ros:$ROS_DISTRO
+
 ARG PI_EXTRAS=False
 ARG ARCH=aarch64
 
@@ -27,7 +28,7 @@ RUN pip install setuptools==58.2.0 \
                 termcolor \
                 aiohttp \
                 PyEventEmitter
-		# aiortc #forked
+		        # aiortc #forked
                 # aiohttp #forker
 
 #raspi
@@ -47,10 +48,10 @@ RUN apt-get install -y libudev-dev
 RUN apt-get install -y libevent-dev
 RUN apt-get install -y libgstreamer1.0-dev libgstreamer-plugins-base1.0-de
 # RUN echo "export PATH=\$PATH:/root/.local/bin" >> /root/.bashrc
-ENV PATH="$PATH:/root/.local/bin"
+ENV PATH=$PATH":/root/.local/bin"
 
 # init workspace
-ENV ROS_WS /ros2_ws
+ENV ROS_WS=/ros2_ws
 RUN mkdir -p $ROS_WS/src
 
 # libcamera from src
@@ -61,7 +62,7 @@ RUN git checkout v0.1.0
 RUN /root/.local/bin/meson setup build -D pycamera=enabled -D v4l2=True --reconfigure
 RUN ninja -C build install
 # RUN echo "export PYTHONPATH=\$PYTHONPATH:/ros2_ws/libcamera/build/src/py" >> /root/.bashrc
-ENV PYTHONPATH="$PYTHONPATH:/ros2_ws/libcamera/build/src/py"
+ENV PYTHONPATH=$PYTHONPATH":/ros2_ws/libcamera/build/src/py"
 
 # kms++ from source (for picamera2) \
 RUN apt-get install -y libdrm-common libdrm-dev
@@ -69,15 +70,14 @@ WORKDIR $ROS_WS
 RUN git clone https://github.com/tomba/kmsxx.git
 WORKDIR $ROS_WS/kmsxx
 RUN git submodule update --init
-ENV PYTHONPATH="$PYTHONPATH:/ros2_ws/kmsxx/build/py"
-ENV LD_LIBRARY_PATH="$LD_LIBRARY_PATH:/usr/local/lib/$ARCH-linux-gnu"
+ENV PYTHONPATH=$PYTHONPATH":/ros2_ws/kmsxx/build/py"
+ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH":/usr/local/lib/"$ARCH"-linux-gnu"
 RUN /root/.local/bin/meson build
-RUN ninja -C build
+RUN ninja -C build install
 
 # picamera2, 0.3.12 works with libcamera v0.1.0
-# install always for easier code management
 RUN apt-get install -y libcap-dev
-RUN pip install picamera2
+RUN pip install picamera2==0.3.12
 
 # needed by reload-devies.sh (reloads docker devices after the container has been created)
 RUN apt-get install -y udev
@@ -107,6 +107,8 @@ exec "$@"' > /ros_entrypoint.sh
 RUN chmod a+x /ros_entrypoint.sh
 
 # source underlay on every login
+RUN echo 'source /opt/ros/'$ROS_DISTRO'/setup.bash' >> /root/.bashrc
+RUN echo 'test -f "/ros2_ws/install/setup.bash" && source "/ros2_ws/install/setup.bash"' >> /root/.bashrc
 
 WORKDIR $ROS_WS
 
