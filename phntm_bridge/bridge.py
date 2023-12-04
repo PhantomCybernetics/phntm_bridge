@@ -396,8 +396,12 @@ class BridgeController(Node, BridgeControllerConfig):
         async def catch_all(event, data):
             self.get_logger().warn('Unhandled: Socket.io event ' + str(event) + ' with ' + str(data))
 
-        @self.sio.on('disconnect')
-        async def on_disconnect():
+        @self.sio.event
+        def connect_error(data):
+            self.get_logger().err('Socket.io connection failed')
+
+        @self.sio.event
+        def disconnect():
             self.get_logger().warn('Socket.io disconnected from server')
             if self.conn_led != None:
                 if not self.shutting_down:
