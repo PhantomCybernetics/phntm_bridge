@@ -66,7 +66,7 @@ def TopicReadProcessor(running_shared:mp.Value, ctrl_queue:mp.Queue, data_out_qu
 
     try:
 
-        asyncio.run(TopicReadProcessorLoop(reader_node, rcl_executor, running_shared, ctrl_queue, data_out_queue, conf,log_message_every_sec))
+        asyncio.run(TopicReadProcessorLoop(reader_node, rcl_executor, running_shared, ctrl_queue))
 
     except (asyncio.CancelledError, KeyboardInterrupt):
         print(c(f'Topic Reader: Shutting down', 'red'))
@@ -87,13 +87,12 @@ async def SpinNode(reader_node, rcl_executor, running_shared:mp.Value):
     while running_shared.value > 0:
         rclpy.spin_once(reader_node, executor=rcl_executor, timeout_sec=0.1)
         # rclpy.spin_once(reader_node, executor=rcl_executor, timeout_sec=0.1)
-        await asyncio.sleep(.01)
+        await asyncio.sleep(.001)
 
     reader_node.get_logger().warn(f'Topic Reader: Done spinning')
 
 
-async def TopicReadProcessorLoop(reader_node, rcl_executor, running_shared:mp.Value, ctrl_queue:mp.Queue, data_out_queue:mp.Queue,
-                        conf:any, log_message_every_sec:float=5.0):
+async def TopicReadProcessorLoop(reader_node, rcl_executor, running_shared:mp.Value, ctrl_queue:mp.Queue):
 
     active_subs:dict[str:dict] = {}
     newest_messages_by_topic:dict[str:list] = {}
@@ -118,33 +117,34 @@ async def TopicReadProcessorLoop(reader_node, rcl_executor, running_shared:mp.Va
                 break # all messages processed
 
         #dropping older data here
-        for topic in newest_messages_by_topic.keys():
-            if not topic in active_subs.keys():
-                continue #old data for unsubscribed
+        # TODO THIS NEEDS TO MIX TOPICS MORE!
+        # for topic in newest_messages_by_topic.keys():
+        #     if not topic in active_subs.keys():
+        #         continue #old data for unsubscribed
 
-            for msg in newest_messages_by_topic[topic]:
-                # reader_node.get_logger().info(f'I can has message for {topic}')
-                try:
-                    if active_subs[topic]['args']['msg_type'] == ImageTopicReadSubscription.MSG_TYPE:
+        #     for msg in newest_messages_by_topic[topic]:
+        #         # reader_node.get_logger().info(f'I can has message for {topic}')
+        #         try:
+        #             if active_subs[topic]['args']['msg_type'] == ImageTopicReadSubscription.MSG_TYPE:
 
-                        if 'processing_task' in active_subs[topic].keys() and not active_subs[topic]['processing_task'].done():
-                            continue #skip this frame as the previous one hasn't been consumed yet
-                        # reader_node.get_logger().info(f'Processing {topic}')
-                        image_task = asyncio.get_event_loop().create_task(on_image_data(topic=topic, msg=msg, out_pipe=active_subs[topic]['pipe'], subscription=active_subs[topic], image_push_tasks=image_push_tasks))
-                        active_subs[topic]['processing_task'] = image_task
+        #                 if 'processing_task' in active_subs[topic].keys() and not active_subs[topic]['processing_task'].done():
+        #                     continue #skip this frame as the previous one hasn't been consumed yet
+        #                 # reader_node.get_logger().info(f'Processing {topic}')
+        #                 image_task = asyncio.get_event_loop().create_task(on_image_data(topic=topic, msg=msg, out_pipe=active_subs[topic]['pipe'], subscription=active_subs[topic], image_push_tasks=image_push_tasks))
+        #                 active_subs[topic]['processing_task'] = image_task
 
-                    else:
-                        # reader_node.get_logger().info(f'Pushing {topic}')
-                        asyncio.get_event_loop().create_task(on_data(topic=topic, msg=msg, out_pipe=active_subs[topic]['pipe'], subscription=active_subs[topic], data_push_tasks=data_push_tasks))
-                        # active_subs[topic]['pipe'].
-                        # data_out_queue.put_nowait({
-                        #     'topic': topic, 'msg': msg
-                        # }) #put in output queue
-                except Full:
-                    reader_node.get_logger().warn(f'Topic Reader: Output queue full, dropping {topic} msg')
-                    pass
-        newest_messages_by_topic.clear()
-        await asyncio.sleep(.01)
+        #             else:
+        #                 # reader_node.get_logger().info(f'Pushing {topic}')
+        #                 await on_data(topic=topic, msg=msg, out_pipe=active_subs[topic]['pipe'], subscription=active_subs[topic], data_push_tasks=data_push_tasks)
+        #                 # active_subs[topic]['pipe'].
+        #                 # data_out_queue.put_nowait({
+        #                 #     'topic': topic, 'msg': msg
+        #                 # }) #put in output queue
+        #         except Full:
+        #             reader_node.get_logger().warn(f'Topic Reader: Output queue full, dropping {topic} msg')
+        #             pass
+        # newest_messages_by_topic.clear()
+        await asyncio.sleep(.001)
 
     # spin_future.set_result(True)
 
@@ -171,7 +171,7 @@ def on_cmd(reader_node:Node, ctrl_cmd:dict, active_subs:dict[str:dict], newest_m
             else:
                 lifespan = Duration(seconds=ctrl_cmd['lifespan'])
         else:
-            lifespan = Duration(seconds=1)
+            lifespan = Duration(seconds=.01)
         pipe = ctrl_cmd['pipe'] if 'pipe' in ctrl_cmd.keys() else None
 
         message_class = None
@@ -192,10 +192,17 @@ def on_cmd(reader_node:Node, ctrl_cmd:dict, active_subs:dict[str:dict], newest_m
                         )
         reader_node.get_logger().warn(f'Topic Reader: Subscribing to topic {topic} {msg_type} reliability={reliability} durability={durability} lifespan={lifespan}')
         no_skip:bool = ctrl_cmd['no_skip'] if 'no_skip' in ctrl_cmd.keys() else False
+        
+        cb = None
+        if msg_type == ImageTopicReadSubscription.MSG_TYPE:
+            cb = lambda msg: on_image_data(topic, msg, active_subs)
+        else:
+            cb = lambda msg: on_data(topic, msg, active_subs)
+        
         sub = reader_node.create_subscription(
                         msg_type=message_class,
                         topic=topic,
-                        callback=lambda msg: save_newest_msg(topic, msg, newest_messages_by_topic, no_skip),
+                        callback=cb,
                         qos_profile=qosProfile,
                         raw=True,
                     )
@@ -212,181 +219,194 @@ def on_cmd(reader_node:Node, ctrl_cmd:dict, active_subs:dict[str:dict], newest_m
         active_subs[topic] = {
             'sub': sub,
             'args': args,
-            'pipe': pipe
+            'pipe': pipe,
+            'push_task': None,
+            'executor': concurrent.futures.ThreadPoolExecutor(max_workers=1)
         }
         if not topic in active_subs.keys():
             reader_node.get_logger().error(f'Topic Reader: Failed subscribing to topic {topic}, msg class={msg_type}')
 
-def save_newest_msg(topic:str, msg:any, newest_messages_by_topic:dict[str:list], no_skip:bool):
-    # reader_node.get_logger().info(f' >> {msg_topic}, got {len(msg)} B')
+# def save_newest_msg(topic:str, msg:any, newest_messages_by_topic:dict[str:list], no_skip:bool, pipe:Connection):
+#     # reader_node.get_logger().info(f' >> {msg_topic}, got {len(msg)} B')
 
-    # print (f'{topic} has data, no_skip={no_skip}')
+#     # print (f'{topic} has data, no_skip={no_skip}')
 
-    if topic not in newest_messages_by_topic.keys():
-        newest_messages_by_topic[topic] = []
+#     if topic not in newest_messages_by_topic.keys():
+#         newest_messages_by_topic[topic] = []
 
-    if no_skip:
-        newest_messages_by_topic[topic].append(msg)
-    else:
-        newest_messages_by_topic[topic] = [ msg ]
+#     if no_skip:
+#         newest_messages_by_topic[topic].append(msg)
+#     else:
+#         newest_messages_by_topic[topic] = [ msg ]
 
 
-async def on_image_data(topic:str, msg:any, out_pipe:Connection, subscription:dict, image_push_tasks:dict[str:asyncio.Future]):
+def on_data(topic:str, msg:any, active_subs:dict):
 
-    if 'ignore' in subscription:
+    if not topic in active_subs.keys():
         return
     
-    if topic in image_push_tasks.keys() and not image_push_tasks[topic].done():
-        # print(f'Processsor skipping frame of {topic}, last not yet consumed yet')
+    sub = active_subs[topic]
+    
+    if 'ignore' in sub:
         return
     
-    # print(f'Topic reader got {len(msg)}B image data for {topic}w args: {str(subscription["args"])}')
-
-    debug_fp_start = time.time()
-    im:Image = deserialize_message(msg, Image)
-
-    if im.encoding == 'rgb8':
-        channels = 3  # 3 for RGB format
-        # Convert the image data to a NumPy array
-        np_array = np.frombuffer(im.data, dtype=np.uint8)
-        # Reshape the array based on the image dimensions
-        np_array = np_array.reshape(im.height, im.width, channels)
-    elif im.encoding == '16UC1':
-        # channels = 1  # 3 for RGB format
-        np_array = np.frombuffer(im.data, dtype=np.uint16) * float(255.0/4000.0)
-
-        np_array = np.uint8 (np_array)
-
-        # mask = np.zeros(np_array.shape, dtype=np.uint8)
-        # mask = np.bitwise_or(np_array, mask)
-
-        # np_array = cv2.cvtColor(np_array, cv2.COLOR_GRAY2RGB)
-        np_array = cv2.applyColorMap(np_array, cv2.COLORMAP_MAGMA)
-
-        # np_array = cv2.convertScaleAbs(np_array, alpha=255/2000) # converts to 8 bit
-        # mask = cv2.convertScaleAbs(mask) # converts to 8 bit
-
-        np_array = np_array.reshape(im.height, im.width, 3)
-        # mask = mask.reshape(im.height, im.width, 1)
-
-        # np_array = (255-np_array)
-        # np_array = np.bitwise_and(np_array, mask)
-    elif im.encoding == '32FC1':
-        # channels = 1  # 3 for RGB format
-        np_array = np.frombuffer(im.data, dtype=np.float32) * (255.0 * (1.0 / 2.0)) #;).astype(np.uint16)
-
-        np_array = np.uint8 (np_array)
-
-        # mask = np.ones(np_array.shape, dtype=np.uint8)
-        # mask = np.bitwise_or(np_array, mask)
-
-        # np_array = np_array * (255.0 / 2000.0)
-        np_array = cv2.applyColorMap(np_array, cv2.COLORMAP_PLASMA)
-
-        # np_array = cv2.cvtColor(np_array, cv2.COLOR_GRAY2RGB) #still
-
-        #np_array = cv2.convertScaleAbs(np_array, alpha=1.0) # converts to 8 bit
-        #
-        # mask = convertScaleAbsmask) # converts to 8 bit
-
-        np_array = np_array.reshape(im.height, im.width, 3)
-        # mask = mask.reshape(im.height, im.width, 1)
-
-        # np_array = (255-np_array)
-        # np_array = np.bitwise_and(np_array, mask)
-    else:
-        print(f'Topic Reader: {topic} received unsupported frame type: F{im.header.stamp.sec}:{im.header.stamp.nanosec} {im.width}x{im.height} data={len(im.data)}B enc={im.encoding} is_bigendian={im.is_bigendian} step={im.step}, not processing')
-        subscription['ignore'] = True
-        return
-
-    NS_TO_SEC = 1000000000
-    # software encode h264
-    frame = VideoFrame.from_ndarray(np_array, format="rgb24")
-
-    stamp_ns_raw = int(im.header.stamp.sec*NS_TO_SEC) + int(im.header.stamp.nanosec)
-
-    if not 'first_frame_time_ns' in subscription.keys():
-        subscription['first_frame_time_ns'] = stamp_ns_raw
-        subscription['last_frame_time_ns'] = stamp_ns_raw
-
-    since_last_frame = stamp_ns_raw - subscription['last_frame_time_ns']
-    subscription['last_frame_time_ns'] = stamp_ns_raw
-
-    stamp_ns = stamp_ns_raw - subscription['first_frame_time_ns']
-
-    frame.pts = stamp_ns
-    frame.time_base = fractions.Fraction(1, NS_TO_SEC)
-
-    # at around 5 FPS sw encoding is so slow it's actually better to send every frame as a keyframe
-    force_keyframe = True
-
-    # force_keyframe = 'last_keyframe_stamp_ns' not in subscription.keys() \
-    #     or stamp_ns - subscription['last_keyframe_stamp_ns'] >= NS_TO_SEC #keyframe every second
-    # if force_keyframe:
-    #     subscription['last_keyframe_stamp_ns'] = stamp_ns
-
-    global encoder_h264
-    if encoder_h264 == None:
-        encoder_h264 = H264Encoder()
-
-    packets, timestamp = encoder_h264.encode(frame=frame, force_keyframe=force_keyframe) # convert to 1/90000
-
-    # print(f'Processor {topic} stamp_ns={stamp_ns} raw={stamp_ns_raw} [{im.header.stamp.sec}:{im.header.stamp.nanosec}] dF={since_last_frame} f0={subscription["first_frame_time_ns"]} 1/90000={timestamp} KF={force_keyframe}')
-
-    # _fp_4 = time.time()
-    # _log_processed += 1
-    # _log_cum_time += time.time() - debug_fp_start
-
-    # if keyframe or _last_log_time < 0 or time.time()-_last_log_time > log_message_every_sec:
-    #     _last_log_time = time.time() #last logged now
-    #     # debug_times = f'Total: {"{:.5f}".format(_fp_4-_fp_start)}s\nIM: {"{:.5f}".format(_fp_1-_fp_start)}s\nConv: {"{:.5f}".format(_fp_2-_fp_1)}s\nVideoFrame {"{:.5f}".format(_fp_3-_fp_2)}s\nH264: {"{:.5f}".format(_fp_4-_fp_3)}s'
-    #     debug_times = f'{_log_processed} in avg {"{:.5f}".format(_log_cum_time/_log_processed)}s'
-    #     logger.info(f'[FP {topic}] {im.encoding}>H264 {im.width}x{im.height} {len(fbytes)}B > {len(packet)} pkts ' + (colored(' [KF]', 'magenta') if keyframe else '') + ' '+c(debug_times, 'yellow'))
-    #     _log_processed = 0;
-    #     _log_cum_time = 0.0
-
-    # debug_times = f'{_log_processed} in avg {"{:.5f}".format(_log_cum_time/_log_processed)}s'
-
-    # print(f'Topic Reader: processed frame of {topic} {im.encoding}>H264 {im.width}x{im.height} {len(msg)}B > {len(packets)} pkts' + (c(' [KF]', 'magenta') if keyframe else f' {ns_since_last_keyframe} ns since KF') + ' in '+c(time.time()-debug_fp_start, 'yellow'))
-
-    try:
-        # print(f'Processor pushing image for {topic}')
-        image_push_tasks[topic] = asyncio.get_event_loop().run_in_executor(None, out_pipe.send, {
-            'topic': topic,
-            'frame_packets': packets,
-            'timestamp': timestamp,
-            'keyframe': force_keyframe, #don't skip keyframes
-        }) # blocks until read, no more frames of this topic are processed until then
-        
-        await image_push_tasks[topic]
-        # chill a bit while skipping frames of this topic
-        # this affects fps of the output
-        # await asyncio.sleep(0.01)
-
-    except Exception as e:
-        print(c(f'Topic Reader: output err for {topic}: {e}', 'red'))
-
-
-async def on_data(topic:str, msg:any, out_pipe:Connection, subscription:dict, data_push_tasks:dict[str:asyncio.Future]):
-
-    if 'ignore' in subscription:
-        return
-    
-    if topic in data_push_tasks.keys() and not data_push_tasks[topic].done():
+    if sub['push_task'] and not sub['push_task'].done():
         # print(f'Processsor skipping frame of {topic}, last not yet consumed yet')
         return
     
     try:
         # print(f'Processor pushing image for {topic}')
-        data_push_tasks[topic] = asyncio.get_event_loop().run_in_executor(None, out_pipe.send, {
+        sub['push_task'] = asyncio.get_event_loop().run_in_executor(sub['executor'], sub['pipe'].send, {
             'topic': topic,
             'msg': msg
         }) # blocks until read, no more frames of this topic are processed until then
         
-        await data_push_tasks[topic]
+        # await data_push_tasks[topic]
         # chill a bit while skipping frames of this topic
         # this affects fps of the output
         # await asyncio.sleep(0.01)
 
     except Exception as e:
         print(c(f'Topic Reader: output err for {topic}: {e}', 'red'))
+        
+
+def on_image_data(topic:str, msg:any, active_subs:dict):
+
+    if not topic in active_subs.keys():
+        return
+    
+    sub = active_subs[topic]
+    
+    if 'ignore' in sub:
+        return
+    
+    if sub['push_task'] and not sub['push_task'].done():
+        # print(f'Processsor skipping frame of {topic}, last not yet consumed yet')
+        return
+    
+    # # print(f'Topic reader got {len(msg)}B image data for {topic}w args: {str(subscription["args"])}')
+
+    # debug_fp_start = time.time()
+    # im:Image = deserialize_message(msg, Image)
+
+    # if im.encoding == 'rgb8':
+    #     channels = 3  # 3 for RGB format
+    #     # Convert the image data to a NumPy array
+    #     np_array = np.frombuffer(im.data, dtype=np.uint8)
+    #     # Reshape the array based on the image dimensions
+    #     np_array = np_array.reshape(im.height, im.width, channels)
+    # elif im.encoding == '16UC1':
+    #     # channels = 1  # 3 for RGB format
+    #     np_array = np.frombuffer(im.data, dtype=np.uint16) * float(255.0/4000.0)
+
+    #     np_array = np.uint8 (np_array)
+
+    #     # mask = np.zeros(np_array.shape, dtype=np.uint8)
+    #     # mask = np.bitwise_or(np_array, mask)
+
+    #     # np_array = cv2.cvtColor(np_array, cv2.COLOR_GRAY2RGB)
+    #     np_array = cv2.applyColorMap(np_array, cv2.COLORMAP_MAGMA)
+
+    #     # np_array = cv2.convertScaleAbs(np_array, alpha=255/2000) # converts to 8 bit
+    #     # mask = cv2.convertScaleAbs(mask) # converts to 8 bit
+
+    #     np_array = np_array.reshape(im.height, im.width, 3)
+    #     # mask = mask.reshape(im.height, im.width, 1)
+
+    #     # np_array = (255-np_array)
+    #     # np_array = np.bitwise_and(np_array, mask)
+    # elif im.encoding == '32FC1':
+    #     # channels = 1  # 3 for RGB format
+    #     np_array = np.frombuffer(im.data, dtype=np.float32) * (255.0 * (1.0 / 2.0)) #;).astype(np.uint16)
+
+    #     np_array = np.uint8 (np_array)
+
+    #     # mask = np.ones(np_array.shape, dtype=np.uint8)
+    #     # mask = np.bitwise_or(np_array, mask)
+
+    #     # np_array = np_array * (255.0 / 2000.0)
+    #     np_array = cv2.applyColorMap(np_array, cv2.COLORMAP_PLASMA)
+
+    #     # np_array = cv2.cvtColor(np_array, cv2.COLOR_GRAY2RGB) #still
+
+    #     #np_array = cv2.convertScaleAbs(np_array, alpha=1.0) # converts to 8 bit
+    #     #
+    #     # mask = convertScaleAbsmask) # converts to 8 bit
+
+    #     np_array = np_array.reshape(im.height, im.width, 3)
+    #     # mask = mask.reshape(im.height, im.width, 1)
+
+    #     # np_array = (255-np_array)
+    #     # np_array = np.bitwise_and(np_array, mask)
+    # else:
+    #     print(f'Topic Reader: {topic} received unsupported frame type: F{im.header.stamp.sec}:{im.header.stamp.nanosec} {im.width}x{im.height} data={len(im.data)}B enc={im.encoding} is_bigendian={im.is_bigendian} step={im.step}, not processing')
+    #     subscription['ignore'] = True
+    #     return
+
+    # NS_TO_SEC = 1000000000
+    # # software encode h264
+    # frame = VideoFrame.from_ndarray(np_array, format="rgb24")
+
+    # stamp_ns_raw = int(im.header.stamp.sec*NS_TO_SEC) + int(im.header.stamp.nanosec)
+
+    # if not 'first_frame_time_ns' in subscription.keys():
+    #     subscription['first_frame_time_ns'] = stamp_ns_raw
+    #     subscription['last_frame_time_ns'] = stamp_ns_raw
+
+    # since_last_frame = stamp_ns_raw - subscription['last_frame_time_ns']
+    # subscription['last_frame_time_ns'] = stamp_ns_raw
+
+    # stamp_ns = stamp_ns_raw - subscription['first_frame_time_ns']
+
+    # frame.pts = stamp_ns
+    # frame.time_base = fractions.Fraction(1, NS_TO_SEC)
+
+    # # at around 5 FPS sw encoding is so slow it's actually better to send every frame as a keyframe
+    # force_keyframe = True
+
+    # # force_keyframe = 'last_keyframe_stamp_ns' not in subscription.keys() \
+    # #     or stamp_ns - subscription['last_keyframe_stamp_ns'] >= NS_TO_SEC #keyframe every second
+    # # if force_keyframe:
+    # #     subscription['last_keyframe_stamp_ns'] = stamp_ns
+
+    # global encoder_h264
+    # if encoder_h264 == None:
+    #     encoder_h264 = H264Encoder()
+
+    # packets, timestamp = encoder_h264.encode(frame=frame, force_keyframe=force_keyframe) # convert to 1/90000
+
+    # # print(f'Processor {topic} stamp_ns={stamp_ns} raw={stamp_ns_raw} [{im.header.stamp.sec}:{im.header.stamp.nanosec}] dF={since_last_frame} f0={subscription["first_frame_time_ns"]} 1/90000={timestamp} KF={force_keyframe}')
+
+    # # _fp_4 = time.time()
+    # # _log_processed += 1
+    # # _log_cum_time += time.time() - debug_fp_start
+
+    # # if keyframe or _last_log_time < 0 or time.time()-_last_log_time > log_message_every_sec:
+    # #     _last_log_time = time.time() #last logged now
+    # #     # debug_times = f'Total: {"{:.5f}".format(_fp_4-_fp_start)}s\nIM: {"{:.5f}".format(_fp_1-_fp_start)}s\nConv: {"{:.5f}".format(_fp_2-_fp_1)}s\nVideoFrame {"{:.5f}".format(_fp_3-_fp_2)}s\nH264: {"{:.5f}".format(_fp_4-_fp_3)}s'
+    # #     debug_times = f'{_log_processed} in avg {"{:.5f}".format(_log_cum_time/_log_processed)}s'
+    # #     logger.info(f'[FP {topic}] {im.encoding}>H264 {im.width}x{im.height} {len(fbytes)}B > {len(packet)} pkts ' + (colored(' [KF]', 'magenta') if keyframe else '') + ' '+c(debug_times, 'yellow'))
+    # #     _log_processed = 0;
+    # #     _log_cum_time = 0.0
+
+    # # debug_times = f'{_log_processed} in avg {"{:.5f}".format(_log_cum_time/_log_processed)}s'
+
+    # # print(f'Topic Reader: processed frame of {topic} {im.encoding}>H264 {im.width}x{im.height} {len(msg)}B > {len(packets)} pkts' + (c(' [KF]', 'magenta') if keyframe else f' {ns_since_last_keyframe} ns since KF') + ' in '+c(time.time()-debug_fp_start, 'yellow'))
+
+    # try:
+    #     # print(f'Processor pushing image for {topic}')
+    #     image_push_tasks[topic] = asyncio.get_event_loop().run_in_executor(None, out_pipe.send, {
+    #         'topic': topic,
+    #         'frame_packets': packets,
+    #         'timestamp': timestamp,
+    #         'keyframe': force_keyframe, #don't skip keyframes
+    #     }) # blocks until read, no more frames of this topic are processed until then
+        
+    #     await image_push_tasks[topic]
+    #     # chill a bit while skipping frames of this topic
+    #     # this affects fps of the output
+    #     # await asyncio.sleep(0.01)
+
+    # except Exception as e:
+    #     print(c(f'Topic Reader: output err for {topic}: {e}', 'red'))
+

@@ -53,6 +53,8 @@ class TopicReadSubscription:
         self.on_msg_cb:Callable = None
         self.event_loop = event_loop
         self.last_send_future:asyncio.Future = None
+        
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
         # self.send_pool = concurrent.futures.ThreadPoolExecutor()
         #print(f'TopicReadSubscription:__init__() {threading.get_ident()}')
@@ -67,8 +69,8 @@ class TopicReadSubscription:
         if self.reader_ctrl_queue: # subscribe on processor's process
 
             self.pipe_out, self.pipe_worker = mp.Pipe()
-            # no_skip:bool = self.protocol in [ 'std_msgs/msg/String', 'rcl_interfaces/msg/Log' ]
-            no_skip = True
+            no_skip:bool = self.reliability == QoSReliabilityPolicy.RELIABLE
+            # no_skip = True
             self.reader_ctrl_queue.put_nowait({'action': 'subscribe',
                                                'pipe': self.pipe_worker,
                                                'topic': self.topic,
@@ -121,7 +123,7 @@ class TopicReadSubscription:
     async def read_piped_data(self):
         while True:
             try:
-                res = await self.event_loop.run_in_executor(None, self.pipe_out.recv) #blocks
+                res = await self.event_loop.run_in_executor(self.executor, self.pipe_out.recv) #blocks
                 await self.on_msg(res)
 
             except (KeyboardInterrupt, asyncio.CancelledError):

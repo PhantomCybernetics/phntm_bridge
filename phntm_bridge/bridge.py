@@ -449,45 +449,45 @@ class BridgeController(Node, BridgeControllerConfig):
     #     # print (f'I can has newest for {str(res.keys())}')
     #     return res
 
-    def filter_queued(self, reader_res:dict, queued_by_topic:dict):
-        topic = reader_res['topic']
-        if not topic in queued_by_topic.keys():
-            queued_by_topic[topic] = []
-        msg_type = self.introspection.discovered_topics[topic]['msg_types'][0]
-        match msg_type:
-            case 'std_msgs/msg/String' | 'rcl_interfaces/msg/Log': #dont skip these
-                queued_by_topic[topic].append(reader_res)
-            case _:
-                queued_by_topic[topic] = [ reader_res ] # drop older
+    # def filter_queued(self, reader_res:dict, queued_by_topic:dict):
+    #     topic = reader_res['topic']
+    #     if not topic in queued_by_topic.keys():
+    #         queued_by_topic[topic] = []
+    #     msg_type = self.introspection.discovered_topics[topic]['msg_types'][0]
+    #     match msg_type:
+    #         case 'std_msgs/msg/String' | 'rcl_interfaces/msg/Log': #dont skip these
+    #             queued_by_topic[topic].append(reader_res)
+    #         case _:
+    #             queued_by_topic[topic] = [ reader_res ] # drop older
 
-    ##
-    # read and disctribute queued ros data
-    ##
-    async def read_queued_data(self, out_queue:mp.Queue):
-        while not self.shutting_down:
-            try:
+    # ##
+    # # read and disctribute queued ros data
+    # ##
+    # async def read_queued_data(self, out_queue:mp.Queue):
+    #     while not self.shutting_down:
+    #         try:
 
-                #read everything in the queue and filter older where preferred
-                queued_by_topic = {}
-                reader_res = await asyncio.get_event_loop().run_in_executor(None, out_queue.get) #blocks
-                self.filter_queued(reader_res, queued_by_topic)
-                try: #read the rest of the queue
-                    while True: #read until empty and overwrite with newser
-                        reader_res = out_queue.get_nowait()
-                        self.filter_queued(reader_res, queued_by_topic)
-                except Empty:
-                    pass
+    #             #read everything in the queue and filter older where preferred
+    #             queued_by_topic = {}
+    #             reader_res = await asyncio.get_event_loop().run_in_executor(None, out_queue.get) #blocks
+    #             self.filter_queued(reader_res, queued_by_topic)
+    #             try: #read the rest of the queue
+    #                 while True: #read until empty and overwrite with newser
+    #                     reader_res = out_queue.get_nowait()
+    #                     self.filter_queued(reader_res, queued_by_topic)
+    #             except Empty:
+    #                 pass
 
-                for topic in queued_by_topic.keys():
-                    for res in queued_by_topic[topic]:
-                        if topic in self.topic_read_subscriptions.keys():
-                            self.topic_read_subscriptions[topic].on_msg(res)
+    #             for topic in queued_by_topic.keys():
+    #                 for res in queued_by_topic[topic]:
+    #                     if topic in self.topic_read_subscriptions.keys():
+    #                         self.topic_read_subscriptions[topic].on_msg(res)
 
-            except (KeyboardInterrupt, asyncio.CancelledError):
-                return
-            except Exception as e:
-                self.get_logger().error(f'Exception while reading latest from queue: {str(e)}')
-                print(traceback.format_exc())
+    #         except (KeyboardInterrupt, asyncio.CancelledError):
+    #             return
+    #         except Exception as e:
+    #             self.get_logger().error(f'Exception while reading latest from queue: {str(e)}')
+    #             print(traceback.format_exc())
 
     ##
     # read and disctribute queued ros images
