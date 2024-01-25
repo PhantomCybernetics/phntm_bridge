@@ -235,14 +235,17 @@ class Introspection (AsyncIOEventEmitter):
         if not self.sio or not self.sio.connected:
             return
 
-        data = self.get_nodes_data()
-        self.logger.info(c(f'Reporting {len(data)} nodes', 'dark_grey'))
+        try:
+            data = self.get_nodes_data()
+            self.logger.info(c(f'Reporting {len(data)} nodes', 'dark_grey'))
 
-        await self.sio.emit(
-            event='nodes',
-            data=data,
-            callback=None
-            )
+            await self.sio.emit(
+                event='nodes',
+                data=data,
+                callback=None
+                )
+        except:
+            pass
 
     def get_topics_data(self):
         data = []
@@ -260,14 +263,17 @@ class Introspection (AsyncIOEventEmitter):
         if not self.sio or not self.sio.connected:
             return
 
-        data = self.get_topics_data()
-        self.logger.info(c(f'Reporting {len(data)} topics', 'dark_grey'))
+        try:
+            data = self.get_topics_data()
+            self.logger.info(c(f'Reporting {len(data)} topics', 'dark_grey'))
 
-        await self.sio.emit(
-            event='topics',
-            data=data,
-            callback=None
-            )
+            await self.sio.emit(
+                event='topics',
+                data=data,
+                callback=None
+                )
+        except:
+            pass
 
     def get_services_data(self):
         data = []
@@ -285,14 +291,17 @@ class Introspection (AsyncIOEventEmitter):
         if not self.sio or not self.sio.connected:
             return
 
-        data = self.get_services_data()
-        self.logger.info(c(f'Reporting {len(data)} services', 'dark_grey'))
+        try:
+            data = self.get_services_data()
+            self.logger.info(c(f'Reporting {len(data)} services', 'dark_grey'))
 
-        await self.sio.emit(
-            event='services',
-            data=data,
-            callback=None
-            )
+            await self.sio.emit(
+                event='services',
+                data=data,
+                callback=None
+                )
+        except:
+            pass
 
     def get_cameras_data(self):
         data = {}
@@ -307,14 +316,17 @@ class Introspection (AsyncIOEventEmitter):
         if not self.sio or not self.sio.connected:
             return
 
-        data = self.get_cameras_data()
-        self.logger.info(c(f'Reporting {len(data)} cameras', 'dark_grey'))
+        try:
+            data = self.get_cameras_data()
+            self.logger.info(c(f'Reporting {len(data)} cameras', 'dark_grey'))
 
-        await self.sio.emit(
-            event='cameras',
-            data=data,
-            callback=None
-            )
+            await self.sio.emit(
+                event='cameras',
+                data=data,
+                callback=None
+                )
+        except:
+            pass
 
     def get_docker_data(self):
         data = []
@@ -337,14 +349,17 @@ class Introspection (AsyncIOEventEmitter):
         if not self.sio or not self.sio.connected:
             return
 
-        data = self.get_docker_data()
-        self.logger.info(c(f'Reporting {len(data)} docker containers', 'dark_grey'))
+        try:
+            data = self.get_docker_data()
+            self.logger.info(c(f'Reporting {len(data)} docker containers', 'dark_grey'))
 
-        await self.sio.emit(
-            event='docker',
-            data=data,
-            callback=None
-            )
+            await self.sio.emit(
+                event='docker',
+                data=data,
+                callback=None
+                )
+        except:
+            pass
 
     async def report_introspection(self):
 
@@ -353,10 +368,13 @@ class Introspection (AsyncIOEventEmitter):
         if not self.sio or not self.sio.connected:
             return
 
-        self.logger.info(c(f'Reporting introspection {"running" if self.running else "stopped"}', 'dark_grey'))
+        try:
+            self.logger.info(c(f'Reporting introspection {"running" if self.running else "stopped"}', 'dark_grey'))
 
-        await self.sio.emit(
-            event='introspection',
-            data=self.running,
-            callback=None
-            )
+            await self.sio.emit(
+                event='introspection',
+                data=self.running,
+                callback=None
+                )
+        except:
+            pass

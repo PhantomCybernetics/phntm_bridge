@@ -41,37 +41,40 @@ class StatusLED():
     async def blinker_loop_(self):
 
         #print(">>> ... _blinker starting")
+        try:
+            while self.blink_task_ and not self.blink_task_.cancelled():
 
-        while True:
+                if self.mode_ == StatusLED.Mode.ON:
 
-            if self.mode_ == StatusLED.Mode.ON:
+                    if self.state_ != self.msg_on or time.time() > (self.last_on_time_ + 1.0):
+                        self.send_(self.msg_on, True)
 
-                if self.state_ != self.msg_on or time.time() > (self.last_on_time_ + 1.0):
-                    self.send_(self.msg_on, True)
+                elif self.mode_ == StatusLED.Mode.OFF:
 
-            elif self.mode_ == StatusLED.Mode.OFF:
+                    if self.state_ != self.msg_off or time.time() > (self.last_off_time_ + 1.0):
+                        self.send_(self.msg_off, True)
 
-                if self.state_ != self.msg_off or time.time() > (self.last_off_time_ + 1.0):
-                    self.send_(self.msg_off, True)
+                elif self.mode_ == StatusLED.Mode.BLINK_ONCE:
 
-            elif self.mode_ == StatusLED.Mode.BLINK_ONCE:
-
-                if self.state_ != self.msg_on:
-                    self.send_(self.msg_on)
-                elif self.state_ == self.msg_on and time.time() > (self.last_on_time_ + self.on_sec_):
-                    self.mode_ = StatusLED.Mode.OFF
-
-            elif self.mode_ == StatusLED.Mode.BLINKING:
-
-                if self.state_ != self.msg_on:
-                    if self.last_off_time_ < 0.0 or time.time() > (self.last_off_time_ + self.interval_sec_ - self.on_sec_):
+                    if self.state_ != self.msg_on:
                         self.send_(self.msg_on)
-                elif self.state_ == self.msg_on and time.time() > (self.last_on_time_ + self.on_sec_):
-                    self.send_(self.msg_off)
+                    elif self.state_ == self.msg_on and time.time() > (self.last_on_time_ + self.on_sec_):
+                        self.mode_ = StatusLED.Mode.OFF
 
-            # self.state_ = not self.state_
-            # self.send_(self.msg_on if self.state_ else self.msg_off)
-            await asyncio.sleep(.001) # 1ms loop
+                elif self.mode_ == StatusLED.Mode.BLINKING:
+
+                    if self.state_ != self.msg_on:
+                        if self.last_off_time_ < 0.0 or time.time() > (self.last_off_time_ + self.interval_sec_ - self.on_sec_):
+                            self.send_(self.msg_on)
+                    elif self.state_ == self.msg_on and time.time() > (self.last_on_time_ + self.on_sec_):
+                        self.send_(self.msg_off)
+
+                # self.state_ = not self.state_
+                # self.send_(self.msg_on if self.state_ else self.msg_off)
+                
+                await asyncio.sleep(.001) # 1ms loop
+        except Exception:
+            return
 
         print(">>> ... _blinker stopped")
 
@@ -114,8 +117,7 @@ class StatusLED():
                 self.last_on_time_ = time.time()
             elif msg.data == False:
                 self.last_off_time_ = time.time()
-
-        except rclpy._rclpy_pybind11.RCLError:
+        except Exception as e: # was rclpy._rclpy_pybind11.RCLError
             pass
 
     def clear(self):

@@ -43,10 +43,10 @@ import fractions
 encoder_h264:H264Encoder = None
 
 # runs as a separate process for bette isolation and lower ctrl/cam latency
-def TopicReadProcessor(running_shared:mp.Value, ctrl_queue:mp.Queue, data_out_queue:mp.Queue,
+def TopicReadProcessor(running_shared:mp.Value, reader_label:str, ctrl_queue:mp.Queue, 
                         conf:any, log_message_every_sec:float=5.0):
 
-    print('Topic Reader: starting')
+    print(f'Topic Reader {reader_label}: starting')
 
     # rclpy.init()
 
@@ -54,7 +54,7 @@ def TopicReadProcessor(running_shared:mp.Value, ctrl_queue:mp.Queue, data_out_qu
     rcl_ctx.init() # This must be done before any ROS nodes can be created.
     # rcl_cbg = MutuallyExclusiveCallbackGroup()
     rcl_executor = SingleThreadedExecutor(context=rcl_ctx)
-    reader_node = Node("phntm_bridge_reader", context=rcl_ctx, enable_rosout=False)
+    reader_node = Node(f"phntm_bridge_reader_{reader_label}", context=rcl_ctx, enable_rosout=False)
 
     # rcl_executor.add_node(reader_node)
     # rcl_cbg.add_entity(reader_node)
@@ -66,40 +66,40 @@ def TopicReadProcessor(running_shared:mp.Value, ctrl_queue:mp.Queue, data_out_qu
 
     try:
 
-        asyncio.run(TopicReadProcessorLoop(reader_node, rcl_executor, running_shared, ctrl_queue))
+        asyncio.run(TopicReadProcessorLoop(reader_node, reader_label, rcl_executor, running_shared, ctrl_queue))
 
     except (asyncio.CancelledError, KeyboardInterrupt):
-        print(c(f'Topic Reader: Shutting down', 'red'))
+        print(c(f'Topic Reader {reader_label}: Shutting down', 'red'))
         pass
     except Exception as e:
-        print(c(f'Topic Reader: Exception in processor loop:', 'red'))
+        print(c(f'Topic Reader {reader_label}: Exception in processor loop:', 'red'))
         traceback.print_exception(e)
 
     # reader_node.destroy_node()
     rcl_executor.shutdown()
 
-    print('Topic Reader: finished')
+    print(f'Topic Reader {reader_label}: finished')
 
 
-async def SpinNode(reader_node, rcl_executor, running_shared:mp.Value):
+async def SpinNode(reader_node, reader_label, rcl_executor, running_shared:mp.Value):
 
-    reader_node.get_logger().warn(f'Topic Reader: Spining the node...')
+    reader_node.get_logger().warn(f'Topic Reader {reader_label}: Spining the node...')
     while running_shared.value > 0:
         rclpy.spin_once(reader_node, executor=rcl_executor, timeout_sec=0.1)
         # rclpy.spin_once(reader_node, executor=rcl_executor, timeout_sec=0.1)
         await asyncio.sleep(.001)
 
-    reader_node.get_logger().warn(f'Topic Reader: Done spinning')
+    reader_node.get_logger().warn(f'Topic Reader {reader_label}: Done spinning node')
 
 
-async def TopicReadProcessorLoop(reader_node, rcl_executor, running_shared:mp.Value, ctrl_queue:mp.Queue):
+async def TopicReadProcessorLoop(reader_node, reader_label:str, rcl_executor, running_shared:mp.Value, ctrl_queue:mp.Queue):
 
     active_subs:dict[str:dict] = {}
     newest_messages_by_topic:dict[str:list] = {}
     image_push_tasks:dict[str:asyncio.Future] = {} 
     data_push_tasks:dict[str:asyncio.Future] = {} 
     
-    asyncio.get_event_loop().create_task(SpinNode(reader_node, rcl_executor, running_shared))
+    asyncio.get_event_loop().create_task(SpinNode(reader_node, reader_label, rcl_executor, running_shared))
     # spin_future = asyncio.Future()
     # asyncio.get_event_loop().run_in_executor(None, lambda: rclpy.spin_until_future_complete(reader_node, spin_future, executor=rcl_executor, timeout_sec=0.1))
 
@@ -112,7 +112,7 @@ async def TopicReadProcessorLoop(reader_node, rcl_executor, running_shared:mp.Va
         while True:
             try:
                 ctrl_cmd = ctrl_queue.get(block=False)
-                on_cmd(reader_node, ctrl_cmd, active_subs, newest_messages_by_topic)
+                on_cmd(reader_node, ctrl_cmd, reader_label, active_subs, newest_messages_by_topic)
             except Empty:
                 break # all messages processed
 
@@ -149,14 +149,22 @@ async def TopicReadProcessorLoop(reader_node, rcl_executor, running_shared:mp.Va
     # spin_future.set_result(True)
 
 
-def on_cmd(reader_node:Node, ctrl_cmd:dict, active_subs:dict[str:dict], newest_messages_by_topic:dict[str:list]):
+def on_cmd(reader_node:Node, ctrl_cmd:dict, reader_label:str, active_subs:dict[str:dict], newest_messages_by_topic:dict[str:list]):
 
     topic = ctrl_cmd['topic']
 
     # unsubscribe or clear before subscribing again
     if ctrl_cmd['action'] == 'unsubscribe' or topic in active_subs.keys():
-        reader_node.get_logger().info(f'Topic Reader: Destroying local subscriber for {topic}')
+        reader_node.get_logger().info(f'Topic Reader {reader_label}: Destroying local subscriber for {topic}')
         reader_node.destroy_subscription(active_subs[topic]['sub'])
+        if 'push_task' in active_subs[topic].keys() and active_subs[topic]['push_task'] and not active_subs[topic]['push_task'].done():
+            reader_node.get_logger().info(f'Topic Reader {reader_label}: cancelling unfinished push task for {topic}')
+            active_subs[topic]['push_task'].cancel()
+        # print(f'Processsor skipping frame of {topic}, last not yet consumed yet')
+        # return
+        if 'pipe' in active_subs[topic].keys():
+            reader_node.get_logger().info(f'Topic Reader {reader_label}: closing pipe for {topic}')
+            active_subs[topic]['pipe'].close()
         del active_subs[topic]
 
     if ctrl_cmd['action'] == 'subscribe':
@@ -180,7 +188,7 @@ def on_cmd(reader_node:Node, ctrl_cmd:dict, active_subs:dict[str:dict], newest_m
         except:
             pass
         if message_class == None:
-            reader_node.get_logger().error(f'Topic Reader: NOT subscribing to topic {topic}, msg class {msg_type} not loaded')
+            reader_node.get_logger().error(f'Topic Reader {reader_label}: NOT subscribing to topic {topic}, msg class {msg_type} not loaded')
             return
 
         qosProfile = QoSProfile(
@@ -190,14 +198,14 @@ def on_cmd(reader_node:Node, ctrl_cmd:dict, active_subs:dict[str:dict], newest_m
                         durability=durability,
                         lifespan=lifespan
                         )
-        reader_node.get_logger().warn(f'Topic Reader: Subscribing to topic {topic} {msg_type} reliability={reliability} durability={durability} lifespan={lifespan}')
+        reader_node.get_logger().warn(f'Topic Reader {reader_label}: Subscribing to topic {topic} {msg_type} reliability={reliability} durability={durability} lifespan={lifespan}')
         no_skip:bool = ctrl_cmd['no_skip'] if 'no_skip' in ctrl_cmd.keys() else False
         
         cb = None
         if msg_type == ImageTopicReadSubscription.MSG_TYPE:
-            cb = lambda msg: on_image_data(topic, msg, active_subs)
+            cb = lambda msg: on_image_data(topic, msg, reader_label, active_subs)
         else:
-            cb = lambda msg: on_data(topic, msg, active_subs)
+            cb = lambda msg: on_data(topic, msg, reader_label, active_subs)
         
         sub = reader_node.create_subscription(
                         msg_type=message_class,
@@ -224,7 +232,7 @@ def on_cmd(reader_node:Node, ctrl_cmd:dict, active_subs:dict[str:dict], newest_m
             'executor': concurrent.futures.ThreadPoolExecutor(max_workers=1)
         }
         if not topic in active_subs.keys():
-            reader_node.get_logger().error(f'Topic Reader: Failed subscribing to topic {topic}, msg class={msg_type}')
+            reader_node.get_logger().error(f'Topic Reader {reader_label}: Failed subscribing to topic {topic}, msg class={msg_type}')
 
 # def save_newest_msg(topic:str, msg:any, newest_messages_by_topic:dict[str:list], no_skip:bool, pipe:Connection):
 #     # reader_node.get_logger().info(f' >> {msg_topic}, got {len(msg)} B')
@@ -240,7 +248,7 @@ def on_cmd(reader_node:Node, ctrl_cmd:dict, active_subs:dict[str:dict], newest_m
 #         newest_messages_by_topic[topic] = [ msg ]
 
 
-def on_data(topic:str, msg:any, active_subs:dict):
+def on_data(topic:str, msg:any, reader_label:str, active_subs:dict):
 
     if not topic in active_subs.keys():
         return
@@ -267,10 +275,10 @@ def on_data(topic:str, msg:any, active_subs:dict):
         # await asyncio.sleep(0.01)
 
     except Exception as e:
-        print(c(f'Topic Reader: output err for {topic}: {e}', 'red'))
+        print(c(f'Topic Reader {reader_label}: output err for {topic}: {e}', 'red'))
         
 
-def on_image_data(topic:str, msg:any, active_subs:dict):
+def on_image_data(topic:str, msg:any, reader_label:str, active_subs:dict):
 
     if not topic in active_subs.keys():
         return

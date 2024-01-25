@@ -54,7 +54,7 @@ class TopicReadSubscription:
         self.event_loop = event_loop
         self.last_send_future:asyncio.Future = None
         
-        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=3, thread_name_prefix=f'{topic}_read')
 
         # self.send_pool = concurrent.futures.ThreadPoolExecutor()
         #print(f'TopicReadSubscription:__init__() {threading.get_ident()}')
@@ -63,7 +63,6 @@ class TopicReadSubscription:
 
         if self.sub != None:
             self.peers[id_peer] = dc
-
             return True #all done, one sub for all
 
         if self.reader_ctrl_queue: # subscribe on processor's process
@@ -82,7 +81,7 @@ class TopicReadSubscription:
                                                })
             self.sub = True
             
-            self.read_task = self.event_loop.create_task(self.read_piped_data())
+            self.read_task = self.event_loop.create_task(self.read_piped_data(), name="pipe_reader")
 
         else: #subscribe here on ctrl node's process
             #print(f'TopicReadSubscription:start() {threading.get_ident()}')
@@ -121,13 +120,12 @@ class TopicReadSubscription:
         return True
 
     async def read_piped_data(self):
-        while True:
+        while self.read_task and not self.read_task.cancelled():
             try:
                 res = await self.event_loop.run_in_executor(self.executor, self.pipe_out.recv) #blocks
                 await self.on_msg(res)
-
             except (KeyboardInterrupt, asyncio.CancelledError):
-                print(f'read_piped_data for {self.topic} got err')
+                print(f'read_piped_data for {self.topic} got interrupt')
                 return
             except Exception as e:
                 self.ctrl_node.get_logger().error(f'Exception while reading latest from data pipe: {str(e)}')
@@ -150,10 +148,10 @@ class TopicReadSubscription:
             self.last_log = self.last_msg_time #last logged now
 
         for id_peer in self.peers.keys():
-            dc:RTCDataChannel = self.peers[id_peer]
-            if dc.readyState == 'open':
+            peer_dc:RTCDataChannel = self.peers[id_peer]
+            if peer_dc.readyState == 'open':
                 if log_msg:
-                    self.ctrl_node.get_logger().info(f'⚡️ Sending {len(self.last_msg)}B into {self.topic} for id_peer={id_peer} / dc= {str(id(dc))}, total received: {self.num_received}')
+                    self.ctrl_node.get_logger().info(f'⚡️ Sending {len(self.last_msg)}B into {self.topic} for id_peer={id_peer} / dc= {str(id(peer_dc))}, total received: {self.num_received}')
                 # print(f' hello! {self.topic}')
                 try:
                     # await self.event_loop.create_task(dc.send(msg)) #always raw bytes bcs fast
@@ -166,7 +164,7 @@ class TopicReadSubscription:
                     # self.event_loop.call_soon_threadsafe(dc.send, msg)
 
                     # last_unfinished = self.last_send_future is not None and not self.last_send_future.done()
-                    dc.send(self.last_msg)
+                    peer_dc.send(self.last_msg)
 
                     # await dc.send(msg) #always raw bytes bcs fast
                 except Exception as e:
@@ -196,34 +194,36 @@ class TopicReadSubscription:
                 return #unsubscribed already
             
             if peer.pc == None or peer.pc.signalingState != 'stable':
-                await asyncio.sleep(.5) # wait for stable
+                await asyncio.sleep(.1) # wait for stable
                 continue
             
             dc:RTCDataChannel = self.peers[peer.id]
 
             if self.last_msg == None:
-                await asyncio.sleep(.5) # wait for data
+                await asyncio.sleep(.1) # wait for data
                 continue
 
             if dc.readyState != 'open':
-                await asyncio.sleep(.5) #wait until dc opens
+                await asyncio.sleep(.1) #wait until dc opens
                 continue
             
             # asyncio.get_event_loop().create_task(self.peers[id_peer].send())
             self.ctrl_node.get_logger().debug(f'⚡️ Sending latest {len(self.last_msg)}B msg of {self.topic} to {peer.id}')
             try:
-                await asyncio.sleep(1.0) # wait for the dc to fully init (this could be better)
+                # await asyncio.sleep(1.0) # wait for the dc to fully init (this could be better)
                 dc.send(self.last_msg)
                 return #all done
             except Exception as e:
                 self.ctrl_node.get_logger().debug(f'⚡️ Exception while sending latest of {self.topic} to {peer.id}: {e}')
-                await asyncio.sleep(.5) #wait until dc opens
+                await asyncio.sleep(.1) #wait until dc opens
+                pass
                 
                 
-    def stop(self, id_peer:str) -> bool:
+    async def stop(self, id_peer:str) -> bool:
 
         if id_peer in self.peers.keys():
-            self.peers.pop(id_peer)
+            peer_dc:RTCDataChannel = self.peers.pop(id_peer)
+            peer_dc.close()
 
         if len(self.peers.keys()) > 0:
             return False # active subscribers
@@ -237,8 +237,21 @@ class TopicReadSubscription:
         if self.read_task and not self.read_task.cancelled():
             self.ctrl_node.get_logger().info(f'Cancelling read task for subscriber of {self.topic}')
             self.read_task.cancel()
-            
+        
+        try:
+            if self.pipe_out.poll():
+                self.ctrl_node.get_logger().info(f'Cleaning pipe for {self.topic}')
+                self.pipe_out.recv()
+        except Exception as e:
+            self.ctrl_node.get_logger().info(f'Error cleaning pipe for {self.topic}')
+            pass
+        self.pipe_out.close()
+        
+        self.executor.shutdown(False, cancel_futures=True) 
         self.sub = None
-        self.topic = None
+        # self.topic = None
 
         return True #destroyed
+    
+    def __del__(self):
+        print(f"Reader {self.topic} is being destroyed here")

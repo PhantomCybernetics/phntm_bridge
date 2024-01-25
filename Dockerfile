@@ -113,11 +113,11 @@ RUN echo 'test -f "/ros2_ws/install/setup.bash" && source "/ros2_ws/install/setu
 WORKDIR $ROS_WS
 
 # clone forked aioice repo and install with pip
-RUN git clone https://github.com/PhantomCybernetics/aioice.git /ros2_ws/aioice
+RUN git clone -b fixes https://github.com/PhantomCybernetics/aioice.git /ros2_ws/aioice
 RUN pip install -e /ros2_ws/aioice
 
 # install aiortc fork from phntm github
-RUN git clone -b perf_fixes https://github.com/PhantomCybernetics/aiortc.git /ros2_ws/aiortc
+RUN git clone -b performance https://github.com/PhantomCybernetics/aiortc.git /ros2_ws/aiortc
 RUN pip install -e /ros2_ws/aiortc
 
 # clone and install phntm interfaces and bridge

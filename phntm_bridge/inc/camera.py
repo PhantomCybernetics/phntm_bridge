@@ -10,6 +10,8 @@ import av
 import fractions
 import time
 
+import asyncio
+
 from rclpy.impl.rcutils_logger import RcutilsLogger
 
 from picamera2.outputs import FileOutput
@@ -18,7 +20,6 @@ import libcamera
 
 from aiortc import RTCRtpSender
 from aiortc.codecs.h264 import PACKET_MAX
-import asyncio
 
 NS_TO_SEC = 1000000000
 # VIDEO_PTIME = 1 / 30  # 30fps
@@ -70,7 +71,7 @@ class Picamera2Subscription:
                 self.get_logger().error(f'Failed creating publisher for cam recorder {id_camera}')
         
     async def start(self, id_peer:str, sender:RTCRtpSender) -> bool:
-
+        
         if self.output != None:
             self.peers[id_peer] = sender
             return True #all done, one sub for all
@@ -104,10 +105,13 @@ class Picamera2Subscription:
         return True
 
     def stop(self, id_peer:str):
+        
+        self.logger.info(c(f'Picam stopping for {id_peer}', 'magenta'))
+        
         if id_peer in self.peers.keys():
             self.peers.pop(id_peer)
 
-        self.logger.info(c(f'Picam peers {self.peers}', 'magenta'))
+        self.logger.info(c(f'Active picam subscribers: {len(self.peers)}', 'magenta'))
 
         if len(self.peers) > 0:
             return False
@@ -205,16 +209,16 @@ class PacketsOutput(FileOutput):
 
         payloads, stamp_converted = self.aiortc_encoder.pack(packet)
 
-        if self.sub.recording and self.sub.pub:
-            im = Image()
-            im.header.frame_id = self.sub.id_camera
-            im.header.stamp.sec = timestamp // 1_000_000_000
-            im.header.stamp.nanosec = timestamp % 1_000_000_000
-            im.width = self.sub.encoder.width
-            im.height = self.sub.encoder.height
-            im.encoding = 'h.264'
-            im.data = frame_bytes
-            self.sub.pub.publish(im)
+        # if self.sub.recording and self.sub.pub:
+        #     im = Image()
+        #     im.header.frame_id = self.sub.id_camera
+        #     im.header.stamp.sec = timestamp // 1_000_000_000
+        #     im.header.stamp.nanosec = timestamp % 1_000_000_000
+        #     im.width = self.sub.encoder.width
+        #     im.height = self.sub.encoder.height
+        #     im.encoding = 'h.264'
+        #     im.data = frame_bytes
+        #     self.sub.pub.publish(im)
 
         self.last_frame = timestamp
         for id_peer in dict.fromkeys(self.sub.peers.keys(),[]):
@@ -233,8 +237,8 @@ class PacketsOutput(FileOutput):
                 continue
 
             if self.sub.peers[id_peer].pc.connectionState != 'connected':
-                self.logger.info(c(f'👁️  Not sending {self.sub.id_camera} to id_peer={id_peer} / id_stream= {str(self.sub.peers[id_peer]._stream_id)}; pc={self.sub.peers[id_peer].pc.connectionState}, transport={self.sub.peers[id_peer].transport.state}', 'red'))
-                continue
+                # self.logger.info(c(f'👁️  Not sending {self.sub.id_camera} to id_peer={id_peer} / id_stream= {str(self.sub.peers[id_peer]._stream_id)}; pc={self.sub.peers[id_peer].pc.connectionState}, transport={self.sub.peers[id_peer].transport.state}', 'red'))
+                continue # nesend(xt peer
 
             # fut = self.sub.event_loop.create_future()
             if log_msg:
@@ -242,7 +246,8 @@ class PacketsOutput(FileOutput):
             # if timestamp == 0:
                 # offset_ns = time.time_ns()-self.bridge_time_started_ns
                 # self.sub.peers[id_peer].timestamp_origin = convert_timebase(offset_ns, SRC_VIDEO_TIME_BASE, VIDEO_TIME_BASE)
-            
+                
+            # payload_type = 101 # =variable
             self.last_frame_tasks[id_peer] = self.sub.event_loop.create_task(self.sub.peers[id_peer].send_direct(frame_data=payloads, stamp_converted=stamp_converted, keyframe=keyframe))
             
 

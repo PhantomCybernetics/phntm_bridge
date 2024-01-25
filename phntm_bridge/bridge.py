@@ -83,7 +83,7 @@ class BridgeController(Node, BridgeControllerConfig):
         super().__init__('phntm_bridge_ctrl')
 
         self.shutting_down:bool = False
-        self.paused:bool = False
+        # self.paused:bool = False
        
         self.get_logger().set_level(rclpy.logging.LoggingSeverity.DEBUG)
         self.load_config(self.get_logger())
@@ -398,7 +398,7 @@ class BridgeController(Node, BridgeControllerConfig):
 
         @self.sio.event
         def connect_error(data):
-            self.get_logger().err('Socket.io connection failed')
+            self.get_logger().error('Socket.io connection failed')
 
         @self.sio.event
         def disconnect():
@@ -432,7 +432,7 @@ class BridgeController(Node, BridgeControllerConfig):
                 await self.sio_reconnect_wait_task
                 self.sio_reconnect_wait_task = None
             except asyncio.CancelledError:
-                self.get_logger().info('CancelledError')
+                self.get_logger().info('Socker.io CancelledError')
                 return
 
     # async def read_queue_lastest_by_topic(self) -> dict[str:dict]:
@@ -549,7 +549,8 @@ class BridgeController(Node, BridgeControllerConfig):
         @peer.pc.on("connectionstatechange")
         async def on_connectionstatechange():
             if peer.pc.connectionState == "failed":
-               await self.remove_peer(peer.id, wait=True)
+                self.get_logger().warn(f'{peer} connection state is failed')
+                await self.remove_peer(peer.id, wait=True)
 
         self.wrtc_peers[id_peer] = peer
         peer.read_subs = peer_data['read'] if 'read' in peer_data.keys() else []
@@ -565,9 +566,9 @@ class BridgeController(Node, BridgeControllerConfig):
             return None
         
         peer.processing_subscriptions = True 
-        self.get_logger().info(f'Processing {peer} subs, read={peer.read_subs} write={peer.write_subs}; signalingState={peer.pc.signalingState} iceGatheringState={peer.pc.iceGatheringState}')
-
         disconnected = peer.pc.connectionState == "failed" or not peer.sio_connected
+        
+        self.get_logger().info(f'Processing {"disconnected " if disconnected else ""}{peer} subs, read={peer.read_subs} write={peer.write_subs}; signalingState={peer.pc.signalingState} iceGatheringState={peer.pc.iceGatheringState}')
 
         res = {
             'session': peer.session.hex,
@@ -592,8 +593,9 @@ class BridgeController(Node, BridgeControllerConfig):
                 msg_type = self.introspection.discovered_topics[sub]['msg_types'][0]
                 is_image = IsImageType(msg_type)
                 if not is_image:
-                    id_dc = await self.subscribe_data_topic(sub, peer)
-                    res['read_data_channels'].append([sub, id_dc, msg_type])
+                    reliable = self.get_parameter_or(f'{sub}.reliability', Parameter(name='', value=0)).get_parameter_value().integer_value == 1 # 1=RELIABLE
+                    id_dc = await self.subscribe_data_topic(sub, reliable, peer)
+                    res['read_data_channels'].append([sub, id_dc, msg_type, reliable])
                 elif is_image:
                     id_track = await self.subscribe_image_topic(sub, peer)
                     res['read_video_streams'].append([ sub, id_track ])
@@ -638,7 +640,7 @@ class BridgeController(Node, BridgeControllerConfig):
                     await self.unsubscribe_image_topic(sub, peer)
                 res['read_video_streams'].append([ sub ]) # no id => unsubscribed
 
-        #close write channels
+        # close write channels
         for topic in list(peer.inbound_data_channels.keys()):
             topic_active = False
             for sub in peer.write_subs:
@@ -680,7 +682,7 @@ class BridgeController(Node, BridgeControllerConfig):
                 return { 'err': 2, 'msg': 'Timed out waiting for ICE gathering state' }
 
         if not peer.sio_connected and peer.pc.connectionState != "failed":
-            self.get_logger().err(f'peer.sio_connected={peer.sio_connected}; peer.pc.connectionState={peer.pc.connectionState}')
+            self.get_logger().error(f'peer.sio_connected={peer.sio_connected}; peer.pc.connectionState={peer.pc.connectionState}')
             peer.processing_subscriptions = False
             return False
 
@@ -717,10 +719,11 @@ class BridgeController(Node, BridgeControllerConfig):
         peer = self.wrtc_peers[id_peer]
 
         if wait:
-            self.get_logger().info(f'{peer} seems to be disconnected (waiting 10s...)')
+            wait_s = 2.0
+            self.get_logger().info(f'{peer} seems to be disconnected (waiting {wait_s}s...)')
 
-            self.paused = True
-            await asyncio.sleep(10.0) #wait a bit for reconnects (?!)
+            # self.paused = True
+            await asyncio.sleep(wait_s) #wait a bit for reconnects (?!)
 
             if not id_peer in self.wrtc_peers.keys():
                 return # already removed
@@ -737,15 +740,18 @@ class BridgeController(Node, BridgeControllerConfig):
         peer.write_subs = []
 
         await self.process_peer_subscriptions(peer) #unsubscribes
-
+        
+        self.get_logger().info(c(f'{peer} subscriptions clear', 'red'))
+        
         if id_peer in self.wrtc_peers.keys():
             try:
                 await self.wrtc_peers[id_peer].pc.close()
             except Exception as e:
+                self.get_logger().info(c(f'Exception while closing pc of {peer}, {e}', 'red'))
                 pass
             del self.wrtc_peers[id_peer]
-
-
+    
+    
     async def peer_signalling_stable_checker(self, peer:WRTCPeer) -> bool:
         timeout_sec = 10.0
         while peer.pc.signalingState != 'stable' and timeout_sec > 0.0:
@@ -783,7 +789,7 @@ class BridgeController(Node, BridgeControllerConfig):
 
 
     # SUBSCRIBE data topic
-    async def subscribe_data_topic(self, topic:str, peer:WRTCPeer) -> str:
+    async def subscribe_data_topic(self, topic:str, reliable:bool, peer:WRTCPeer) -> str:
 
         if not topic in self.introspection.discovered_topics.keys():
             return None
@@ -807,16 +813,15 @@ class BridgeController(Node, BridgeControllerConfig):
                                                                             log_message_every_sec=self.log_message_every_sec)
             self.topic_read_subscriptions[topic].on_msg_cb = self.on_msg_blink # blinker
 
-        reliable = self.get_parameter_or(f'{topic}.reliability', Parameter(name='', value=0)).get_parameter_value().integer_value == 1 # 1=RELIABLE
         send_latest = False
         if not topic in peer.outbound_data_channels.keys():
             self.wrtc_nextChannelId += 1
             dc:RTCDataChannel = peer.pc.createDataChannel(topic,
                                                             id=self.wrtc_nextChannelId,
                                                             protocol=msg_type,
-                                                            negotiated=True,
+                                                            negotiated=False, # negotiated by the app layer?
                                                             ordered=False if not reliable else True,
-                                                            maxRetransmits=None if not reliable else 3)
+                                                            maxRetransmits=None if reliable else 0)
             peer.outbound_data_channels[topic] = dc
             self.get_logger().debug(f'{peer} subscribed to {topic} (protocol={msg_type}, ch_id={dc.id}); reliable={reliable}')
             if reliable:
@@ -840,7 +845,7 @@ class BridgeController(Node, BridgeControllerConfig):
             peer.outbound_data_channels.pop(topic)
 
         if topic in self.topic_read_subscriptions.keys():
-            if self.topic_read_subscriptions[topic].stop(peer.id):
+            if await self.topic_read_subscriptions[topic].stop(peer.id):
                 self.get_logger().debug(f'No longer reading {topic}')
                 self.topic_read_subscriptions.pop(topic)
 
@@ -925,7 +930,7 @@ class BridgeController(Node, BridgeControllerConfig):
             self.get_logger().error(f'{id_cam} Not available via Picamera2')
             return None
 
-        if not id_cam in self.camera_subscriptions:
+        if not id_cam in self.camera_subscriptions.keys():
             self.get_logger().info(f'Subscribing to camera {id_cam}')
             self.camera_subscriptions[id_cam] = Picamera2Subscription(id_camera=id_cam,
                                                                       picam2=self.picam2,
@@ -941,6 +946,7 @@ class BridgeController(Node, BridgeControllerConfig):
         if not id_cam in peer.video_tracks.keys():
             track = CameraVideoStreamTrack()
             sender:RTCRtpSender = peer.pc.addTrack(track)
+            sender.setDirect(True)
 
             # set transciever's preference to H264
             transcievers = peer.pc.getTransceivers()
@@ -971,15 +977,19 @@ class BridgeController(Node, BridgeControllerConfig):
 
     # UNSUBSCRIBE Pi camera stream
     async def unsubscribe_picamera(self, id_cam:str, peer:WRTCPeer):
+        
+        if id_cam in self.camera_subscriptions.keys():
+            self.get_logger().debug(f'Stopping camera sub {id_cam}')
+            if self.camera_subscriptions[id_cam].stop(peer.id): # cam destroyed
+                self.get_logger().debug(f'No longer processing {id_cam}')
+                self.camera_subscriptions.pop(id_cam)
+        
         if id_cam in peer.video_tracks.keys():
             self.get_logger().debug(f'{peer} no longer subscribed to {id_cam}; removing video track')
-            await peer.video_tracks[id_cam].stop()
+            await peer.video_tracks[id_cam].stop() # sender
+            self.get_logger().debug(f'{peer} video track stopped')
             peer.video_tracks.pop(id_cam)
-
-        if id_cam in self.camera_subscriptions.keys():
-            if self.camera_subscriptions[id_cam].stop(peer.id): # cam destroyed
-                self.get_logger().debug(f'No longer reading {id_cam}')
-                self.camera_subscriptions.pop(id_cam)
+            self.get_logger().debug(f'video_track cleared')
 
 
     # OPEN WRITE data channel
@@ -1771,20 +1781,21 @@ class BridgeController(Node, BridgeControllerConfig):
 async def main_async():
 
     # reader runs on a separate process
-    reader_on_flag = mp.Value('b', 1, lock=False)
+    readers_enabled = mp.Value('b', 1, lock=False)
+    
     image_reader_ctrl_queue = mp.Queue()
     data_reader_ctrl_queue = mp.Queue()
-    reader_out_data_queue = mp.Queue()
     # reader_out_image_queue = mp.Queue()
     data_topic_read_processor = mp.Process(target=TopicReadProcessor,
-                                      args=(reader_on_flag,
+                                      args=(readers_enabled,
+                                            'data',
                                             data_reader_ctrl_queue,
-                                            reader_out_data_queue,
                                             None))
     data_topic_read_processor.start()
     
     image_topic_read_processor = mp.Process(target=TopicReadProcessor,
-                                      args=(reader_on_flag,
+                                      args=(readers_enabled,
+                                            'img',
                                             image_reader_ctrl_queue,
                                             None, #writes into pipes (??)
                                             None))
@@ -1838,13 +1849,13 @@ async def main_async():
 
         # create tasks for spinning and sleeping
         # spin_task = asyncio.get_event_loop().create_task(bridge_node.spin_async())
-        sio_task = asyncio.get_event_loop().create_task(bridge_node.spin_sio_client())
+        sio_task = asyncio.get_event_loop().create_task(bridge_node.spin_sio_client(), name="sio_task")
         # read_data_task = asyncio.get_event_loop().create_task(bridge_node.read_queued_data(out_queue=reader_out_data_queue))
         # read_images_task = asyncio.get_event_loop().create_task(bridge_node.read_queued_images(out_queue=reader_out_image_queue))
         # read_images_task = asyncio.get_event_loop().create_task(bridge_node.read_piped_images())
-        initial_introspection_task = asyncio.get_event_loop().create_task(bridge_node.introspection.start())
+        initial_introspection_task = asyncio.get_event_loop().create_task(bridge_node.introspection.start(), name="initial_introspection_task")
         if bridge_node.iw != None:
-            iw_monitor_task = asyncio.get_event_loop().create_task(bridge_node.iw.start_monitor())
+            iw_monitor_task = asyncio.get_event_loop().create_task(bridge_node.iw.start_monitor(), name="iw_task")
 
         # concurrently execute both tasks on this process
         await asyncio.wait([ sio_task ], return_when=asyncio.ALL_COMPLETED)
@@ -1861,12 +1872,16 @@ async def main_async():
     if bridge_node.iw:
         await bridge_node.iw.stop_monitor()
 
-    reader_on_flag.value = 0 #stop readed thread
-    image_topic_read_processor.terminate()
-    image_topic_read_processor.join()
-    data_topic_read_processor.terminate()
-    data_topic_read_processor.join()
+    image_reader_ctrl_queue.close();
 
+    readers_enabled.value = 0 # stops reader threads
+    
+    image_topic_read_processor.join()
+    image_topic_read_processor.terminate()
+    
+    data_topic_read_processor.join()
+    data_topic_read_processor.terminate()
+    
     # cancel tasks
     # if spin_task.cancel():
         # await spin_task
