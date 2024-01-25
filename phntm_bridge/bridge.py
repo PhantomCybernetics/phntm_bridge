@@ -798,7 +798,7 @@ class BridgeController(Node, BridgeControllerConfig):
         if IsImageType(msg_type):
             return None
 
-        if not topic in self.topic_read_subscriptions:
+        if not topic in self.topic_read_subscriptions.keys():
             reliability = self.get_parameter_or(f'{topic}.reliability', Parameter(name='', value=QoSReliabilityPolicy.BEST_EFFORT)).get_parameter_value().integer_value
             durability = self.get_parameter_or(f'{topic}.durability', Parameter(name='', value=DurabilityPolicy.VOLATILE)).get_parameter_value().integer_value
             lifespan = self.get_parameter_or(f'{topic}.lifespan', Parameter(name='', value=1)).get_parameter_value().integer_value

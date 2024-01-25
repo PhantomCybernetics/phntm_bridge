@@ -65,10 +65,21 @@ class Introspection (AsyncIOEventEmitter):
         await self.report_introspection()
 
         while self.running:
-            new_discoveries = await self.run_discovery() # True if cameras or topics discovered
+            new_discoveries:bool = await self.run_discovery() # True if cameras or topics discovered
 
-            if new_discoveries:
-                for peer in self.waiting_peers.copy():
+            for peer in self.waiting_peers.copy():
+                update_peer = new_discoveries
+                if not update_peer:
+                    for topic in peer.topics_not_discovered:
+                        if topic in self.discovered_topics.keys():
+                            update_peer = True
+                            break
+                if not update_peer:
+                    for cam in peer.cameras_not_discovered:
+                        if cam in self.discovered_cameras.keys():
+                            update_peer = True
+                            break
+                if update_peer:
                     self.waiting_peers.remove(peer)
                     await self.ctrl_node.process_peer_subscriptions(peer, send_update=True)
 
@@ -238,6 +249,7 @@ class Introspection (AsyncIOEventEmitter):
         try:
             data = self.get_nodes_data()
             self.logger.info(c(f'Reporting {len(data)} nodes', 'dark_grey'))
+            print(data)
 
             await self.sio.emit(
                 event='nodes',
