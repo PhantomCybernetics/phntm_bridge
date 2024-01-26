@@ -117,7 +117,7 @@ class StatusLED():
                 self.last_on_time_ = time.time()
             elif msg.data == False:
                 self.last_off_time_ = time.time()
-        except Exception as e: # was rclpy._rclpy_pybind11.RCLError
+        except (Exception, KeyboardInterrupt) as e: # was rclpy._rclpy_pybind11.RCLError
             pass
 
     def clear(self):

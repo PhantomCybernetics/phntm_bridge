@@ -566,7 +566,7 @@ class BridgeController(Node, BridgeControllerConfig):
             return None
         
         peer.processing_subscriptions = True 
-        disconnected = peer.pc.connectionState == "failed" or not peer.sio_connected
+        disconnected = peer.pc.connectionState == "failed" or not peer.sio_connected or self.shutting_down
         
         self.get_logger().info(f'Processing {"disconnected " if disconnected else ""}{peer} subs, read={peer.read_subs} write={peer.write_subs}; signalingState={peer.pc.signalingState} iceGatheringState={peer.pc.iceGatheringState}')
 
@@ -610,8 +610,7 @@ class BridgeController(Node, BridgeControllerConfig):
 
         if not disconnected and (len(peer.topics_not_discovered) > 0 or len(peer.cameras_not_discovered) > 0):
             self.introspection.add_waiting_peer(peer)
-            if not self.introspection.running:
-                asyncio.get_event_loop().create_task(self.introspection.start())
+            asyncio.get_event_loop().create_task(self.introspection.start())
         else:
             self.introspection.remove_waiting_peer(peer)
 
@@ -999,6 +998,7 @@ class BridgeController(Node, BridgeControllerConfig):
                                                                     topic=topic,
                                                                     protocol=msg_type,
                                                                     log_message_every_sec=self.log_message_every_sec)
+            asyncio.get_event_loop().create_task(self.introspection.start()) # created publisher => inrospect & update
 
         if not self.topic_write_publishers[topic].start(peer.id):
             self.get_logger().error(f'Topic {topic} failed to start publisher in on_write_subscription_change, {peer}')
@@ -1029,6 +1029,7 @@ class BridgeController(Node, BridgeControllerConfig):
             if self.topic_write_publishers[topic].stop(peer.id):
                 self.get_logger().debug(f'No longer publishing into {topic}')
                 self.topic_write_publishers.pop(topic)
+                asyncio.get_event_loop().create_task(self.introspection.start()) # removed publisher => inrospect & update
 
     ##
     # Topic READ subscriptions & message routing
@@ -1710,7 +1711,7 @@ class BridgeController(Node, BridgeControllerConfig):
 
         # close peer connections
         peer_remove_coros = [self.remove_peer(peer.id, False) for peer in self.wrtc_peers.values()]
-        print('Disconnecting peers...')
+        print(c(f'Disconnecting {len(self.wrtc_peers)} peers...', 'cyan'))
         await asyncio.gather(*peer_remove_coros)
         print(c(f'{len(peer_remove_coros)} peer{"" if len(peer_remove_coros) < 2 else "s"} disconnected', 'cyan'))
 
@@ -1867,13 +1868,13 @@ async def main_async():
         print(c('Shutting down main_async', 'red'))
 
     print('SHUTTING DOWN')
+    # bridge_node.get_logger().log_rosout_disabled 
     bridge_node.shutting_down = True
 
     if bridge_node.iw:
         await bridge_node.iw.stop_monitor()
 
     image_reader_ctrl_queue.close();
-
     readers_enabled.value = 0 # stops reader threads
     
     image_topic_read_processor.join()
