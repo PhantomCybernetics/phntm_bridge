@@ -117,48 +117,88 @@ class Introspection (AsyncIOEventEmitter):
         self.logger.info(c(f'Introspecting... ({len(self.waiting_peers)} peers waiting{(" for " + ", ".join(set(wating_for))) if len(wating_for) > 0 else ""})', 'dark_grey'))
 
         nodes_changed = False
-        new_nodes = self.ctrl_node.get_node_names_and_namespaces()
-
+        new_nodes = await asyncio.get_event_loop().run_in_executor(None, self.ctrl_node.get_node_names_and_namespaces)
+        
+        for old_node in self.discovered_nodes.copy().keys():
+            old_node_found = False
+            for node_info in new_nodes:
+                if node_info[0] == old_node:
+                    old_node_found = True
+                    break
+            if not old_node_found: # old node disappeared, trigger change
+                nodes_changed = True
+                del self.discovered_nodes[old_node]
+        
         for node_info in new_nodes:
             node = node_info[0]
             namespace = node_info[1]
             if not node in self.discovered_nodes.keys():
                 self.logger.info(c(f'Discovered node {node} ns={namespace}', 'light_green'))
                 self.discovered_nodes[node] = {
-                    'namespace': namespace
+                    'namespace': namespace,
+                    'publishers': {},
+                    'subscribers': {},
+                    'services': {}
                 }
                 nodes_changed = True
 
-            publishers = self.ctrl_node.get_publisher_names_and_types_by_node(node, namespace)
-            for publisher in publishers:
-                topic = publisher[0]
-                msg_types = publisher[1]
-                if not 'publishers' in self.discovered_nodes[node]:
-                    self.discovered_nodes[node]['publishers'] = {}
+            new_publishers = await asyncio.get_event_loop().run_in_executor(None, self.ctrl_node.get_publisher_names_and_types_by_node, node, namespace)
+            
+            for old_pub_topic in self.discovered_nodes[node]['publishers'].copy().keys():
+                pub_found = False
+                for pub_info in new_publishers:
+                    if pub_info[0] == old_pub_topic:
+                        pub_found = True
+                        break
+                if not pub_found:
+                    nodes_changed = True
+                    del self.discovered_nodes[node]['publishers'][old_pub_topic]
+                    
+            for pub_info in new_publishers:
+                topic = pub_info[0]
+                msg_types = pub_info[1]
                 if not topic in self.discovered_nodes[node]['publishers'].keys() \
                     or self.discovered_nodes[node]['publishers'][topic] != msg_types:
                     self.discovered_nodes[node]['publishers'][topic] = msg_types
                     self.logger.info(c(f'{node} > {topic} {msg_types}', 'light_green'))
                     nodes_changed = True
 
-            new_subscribers = self.ctrl_node.get_subscriber_names_and_types_by_node(node, namespace)
-            for subscriber in new_subscribers:
-                topic = subscriber[0]
-                msg_types = subscriber[1]
-                if not 'subscribers' in self.discovered_nodes[node]:
-                    self.discovered_nodes[node]['subscribers'] = {}
+            new_subscribers = await asyncio.get_event_loop().run_in_executor(None, self.ctrl_node.get_subscriber_names_and_types_by_node, node, namespace)
+            
+            for old_sub_topic in self.discovered_nodes[node]['subscribers'].copy().keys():
+                sub_found = False
+                for sub_info in new_subscribers:
+                    if sub_info[0] == old_sub_topic:
+                        sub_found = True
+                        break
+                if not sub_found:
+                    nodes_changed = True
+                    del self.discovered_nodes[node]['subscribers'][old_sub_topic]
+            
+            for sub_info in new_subscribers:
+                topic = sub_info[0]
+                msg_types = sub_info[1]
                 if not topic in self.discovered_nodes[node]['subscribers'].keys() \
                     or self.discovered_nodes[node]['subscribers'][topic] != msg_types:
                     self.discovered_nodes[node]['subscribers'][topic] = msg_types
                     self.logger.info(c(f'{node} < {topic} {msg_types}', 'light_green'))
                     nodes_changed = True
 
-            new_services = self.ctrl_node.get_service_names_and_types_by_node(node, namespace)
-            for service_info in new_services:
-                id_service = service_info[0]
-                msg_types = service_info[1]
-                if not 'services' in self.discovered_nodes[node]:
-                    self.discovered_nodes[node]['services'] = {}
+            new_services = await asyncio.get_event_loop().run_in_executor(None, self.ctrl_node.get_service_names_and_types_by_node, node, namespace)
+            
+            for old_serv in self.discovered_nodes[node]['services'].copy().keys():
+                serv_found = False
+                for serv_info in new_services:
+                    if serv_info[0] == old_serv:
+                        serv_found = True
+                        break
+                if not serv_found:
+                    nodes_changed = True
+                    del self.discovered_nodes[node]['services'][old_serv]
+            
+            for serv_info in new_services:
+                id_service = serv_info[0]
+                msg_types = serv_info[1]
                 if not id_service in self.discovered_nodes[node]['services'].keys() \
                     or self.discovered_nodes[node]['services'][id_service] != msg_types:
                     self.discovered_nodes[node]['services'][id_service] = msg_types

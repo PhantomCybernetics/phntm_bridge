@@ -15,8 +15,10 @@ from rclpy.qos import QoSHistoryPolicy, QoSReliabilityPolicy, DurabilityPolicy
 from termcolor import colored as c
 import os
 
+from .peer import WRTCPeer
+
 class IW:
-    def __init__(self, iface:str, monitor_period_s:float, node:Node, topic:str):
+    def __init__(self, iface:str, monitor_period_s:float, node:Node, wrtc_peers:dict[str: WRTCPeer], topic:str):
         self.iface:str = iface
         self.monitor_period:float = monitor_period_s
         self.monitor_running:bool = False
@@ -26,6 +28,8 @@ class IW:
         self.node:Node = node
         self.pub:Publisher = None
         self.topic:str = topic
+
+        self.wrtc_peers:dict[str: WRTCPeer] = wrtc_peers
 
         self.last_essid:str = None #roaming between aps with same essid
         self.last_access_point:str = None
@@ -94,7 +98,9 @@ class IW:
 
             msg.quality_max = self.max_quality # 70
             msg.supports_scanning = self.supports_scanning
-
+            
+            msg.num_peers = len(self.wrtc_peers)
+            
             self.last_essid = msg.essid
             self.last_access_point = msg.access_point
             self.last_frequency = msg.frequency

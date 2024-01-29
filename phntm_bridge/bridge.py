@@ -80,7 +80,8 @@ class BridgeController(Node, BridgeControllerConfig):
     # node constructor
     ##
     def __init__(self, image_reader_ctrl_queue:mp.Queue=None, data_reader_ctrl_queue:mp.Queue=None, picam2:Picamera2=None):
-        super().__init__('phntm_bridge_ctrl')
+        super().__init__(node_name='phntm_bridge',
+                         use_global_arguments=True)
 
         self.shutting_down:bool = False
         # self.paused:bool = False
@@ -1837,11 +1838,12 @@ async def main_async():
             bridge_node.iw = IW(iface=bridge_node.get_parameter('iw_interface').get_parameter_value().string_value,
                                 monitor_period_s=bridge_node.get_parameter('iw_monitor_period_sec').get_parameter_value().double_value,
                                 node=bridge_node,
+                                wrtc_peers=bridge_node.wrtc_peers,
                                 topic=bridge_node.get_parameter('iw_monitor_topic').get_parameter_value().string_value
                                 )
         except Exception as e:
             bridge_node.iw = None
-            print(c('IW monitor init failed'))
+            print(c('IW monitor init failed', 'red'))
 
         # rcl_executor.add_node(bridge_node)
         # rcl_cbg.add_entity(bridge_node)

@@ -54,7 +54,10 @@ def TopicReadProcessor(running_shared:mp.Value, reader_label:str, ctrl_queue:mp.
     rcl_ctx.init() # This must be done before any ROS nodes can be created.
     # rcl_cbg = MutuallyExclusiveCallbackGroup()
     rcl_executor = SingleThreadedExecutor(context=rcl_ctx)
-    reader_node = Node(f"phntm_bridge_reader_{reader_label}", context=rcl_ctx, enable_rosout=False)
+    reader_node = Node(node_name=f"phntm_reader_{reader_label}",
+                       context=rcl_ctx,
+                       enable_rosout=False,
+                       use_global_arguments=False)
 
     # rcl_executor.add_node(reader_node)
     # rcl_cbg.add_entity(reader_node)
