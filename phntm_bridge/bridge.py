@@ -811,6 +811,7 @@ class BridgeController(Node, BridgeControllerConfig):
                                                                             lifespan_sec=lifespan,
                                                                             event_loop=asyncio.get_event_loop(),
                                                                             log_message_every_sec=self.log_message_every_sec)
+            asyncio.get_event_loop().create_task(self.introspection.start())
             self.topic_read_subscriptions[topic].on_msg_cb = self.on_msg_blink # blinker
 
         send_latest = False
@@ -848,6 +849,7 @@ class BridgeController(Node, BridgeControllerConfig):
             if await self.topic_read_subscriptions[topic].stop(peer.id):
                 self.get_logger().debug(f'No longer reading {topic}')
                 self.topic_read_subscriptions.pop(topic)
+                asyncio.get_event_loop().create_task(self.introspection.start())
 
 
     # SUBSCRIBE image topic
@@ -874,6 +876,7 @@ class BridgeController(Node, BridgeControllerConfig):
                                                                                     time_base=1,
                                                                                     bridge_time_started_ns=self.time_started_ns
                                                                                     )
+            asyncio.get_event_loop().create_task(self.introspection.start())
             self.image_topic_read_subscriptions[topic].on_msg_cb = self.on_msg_blink # blinker
 
         if not topic in peer.video_tracks.keys():
@@ -919,6 +922,7 @@ class BridgeController(Node, BridgeControllerConfig):
             if self.image_topic_read_subscriptions[topic].stop(peer.id): # subscriber destroyed
                 self.get_logger().debug(f'No longer reading {topic}')
                 self.image_topic_read_subscriptions.pop(topic)
+                asyncio.get_event_loop().create_task(self.introspection.start())
 
     # SUBSCRIBE Pi camera stream
     async def subscribe_picamera(self, id_cam:str, peer:WRTCPeer) -> str:
