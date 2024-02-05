@@ -18,6 +18,7 @@ except Exception as e:
     pass
 
 import fractions
+import tarfile, io
 
 from rcl_interfaces.msg import ParameterDescriptor
 import signal
@@ -388,10 +389,54 @@ class BridgeController(Node, BridgeControllerConfig):
             self.wrtc_peers[id_peer].sio_connected = False
             self.get_logger().warn(f'Peer {id_peer} disconnected from Socket.io server (fyi, ignoring)')
 
-        @self.sio.on('message')
-        async def on_message(data):
-            self.get_logger().warn('Unhandled: Socket.io message received with ' + str(data))
-            self.sio.send({'response': '?'})
+        @self.sio.on('file')
+        async def on_file_request(data):
+            file_url = data
+            self.get_logger().warn(f'Bridge requesting file {file_url}')
+            
+            if os.path.isfile(file_url):
+                self.get_logger().info(f'File found in this fs')
+                f = open(file_url, "rb")
+                res = f.read()
+                f.close()
+                return res
+            elif docker_client:
+                self.get_logger().warn(f'File not found in this fs, searching docker containers...')
+                docker_containers = docker_client.containers.list(all=False)
+                for container in docker_containers:
+                    try:
+                        tar_chunks, stats = container.get_archive(file_url, chunk_size=None, encode_stream=False)
+                    except Exception as e:
+                        self.get_logger().info(f'File not found in {container.name} fs; {e}')
+                        continue
+                    
+                    self.get_logger().debug(f'File found in {container.name} fs')
+                    self.get_logger().debug(str(stats))
+                    
+                    b_arr = []
+                    for chunk in tar_chunks:
+                        b_arr.append(chunk)
+                    
+                    tar_bytes = b''.join(b_arr)
+                    
+                    self.get_logger().info(f' making tar obj w {len(tar_bytes)} B')
+                    
+                    file_like_object = io.BytesIO(tar_bytes)
+                    tar = tarfile.open(fileobj=file_like_object)
+
+                    self.get_logger().info(f' Tar memebers: {tar.getnames()}')
+
+                    member = tar.getmember(stats['name'])
+                    
+                    self.get_logger().info(f' {member} data starts at {member.offset_data}')
+                    
+                    res = tar_bytes[member.offset_data:member.offset_data+stats['size']]
+                  
+                    self.get_logger().info(f' Returning {len(res)} B of tar member {member}')
+                    return res
+                    
+                    
+            return None # file not found
 
         @self.sio.on('*')
         async def catch_all(event, data):
