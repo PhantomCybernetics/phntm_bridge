@@ -23,9 +23,11 @@ TODO
 
 # Install
 
-### Install Docker & Docker Compose
+### Install Docker, Docker Build & Docker Compose
+
+E.g. on Debian: https://docs.docker.com/engine/install/debian/
+Then add current user to the docker group
 ```bash
-sudo apt install docker docker-buildx docker-compose-v2
 sudo usermod -aG docker ${USER}
 #log out & back in
 ```
