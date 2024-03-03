@@ -97,6 +97,7 @@ class BridgeController(Node, BridgeControllerConfig):
                 print (c(f'Picamera2 global info: ', 'cyan') + str(self.picam2.global_camera_info()))
             except (Exception, AttributeError) as e:
                 print(c('Picamera2 init failed', 'red'))
+                pass
 
         # separate process
         self.topic_read_subscriptions:dict[str: TopicReadSubscription] = {}

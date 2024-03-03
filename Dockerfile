@@ -2,9 +2,10 @@ ARG ROS_DISTRO=humble
 FROM ros:$ROS_DISTRO
 
 ARG PI_EXTRAS=False
+ARG PI_VERSION=5
 ARG ARCH=aarch64
 
-RUN echo "Building docker image with ROS_DISTRO=$ROS_DISTRO, ARCH=$ARCH, PI_EXTRAS=$PI_EXTRAS"
+RUN echo "Building docker image with ROS_DISTRO=$ROS_DISTRO, ARCH=$ARCH, PI_EXTRAS=$PI_EXTRAS PI_VERSION=$PI_VERSION"
 
 RUN apt-get update -y --fix-missing
 RUN apt-get install -y ssh \
@@ -54,16 +55,6 @@ ENV PATH=$PATH":/root/.local/bin"
 ENV ROS_WS=/ros2_ws
 RUN mkdir -p $ROS_WS/src
 
-# libcamera from src
-WORKDIR $ROS_WS
-RUN git clone https://git.libcamera.org/libcamera/libcamera.git
-WORKDIR $ROS_WS/libcamera
-RUN git checkout v0.1.0
-RUN /root/.local/bin/meson setup build -D pycamera=enabled -D v4l2=True --reconfigure
-RUN ninja -C build install
-# RUN echo "export PYTHONPATH=\$PYTHONPATH:/ros2_ws/libcamera/build/src/py" >> /root/.bashrc
-ENV PYTHONPATH=$PYTHONPATH":/ros2_ws/libcamera/build/src/py"
-
 # kms++ from source (for picamera2) \
 RUN apt-get install -y libdrm-common libdrm-dev
 WORKDIR $ROS_WS
@@ -75,9 +66,31 @@ ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH":/usr/local/lib/"$ARCH"-linux-gnu"
 RUN /root/.local/bin/meson build
 RUN ninja -C build install
 
-# picamera2, 0.3.12 works with libcamera v0.1.0
 RUN apt-get install -y libcap-dev
-RUN pip install picamera2==0.3.12
+
+# libcamera (makes its python bidings for picamera2)
+WORKDIR $ROS_WS
+
+# libcamera from src works on pi4b
+# libcamera v0.1.0 works with picamera2==0.3.12
+RUN if [ "$PI_VERSION" = "4" ]; then \
+        git clone https://git.libcamera.org/libcamera/libcamera.git \
+        cd $ROS_WS/libcamera \
+        git checkout v0.1.0 \
+        /root/.local/bin/meson setup build -D pycamera=enabled -D v4l2=True --reconfigure \
+        ninja -C build install \
+        pip install picamera2==0.3.12 \
+    fi
+
+# libcamera v0.2.0 from raspi fork works with picamera2==0.3.17 (current)
+RUN if [ "$PI_VERSION" = "5" ]; then \
+        git clone https://github.com/raspberrypi/libcamera.git \
+        cd $ROS_WS/libcamera \
+        /root/.local/bin/meson setup build -D pycamera=enabled -D v4l2=True --reconfigure \
+        ninja -C build install \
+        pip install picamera2 \
+    fi
+ENV PYTHONPATH=$PYTHONPATH":/ros2_ws/libcamera/build/src/py"
 
 # needed by reload-devies.sh (reloads docker devices after the container has been created)
 RUN apt-get install -y udev
