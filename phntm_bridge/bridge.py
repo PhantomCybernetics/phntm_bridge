@@ -30,14 +30,19 @@ import uuid
 
 import contextvars
 
-# if picam_detected:
-
-from picamera2.encoders import H264Encoder
-from picamera2.outputs import FileOutput
-from picamera2 import Picamera2
+# if built with picamera2 support 
+try:
+    from picamera2.encoders import H264Encoder
+    from picamera2.outputs import FileOutput
+    from picamera2 import Picamera2
+except ModuleNotFoundError:
+    pass
 
 import time
-from .inc.camera import get_camera_info, picam2_has_camera, CameraVideoStreamTrack, Picamera2Subscription, IsPiCameraId
+try:
+    from .inc.camera import get_camera_info, picam2_has_camera, CameraVideoStreamTrack, Picamera2Subscription, IsPiCameraId
+except ModuleNotFoundError:
+    pass
 
 from .inc.ros_video_streaming import ImageTopicReadSubscription, IsImageType
 
@@ -80,7 +85,7 @@ class BridgeController(Node, BridgeControllerConfig):
     ##
     # node constructor
     ##
-    def __init__(self, image_reader_ctrl_queue:mp.Queue=None, data_reader_ctrl_queue:mp.Queue=None, picam2:Picamera2=None):
+    def __init__(self, image_reader_ctrl_queue:mp.Queue=None, data_reader_ctrl_queue:mp.Queue=None):
         super().__init__(node_name='phntm_bridge',
                          use_global_arguments=True)
 
@@ -90,7 +95,7 @@ class BridgeController(Node, BridgeControllerConfig):
         self.get_logger().set_level(rclpy.logging.LoggingSeverity.DEBUG)
         self.load_config(self.get_logger())
 
-        self.picam2:Picamera2 = None
+        self.picam2 = None
         if self.picam_enabled:
             try:
                 self.picam2 = Picamera2()
@@ -126,7 +131,6 @@ class BridgeController(Node, BridgeControllerConfig):
         self.introspection:Introspection = Introspection(period=discovery_period,
                                                          stop_after=stop_discovery_after,
                                                          ctrl_node=self,
-                                                         picam2=self.picam2,
                                                          docker_client=docker_client,
                                                          sio=self.sio)
 
@@ -627,7 +631,7 @@ class BridgeController(Node, BridgeControllerConfig):
         peer.topics_not_discovered = []
         peer.cameras_not_discovered = []
         for sub in peer.read_subs:
-            if IsPiCameraId(sub):
+            if self.picam2 != None and IsPiCameraId(sub):
                 if sub in self.introspection.discovered_cameras.keys():
                     id_track = await self.subscribe_picamera(sub, peer)
                     res['read_video_streams'].append([sub, id_track])

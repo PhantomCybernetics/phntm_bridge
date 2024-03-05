@@ -4,8 +4,14 @@ from  rclpy.impl.rcutils_logger import RcutilsLogger
 from rclpy.callback_groups import CallbackGroup
 from rclpy.context import Context
 from rclpy.node import Node, Parameter, QoSProfile, Publisher
-from picamera2 import Picamera2
-from .camera import get_camera_info, picam2_has_camera
+try:
+    from picamera2 import Picamera2
+except ModuleNotFoundError:
+    pass
+try:
+    from .camera import get_camera_info, picam2_has_camera
+except ModuleNotFoundError:
+    pass
 import socketio
 from termcolor import colored as c
 import time
@@ -18,7 +24,7 @@ from pyee.asyncio import AsyncIOEventEmitter
 
 class Introspection (AsyncIOEventEmitter):
 
-    def __init__(self, period:float, stop_after:float, ctrl_node:Node, picam2:Picamera2, docker_client:docker.DockerClient, sio:socketio.AsyncClient):
+    def __init__(self, period:float, stop_after:float, ctrl_node:Node, docker_client:docker.DockerClient, sio:socketio.AsyncClient):
         super().__init__()
         self.period:float = period
         self.stop_after:float = stop_after
@@ -26,7 +32,7 @@ class Introspection (AsyncIOEventEmitter):
         self.ctrl_node:Node = ctrl_node
         self.logger = ctrl_node.get_logger()
 
-        self.picam2:Picamera2 = picam2
+        self.picam2 = ctrl_node.picam2
         self.docker_client = docker_client
 
         self.discovered_topics:dict[str: dict['msg_types':list[str]]] =  {}
