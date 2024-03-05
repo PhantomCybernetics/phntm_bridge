@@ -44,9 +44,10 @@ Build Docker image, ROS_DISTRO should match your other ROS2 packages running on 
 ROS_DISTRO=humble; \
 docker build -f phntm-bridge.Dockerfile -t phntm/bridge:$ROS_DISTRO \
   --build-arg ROS_DISTRO=$ROS_DISTRO \
-  --build-arg PI_EXTRAS=False \
+  --build-arg PI_EXTRAS=True \
+  --build-arg PI_CAMERA=True \
   --build-arg ARCH=aarch64 \
-  . 
+  .
 ```
 Docker downloads and builds several packages from source, this may take a while (about ~25 minutes on Pi 4B with PI_EXTRAS=True). Pre-built images will be hosted on Docker Hub as soon as I get to it.
 

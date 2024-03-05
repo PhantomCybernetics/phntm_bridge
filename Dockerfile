@@ -2,7 +2,7 @@ ARG ROS_DISTRO=humble
 FROM ros:$ROS_DISTRO
 
 ARG PI_EXTRAS=False
-ARG PI_VERSION=5
+ARG PI_CAMERA=False
 ARG ARCH=aarch64
 
 RUN echo "Building docker image with ROS_DISTRO=$ROS_DISTRO, ARCH=$ARCH, PI_EXTRAS=$PI_EXTRAS PI_VERSION=$PI_VERSION"
@@ -32,7 +32,7 @@ RUN pip install setuptools==58.2.0 \
 		        # aiortc #forked
                 # aiohttp #forker
 
-#raspi
+# raspi extras
 RUN if [ "$PI_EXTRAS" = "True" ]; then \
         apt-get install -y libraspberrypi0 libraspberrypi-dev libraspberrypi-bin; \
     fi
@@ -71,25 +71,28 @@ RUN apt-get install -y libcap-dev
 # libcamera (makes its python bidings for picamera2)
 WORKDIR $ROS_WS
 
-# libcamera from src works on pi4b
+# libcamera from src works on pi4b + bullseye
 # libcamera v0.1.0 works with picamera2==0.3.12
-RUN if [ "$PI_VERSION" = "4" ]; then \
-        git clone https://git.libcamera.org/libcamera/libcamera.git \
-        cd $ROS_WS/libcamera \
-        git checkout v0.1.0 \
-        /root/.local/bin/meson setup build -D pycamera=enabled -D v4l2=True --reconfigure \
-        ninja -C build install \
-        pip install picamera2==0.3.12 \
-    fi
+RUN if [ "$PI_CAMERA" = "Old" ]; then \
+    git clone https://git.libcamera.org/libcamera/libcamera.git; \
+    cd $ROS_WS/libcamera; \
+    git checkout v0.1.0; \
+    /root/.local/bin/meson setup build -D pycamera=enabled -D v4l2=True --reconfigure; \
+    ninja -C build install; \
+    pip install picamera2==0.3.12; \
+fi
 
 # libcamera v0.2.0 from raspi fork works with picamera2==0.3.17 (current)
-RUN if [ "$PI_VERSION" = "5" ]; then \
-        git clone https://github.com/raspberrypi/libcamera.git \
-        cd $ROS_WS/libcamera \
-        /root/.local/bin/meson setup build -D pycamera=enabled -D v4l2=True --reconfigure \
-        ninja -C build install \
-        pip install picamera2 \
-    fi
+# works on pi5 w bookworm (sw only encoding)
+RUN if [ "$PI_CAMERA" = "True" ]; then \
+    git clone https://github.com/raspberrypi/libcamera.git; \
+    cd $ROS_WS/libcamera; \
+    /root/.local/bin/meson setup build -D pycamera=enabled -D v4l2=True --reconfigure; \
+    ninja -C build install; \
+    cd $ROS_WS
+    git clone -b next https://github.com/PhantomCybernetics/picamera2.git \
+    pip install -e /ros2_ws/picamera2 \
+fi
 ENV PYTHONPATH=$PYTHONPATH":/ros2_ws/libcamera/build/src/py"
 
 # needed by reload-devies.sh (reloads docker devices after the container has been created)
