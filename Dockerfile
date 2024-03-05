@@ -89,9 +89,9 @@ RUN if [ "$PI_CAMERA" = "True" ]; then \
     cd $ROS_WS/libcamera; \
     /root/.local/bin/meson setup build -D pycamera=enabled -D v4l2=True --reconfigure; \
     ninja -C build install; \
-    cd $ROS_WS
-    git clone -b next https://github.com/PhantomCybernetics/picamera2.git \
-    pip install -e /ros2_ws/picamera2 \
+    cd $ROS_WS; \
+    git clone -b next https://github.com/PhantomCybernetics/picamera2.git; \
+    pip install -e /ros2_ws/picamera2; \
 fi
 ENV PYTHONPATH=$PYTHONPATH":/ros2_ws/libcamera/build/src/py"
 
