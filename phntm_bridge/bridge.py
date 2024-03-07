@@ -931,16 +931,16 @@ class BridgeController(Node, BridgeControllerConfig):
 
         if not topic in peer.video_tracks.keys():
             track = CameraVideoStreamTrack()
-            sender:RTCRtpSender = peer.pc.addTrack(track)
-
+            transceiver = peer.pc.addTransceiver(track, "sendonly")
+            sender:RTCRtpSender = transceiver.sender
+            sender.setDirect(True)
+            
             # set transciever's preference to H264
-            transcievers = peer.pc.getTransceivers()
-            for t in transcievers:
-                if t.sender == sender:
-                    capabilities = RTCRtpSender.getCapabilities("video")
-                    preferences = list(filter(lambda x: x.mimeType == "video/H264", capabilities.codecs))
-                    t.setCodecPreferences(preferences)
+            capabilities = RTCRtpSender.getCapabilities("video")
+            preferences = list(filter(lambda x: x.mimeType == "video/H264", capabilities.codecs))
+            transceiver.setCodecPreferences(preferences)
 
+            self.get_logger().info(f'sender._stream_id {sender._stream_id} >> {sender._track_id}')
             sender._stream_id = sender._track_id
             sender.name = topic
             sender.pc = peer.pc
@@ -960,6 +960,7 @@ class BridgeController(Node, BridgeControllerConfig):
 
         return [ peer.video_tracks[topic]._track_id, msg_type ]
 
+
     # UNSUBSCRIBE image topic
     async def unsubscribe_image_topic(self, topic:str, peer:WRTCPeer):
 
@@ -973,6 +974,7 @@ class BridgeController(Node, BridgeControllerConfig):
                 self.get_logger().debug(f'No longer reading {topic}')
                 self.image_topic_read_subscriptions.pop(topic)
                 asyncio.get_event_loop().create_task(self.introspection.start())
+
 
     # SUBSCRIBE Pi camera stream
     async def subscribe_picamera(self, id_cam:str, peer:WRTCPeer) -> str:
@@ -999,17 +1001,14 @@ class BridgeController(Node, BridgeControllerConfig):
 
         if not id_cam in peer.video_tracks.keys():
             track = CameraVideoStreamTrack()
-            sender:RTCRtpSender = peer.pc.addTrack(track)
+            transceiver = peer.pc.addTransceiver(track, "sendonly")
+            sender:RTCRtpSender = transceiver.sender
             sender.setDirect(True)
-
+            
             # set transciever's preference to H264
-            transcievers = peer.pc.getTransceivers()
-            for t in transcievers:
-                if t.sender == sender:
-                    capabilities = RTCRtpSender.getCapabilities("video")
-                    preferences = list(filter(lambda x: x.mimeType == "video/H264", capabilities.codecs))
-                    # preferences = list(filter(lambda x: x.name == "H264", capabilities.codecs))
-                    t.setCodecPreferences(preferences)
+            capabilities = RTCRtpSender.getCapabilities("video")
+            preferences = list(filter(lambda x: x.mimeType == "video/H264", capabilities.codecs))
+            transceiver.setCodecPreferences(preferences)
 
             sender._stream_id = sender._track_id
             sender.name = id_cam

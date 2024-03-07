@@ -206,7 +206,7 @@ def on_cmd(reader_node:Node, ctrl_cmd:dict, reader_label:str, active_subs:dict[s
         
         cb = None
         if msg_type == ImageTopicReadSubscription.MSG_TYPE:
-            cb = lambda msg: on_image_data(topic, msg, reader_label, active_subs)
+            cb = lambda msg: on_raw_image_data(topic, msg, reader_label, active_subs)
         else:
             cb = lambda msg: on_data(topic, msg, reader_label, active_subs)
         
@@ -281,7 +281,7 @@ def on_data(topic:str, msg:any, reader_label:str, active_subs:dict):
         print(c(f'Topic Reader {reader_label}: output err for {topic}: {e}', 'red'))
         
 
-def on_image_data(topic:str, msg:any, reader_label:str, active_subs:dict):
+def on_raw_image_data(topic:str, msg:any, reader_label:str, active_subs:dict):
 
     if not topic in active_subs.keys():
         return
@@ -291,102 +291,66 @@ def on_image_data(topic:str, msg:any, reader_label:str, active_subs:dict):
     if 'ignore' in sub:
         return
     
-    if sub['push_task'] and not sub['push_task'].done():
+    if sub['push_task'] and not sub['push_task'].done(): # skipping frames here
         # print(f'Processsor skipping frame of {topic}, last not yet consumed yet')
         return
     
     # # print(f'Topic reader got {len(msg)}B image data for {topic}w args: {str(subscription["args"])}')
 
-    # debug_fp_start = time.time()
-    # im:Image = deserialize_message(msg, Image)
+    debug_fp_start = time.time()
+    im:Image = deserialize_message(msg, Image)
 
-    # if im.encoding == 'rgb8':
-    #     channels = 3  # 3 for RGB format
-    #     # Convert the image data to a NumPy array
-    #     np_array = np.frombuffer(im.data, dtype=np.uint8)
-    #     # Reshape the array based on the image dimensions
-    #     np_array = np_array.reshape(im.height, im.width, channels)
-    # elif im.encoding == '16UC1':
-    #     # channels = 1  # 3 for RGB format
-    #     np_array = np.frombuffer(im.data, dtype=np.uint16) * float(255.0/4000.0)
+    if im.encoding == 'rgb8':
+        channels = 3  # 3 for RGB format
+        np_array = np.frombuffer(im.data, dtype=np.uint8) # Convert the image data to a NumPy array
+        np_array = np_array.reshape(im.height, im.width, channels) # Reshape the array based on the image dimensions
+    elif im.encoding == '16UC1': # channels = 1  # 3 for RGB format
+        np_array = np.frombuffer(im.data, dtype=np.uint16) * float(255.0/4000.0)
+        np_array = np.uint8 (np_array)
+        np_array = cv2.applyColorMap(np_array, cv2.COLORMAP_MAGMA)
+        np_array = np_array.reshape(im.height, im.width, 3)
+    elif im.encoding == '32FC1': # channels = 1  # 3 for RGB format
+        np_array = np.frombuffer(im.data, dtype=np.float32) * (255.0 * (1.0 / 2.0)) #;).astype(np.uint16)
+        np_array = np.uint8 (np_array)
+        np_array = cv2.applyColorMap(np_array, cv2.COLORMAP_PLASMA)
+        np_array = np_array.reshape(im.height, im.width, 3)
+    else:
+        print(f'Topic Reader: {topic} received unsupported frame type: F{im.header.stamp.sec}:{im.header.stamp.nanosec} {im.width}x{im.height} data={len(im.data)}B enc={im.encoding} is_bigendian={im.is_bigendian} step={im.step}, not processing')
+        sub['ignore'] = True
+        return
 
-    #     np_array = np.uint8 (np_array)
+    NS_TO_SEC = 1000000000
+    # software encode h264
+    frame = VideoFrame.from_ndarray(np_array, format="rgb24")
 
-    #     # mask = np.zeros(np_array.shape, dtype=np.uint8)
-    #     # mask = np.bitwise_or(np_array, mask)
+    stamp_ns_raw = int(im.header.stamp.sec*NS_TO_SEC) + int(im.header.stamp.nanosec)
 
-    #     # np_array = cv2.cvtColor(np_array, cv2.COLOR_GRAY2RGB)
-    #     np_array = cv2.applyColorMap(np_array, cv2.COLORMAP_MAGMA)
+    if not 'first_frame_time_ns' in sub.keys():
+         sub['first_frame_time_ns'] = stamp_ns_raw
+         sub['last_frame_time_ns'] = stamp_ns_raw
 
-    #     # np_array = cv2.convertScaleAbs(np_array, alpha=255/2000) # converts to 8 bit
-    #     # mask = cv2.convertScaleAbs(mask) # converts to 8 bit
+    since_last_frame = stamp_ns_raw - sub['last_frame_time_ns']
+    sub['last_frame_time_ns'] = stamp_ns_raw
 
-    #     np_array = np_array.reshape(im.height, im.width, 3)
-    #     # mask = mask.reshape(im.height, im.width, 1)
+    stamp_ns = stamp_ns_raw - sub['first_frame_time_ns']
 
-    #     # np_array = (255-np_array)
-    #     # np_array = np.bitwise_and(np_array, mask)
-    # elif im.encoding == '32FC1':
-    #     # channels = 1  # 3 for RGB format
-    #     np_array = np.frombuffer(im.data, dtype=np.float32) * (255.0 * (1.0 / 2.0)) #;).astype(np.uint16)
+    frame.pts = stamp_ns
+    frame.time_base = fractions.Fraction(1, NS_TO_SEC)
 
-    #     np_array = np.uint8 (np_array)
+    # at around 5 FPS sw encoding is so slow it's actually better to send every frame as a keyframe
+    force_keyframe = False
+    force_keyframe = 'last_keyframe_stamp_ns' not in sub.keys() \
+        or stamp_ns - sub['last_keyframe_stamp_ns'] >= NS_TO_SEC #keyframe every second
+    if force_keyframe:
+        sub['last_keyframe_stamp_ns'] = stamp_ns
 
-    #     # mask = np.ones(np_array.shape, dtype=np.uint8)
-    #     # mask = np.bitwise_or(np_array, mask)
+    global encoder_h264
+    if encoder_h264 == None:
+        encoder_h264 = H264Encoder()
 
-    #     # np_array = np_array * (255.0 / 2000.0)
-    #     np_array = cv2.applyColorMap(np_array, cv2.COLORMAP_PLASMA)
+    packets, timestamp = encoder_h264.encode(frame=frame, force_keyframe=force_keyframe) # convert to 1/90000
 
-    #     # np_array = cv2.cvtColor(np_array, cv2.COLOR_GRAY2RGB) #still
-
-    #     #np_array = cv2.convertScaleAbs(np_array, alpha=1.0) # converts to 8 bit
-    #     #
-    #     # mask = convertScaleAbsmask) # converts to 8 bit
-
-    #     np_array = np_array.reshape(im.height, im.width, 3)
-    #     # mask = mask.reshape(im.height, im.width, 1)
-
-    #     # np_array = (255-np_array)
-    #     # np_array = np.bitwise_and(np_array, mask)
-    # else:
-    #     print(f'Topic Reader: {topic} received unsupported frame type: F{im.header.stamp.sec}:{im.header.stamp.nanosec} {im.width}x{im.height} data={len(im.data)}B enc={im.encoding} is_bigendian={im.is_bigendian} step={im.step}, not processing')
-    #     subscription['ignore'] = True
-    #     return
-
-    # NS_TO_SEC = 1000000000
-    # # software encode h264
-    # frame = VideoFrame.from_ndarray(np_array, format="rgb24")
-
-    # stamp_ns_raw = int(im.header.stamp.sec*NS_TO_SEC) + int(im.header.stamp.nanosec)
-
-    # if not 'first_frame_time_ns' in subscription.keys():
-    #     subscription['first_frame_time_ns'] = stamp_ns_raw
-    #     subscription['last_frame_time_ns'] = stamp_ns_raw
-
-    # since_last_frame = stamp_ns_raw - subscription['last_frame_time_ns']
-    # subscription['last_frame_time_ns'] = stamp_ns_raw
-
-    # stamp_ns = stamp_ns_raw - subscription['first_frame_time_ns']
-
-    # frame.pts = stamp_ns
-    # frame.time_base = fractions.Fraction(1, NS_TO_SEC)
-
-    # # at around 5 FPS sw encoding is so slow it's actually better to send every frame as a keyframe
-    # force_keyframe = True
-
-    # # force_keyframe = 'last_keyframe_stamp_ns' not in subscription.keys() \
-    # #     or stamp_ns - subscription['last_keyframe_stamp_ns'] >= NS_TO_SEC #keyframe every second
-    # # if force_keyframe:
-    # #     subscription['last_keyframe_stamp_ns'] = stamp_ns
-
-    # global encoder_h264
-    # if encoder_h264 == None:
-    #     encoder_h264 = H264Encoder()
-
-    # packets, timestamp = encoder_h264.encode(frame=frame, force_keyframe=force_keyframe) # convert to 1/90000
-
-    # # print(f'Processor {topic} stamp_ns={stamp_ns} raw={stamp_ns_raw} [{im.header.stamp.sec}:{im.header.stamp.nanosec}] dF={since_last_frame} f0={subscription["first_frame_time_ns"]} 1/90000={timestamp} KF={force_keyframe}')
+    # print(f'Processor {topic} stamp_ns={stamp_ns} raw={stamp_ns_raw} [{im.header.stamp.sec}:{im.header.stamp.nanosec}] dF={since_last_frame} f0={sub["first_frame_time_ns"]} 1/90000={timestamp} KF={force_keyframe}')
 
     # # _fp_4 = time.time()
     # # _log_processed += 1
@@ -404,20 +368,20 @@ def on_image_data(topic:str, msg:any, reader_label:str, active_subs:dict):
 
     # # print(f'Topic Reader: processed frame of {topic} {im.encoding}>H264 {im.width}x{im.height} {len(msg)}B > {len(packets)} pkts' + (c(' [KF]', 'magenta') if keyframe else f' {ns_since_last_keyframe} ns since KF') + ' in '+c(time.time()-debug_fp_start, 'yellow'))
 
-    # try:
-    #     # print(f'Processor pushing image for {topic}')
-    #     image_push_tasks[topic] = asyncio.get_event_loop().run_in_executor(None, out_pipe.send, {
-    #         'topic': topic,
-    #         'frame_packets': packets,
-    #         'timestamp': timestamp,
-    #         'keyframe': force_keyframe, #don't skip keyframes
-    #     }) # blocks until read, no more frames of this topic are processed until then
+    try:
+        # print(f'Processor pushing image for {topic}')
+        sub['push_task'] = asyncio.get_event_loop().run_in_executor(sub['executor'], sub['pipe'].send, {
+            'topic': topic,
+            'frame_packets': packets,
+            'timestamp': timestamp,
+            'keyframe': force_keyframe, # don't skip keyframes
+        }) # blocks until read, no more frames of this topic are processed until then
         
-    #     await image_push_tasks[topic]
-    #     # chill a bit while skipping frames of this topic
-    #     # this affects fps of the output
-    #     # await asyncio.sleep(0.01)
+        # await image_push_tasks[topic]
+        # chill a bit while skipping frames of this topic
+        # this affects fps of the output
+        # await asyncio.sleep(0.01)
 
-    # except Exception as e:
-    #     print(c(f'Topic Reader: output err for {topic}: {e}', 'red'))
+    except Exception as e:
+        print(c(f'Topic Reader: output err for {topic}: {e}', 'red'))
 

@@ -109,9 +109,11 @@ class ImageTopicReadSubscription:
     def start(self, id_peer:str, sender:RTCRtpSender) -> bool:
 
         if self.sub != None: #running
+            if id_peer in self.peers.keys():
+                self.ctrl_node.get_logger().warn(f'Streamer was already running for {self.topic} with peer {id_peer}! old track_id={ self.peers[id_peer]._track_id} new track_id={sender._track_id}')
             self.peers[id_peer] = sender
-            self.ctrl_node.get_logger().warn(f'Streamer was already running for {self.topic} adding peer')
-            print(self.peers.keys())
+            self.ctrl_node.get_logger().warn(f'Streamer was already running for {self.topic} adding peer {id_peer}, track_id={sender._track_id}')
+            # print(self.peers.keys())
             return True #all done, one sub for all
 
         if self.reader_ctrl_queue: # subscribe on processor's process
@@ -171,7 +173,7 @@ class ImageTopicReadSubscription:
         return True
 
     async def read_piped_images(self):
-        while True:
+        while self.sub != None:
             try:
                 res = await self.event_loop.run_in_executor(None, self.pipe_out.recv) #blocks
                 await self.on_msg(res)
