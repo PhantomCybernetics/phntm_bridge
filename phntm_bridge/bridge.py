@@ -913,6 +913,7 @@ class BridgeController(Node, BridgeControllerConfig):
             return None
 
         if not topic in self.image_topic_read_subscriptions.keys():
+            # default is best effort / volatile
             reliability = self.get_parameter_or(f'{topic}.reliability', Parameter(name='', value=QoSReliabilityPolicy.BEST_EFFORT)).get_parameter_value().integer_value
             durability = self.get_parameter_or(f'{topic}.durability', Parameter(name='', value=DurabilityPolicy.VOLATILE)).get_parameter_value().integer_value
 

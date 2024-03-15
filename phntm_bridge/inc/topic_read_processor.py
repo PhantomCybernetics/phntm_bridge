@@ -159,19 +159,19 @@ def on_cmd(reader_node:Node, ctrl_cmd:dict, reader_label:str, active_subs:dict[s
     # unsubscribe or clear before subscribing again
     if ctrl_cmd['action'] == 'unsubscribe' or topic in active_subs.keys():
         reader_node.get_logger().info(f'Topic Reader {reader_label}: Destroying local subscriber for {topic}')
-        reader_node.destroy_subscription(active_subs[topic]['sub'])
-        if 'push_task' in active_subs[topic].keys() and active_subs[topic]['push_task'] and not active_subs[topic]['push_task'].done():
-            reader_node.get_logger().info(f'Topic Reader {reader_label}: cancelling unfinished push task for {topic}')
-            active_subs[topic]['push_task'].cancel()
-        # print(f'Processsor skipping frame of {topic}, last not yet consumed yet')
-        # return
-        if 'pipe' in active_subs[topic].keys():
-            reader_node.get_logger().info(f'Topic Reader {reader_label}: closing pipe for {topic}')
-            active_subs[topic]['pipe'].close()
-        del active_subs[topic]
+        if topic in active_subs.keys():
+            reader_node.destroy_subscription(active_subs[topic]['sub'])
+            if 'push_task' in active_subs[topic].keys() and active_subs[topic]['push_task'] and not active_subs[topic]['push_task'].done():
+                reader_node.get_logger().info(f'Topic Reader {reader_label}: cancelling unfinished push task for {topic}')
+                active_subs[topic]['push_task'].cancel()
+            # print(f'Processsor skipping frame of {topic}, last not yet consumed yet')
+            # return
+            if 'pipe' in active_subs[topic].keys():
+                reader_node.get_logger().info(f'Topic Reader {reader_label}: closing pipe for {topic}')
+                active_subs[topic]['pipe'].close()
+            del active_subs[topic]
 
     if ctrl_cmd['action'] == 'subscribe':
-
         msg_type = ctrl_cmd['msg_type']
         reliability = ctrl_cmd['reliability']
         durability = ctrl_cmd['durability']
@@ -304,6 +304,12 @@ def on_raw_image_data(topic:str, msg:any, reader_label:str, active_subs:dict):
         channels = 3  # 3 for RGB format
         np_array = np.frombuffer(im.data, dtype=np.uint8) # Convert the image data to a NumPy array
         np_array = np_array.reshape(im.height, im.width, channels) # Reshape the array based on the image dimensions
+    elif im.encoding == 'bgr8':
+        channels = 3  # 3 for RGB format
+        np_array = np.frombuffer(im.data, dtype=np.uint8) # Convert the image data to a NumPy array
+        b,g,r = np_array[::3,], np_array[1::3,], np_array[2::3]
+        np_array = cv2.merge([r,g,b])
+        np_array = np_array.reshape(im.height, im.width, channels) # Reshape the array based on the image dimensions
     elif im.encoding == '16UC1': # channels = 1  # 3 for RGB format
         np_array = np.frombuffer(im.data, dtype=np.uint16) * float(255.0/4000.0)
         np_array = np.uint8 (np_array)
@@ -315,7 +321,7 @@ def on_raw_image_data(topic:str, msg:any, reader_label:str, active_subs:dict):
         np_array = cv2.applyColorMap(np_array, cv2.COLORMAP_PLASMA)
         np_array = np_array.reshape(im.height, im.width, 3)
     else:
-        print(f'Topic Reader: {topic} received unsupported frame type: F{im.header.stamp.sec}:{im.header.stamp.nanosec} {im.width}x{im.height} data={len(im.data)}B enc={im.encoding} is_bigendian={im.is_bigendian} step={im.step}, not processing')
+        print(c(f'Topic Reader: {topic} received unsupported frame type: F{im.header.stamp.sec}:{im.header.stamp.nanosec} {im.width}x{im.height} data={len(im.data)}B enc={im.encoding} is_bigendian={im.is_bigendian} step={im.step}, not processing', 'red'))
         sub['ignore'] = True
         return
 
