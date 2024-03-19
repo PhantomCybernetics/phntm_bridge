@@ -60,14 +60,16 @@ SRC_VIDEO_TIME_BASE = fractions.Fraction(1, NS_TO_SEC)
 
 
 def IsImageType(s:str) -> bool:
-    return s == ImageTopicReadSubscription.MSG_TYPE
+    return s == ImageTopicReadSubscription.MSG_TYPE or \
+           s == ImageTopicReadSubscription.COMPRESSED_MSG_TYPE
 
 class ImageTopicReadSubscription:
 
     MSG_TYPE:str = 'sensor_msgs/msg/Image'
-
+    COMPRESSED_MSG_TYPE:str = 'sensor_msgs/msg/CompressedImage'
+    
     # def __init__(self, sub:Subscription, peers:list[str], frame_processor, processed_frames_h264:mp.Queue, processed_frames_v8:mp.Queue, make_keyframe_shared:mp.Value, make_h264_shared:mp.Value, make_v8_shared:mp.Value):
-    def __init__(self, ctrl_node:Node, bridge_time_started_ns:int, reader_ctrl_queue:mp.Queue, topic:str, reliability:QoSReliabilityPolicy, durability:DurabilityPolicy, log_message_every_sec:float=5.0, hflip:bool=False, vflip:bool=False, bitrate:int=5000000, framerate:int = 30, process_depth:bool=True, clock_rate:int=1000000000, time_base:int=1):
+    def __init__(self, ctrl_node:Node, bridge_time_started_ns:int, msg_type:str, reader_ctrl_queue:mp.Queue, topic:str, reliability:QoSReliabilityPolicy, durability:DurabilityPolicy, log_message_every_sec:float=5.0, hflip:bool=False, vflip:bool=False, bitrate:int=5000000, framerate:int = 30, process_depth:bool=True, clock_rate:int=1000000000, time_base:int=1):
 
         self.sub:Subscription|bool = None
         self.ctrl_node:Node = ctrl_node
@@ -78,7 +80,8 @@ class ImageTopicReadSubscription:
         self.read_task:asyncio.Coroutine = None
         self.peers:{str:RTCRtpSender} = {} #target outbound dcs
         self.topic:str = topic
-
+        self.msg_type:str = msg_type
+    
         self.num_received:int = 0
         self.last_msg:any = None
         self.last_msg_time:float = -1.0
@@ -123,7 +126,7 @@ class ImageTopicReadSubscription:
             self.reader_ctrl_queue.put_nowait({'action': 'subscribe',
                                                'pipe': self.pipe_worker,
                                                'topic': self.topic,
-                                               'msg_type': self.MSG_TYPE,
+                                               'msg_type': self.msg_type,
                                                'reliability': self.reliability,
                                                'durability': self.durability,
                                                'hflip': self.hflip,

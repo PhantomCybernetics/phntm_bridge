@@ -7,6 +7,8 @@ from rclpy.serialization import deserialize_message
 from .inc.status_led import StatusLED
 from termcolor import colored as c
 
+import subprocess
+
 import docker
 docker_client = None
 try:
@@ -396,23 +398,73 @@ class BridgeController(Node, BridgeControllerConfig):
 
         @self.sio.on('file')
         async def on_file_request(data):
-            file_url = data
-            self.get_logger().warn(f'Bridge requesting file {file_url}')
+            file_url:str = data
+            pkg:str = None
+            pkg_prefix = ""
+            ROS_DISTRO = os.environ["ROS_DISTRO"]
             
-            if os.path.isfile(file_url):
+            if file_url.startswith('file:/'):
+                file_url = file_url.replace('file://', '')
+                file_url = file_url.replace('file:/', '')
+                if not file_url.startswith('/'):
+                    file_url = '/' + file_url
+                self.get_logger().warn(f'Bridge requesting file {file_url}')
+                
+            elif file_url.startswith('package:/'):
+                file_url = file_url.replace('package://', '')
+                file_url = file_url.replace('package:/', '')
+                
+                parts = file_url.split('/')
+                pkg = parts[0]
+                
+                # file_url = file_url.replace(f'{pkg}/', '')
+                
+                if not file_url.startswith('/'):
+                    file_url = '/' + file_url
+                
+                self.get_logger().warn(f'Bridge requesting file in pkg {pkg}: {file_url}')
+                
+                if pkg is not None:
+                    res = subprocess.run([f"/opt/ros/{ROS_DISTRO}/bin/ros2", "pkg", "prefix", pkg], capture_output=True)
+                    if res.stdout:
+                        pkg_prefix = res.stdout.decode("ASCII").rstrip() + '/share'
+                        self.get_logger().info(f'local ros2 {ROS_DISTRO} pkg prefix is {pkg_prefix}')
+                    else:
+                        self.get_logger().info(f'local ros2 {ROS_DISTRO} pkg prefix for {pkg} not found in this fs')
+            else:
+                self.get_logger().warn(f'Bridge requesting invalid file {file_url}')
+                return None # file not found
+            
+            if pkg_prefix and os.path.isfile(pkg_prefix + file_url):
+                self.get_logger().info(f'File found in this fs (pkg_prefix={pkg_prefix})')
+                f = open(file_url, "rb")
+                res = f.read()
+                f.close()
+                return res
+            elif os.path.isfile(file_url):
                 self.get_logger().info(f'File found in this fs')
                 f = open(file_url, "rb")
                 res = f.read()
                 f.close()
                 return res
             elif docker_client:
-                self.get_logger().warn(f'File not found in this fs, searching docker containers...')
+                self.get_logger().info(f'File not found in this fs, searching docker containers...')
                 docker_containers = docker_client.containers.list(all=False)
                 for container in docker_containers:
+                    pkg_prefix = ""    
+                    if pkg:
+                        cmd = f'/bin/bash -c "export PS1=phntm && . /opt/ros/$ROS_DISTRO/setup.bash && . ~/.bashrc && /opt/ros/$ROS_DISTRO/bin/ros2 pkg prefix {pkg}"'
+                        res = container.exec_run(cmd)
+                        if res.exit_code == 1:
+                            self.get_logger().info(f'pkg not found in cont {container.name} \nout={res.output}\ncmd={cmd}')
+                        else:
+                            pkg_prefix = res.output.decode("ASCII").rstrip() + '/share'
+                            self.get_logger().warn(f'cont {container.name} has pkg in {pkg_prefix}')
+                    
                     try:
-                        tar_chunks, stats = container.get_archive(file_url, chunk_size=None, encode_stream=False)
+                        tar_chunks, stats = container.get_archive(pkg_prefix+file_url, chunk_size=None, encode_stream=False)
                     except Exception as e:
-                        self.get_logger().info(f'File not found in {container.name} fs; {e}')
+                        self.get_logger().info(f'File not found in {container.name} fs')
                         continue
                     
                     self.get_logger().debug(f'File found in {container.name} fs')
@@ -920,6 +972,7 @@ class BridgeController(Node, BridgeControllerConfig):
             self.image_topic_read_subscriptions[topic] = ImageTopicReadSubscription(ctrl_node=self,
                                                                                     reader_ctrl_queue=self.image_reader_ctrl_queue,
                                                                                     topic=topic,
+                                                                                    msg_type=msg_type,
                                                                                     reliability=reliability,
                                                                                     durability=durability,
                                                                                     log_message_every_sec=self.log_message_every_sec,

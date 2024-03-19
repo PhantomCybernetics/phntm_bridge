@@ -26,7 +26,7 @@ import multiprocessing as mp
 from queue import Empty, Full
 from multiprocessing.connection import Connection
 
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, CompressedImage
 from rclpy.serialization import deserialize_message
 
 from .ros_video_streaming import ImageTopicReadSubscription
@@ -47,7 +47,7 @@ def TopicReadProcessor(running_shared:mp.Value, reader_label:str, ctrl_queue:mp.
                         conf:any, log_message_every_sec:float=5.0):
 
     print(f'Topic Reader {reader_label}: starting')
-
+    
     # rclpy.init()
 
     rcl_ctx = Context()
@@ -68,9 +68,7 @@ def TopicReadProcessor(running_shared:mp.Value, reader_label:str, ctrl_queue:mp.
     # reader_node.load_config(self.get_logger())
 
     try:
-
         asyncio.run(TopicReadProcessorLoop(reader_node, reader_label, rcl_executor, running_shared, ctrl_queue))
-
     except (asyncio.CancelledError, KeyboardInterrupt):
         print(c(f'Topic Reader {reader_label}: Shutting down', 'red'))
         pass
@@ -207,6 +205,8 @@ def on_cmd(reader_node:Node, ctrl_cmd:dict, reader_label:str, active_subs:dict[s
         cb = None
         if msg_type == ImageTopicReadSubscription.MSG_TYPE:
             cb = lambda msg: on_raw_image_data(topic, msg, reader_label, active_subs)
+        elif msg_type == ImageTopicReadSubscription.COMPRESSED_MSG_TYPE:
+            cb = lambda msg: on_compressed_image_data(topic, msg, reader_label, active_subs)
         else:
             cb = lambda msg: on_data(topic, msg, reader_label, active_subs)
         
@@ -232,6 +232,7 @@ def on_cmd(reader_node:Node, ctrl_cmd:dict, reader_label:str, active_subs:dict[s
             'args': args,
             'pipe': pipe,
             'push_task': None,
+            'logged': False,
             'executor': concurrent.futures.ThreadPoolExecutor(max_workers=1)
         }
         if not topic in active_subs.keys():
@@ -299,6 +300,14 @@ def on_raw_image_data(topic:str, msg:any, reader_label:str, active_subs:dict):
 
     debug_fp_start = time.time()
     im:Image = deserialize_message(msg, Image)
+    size = len(im.data)
+    
+    if not sub['logged']:
+        sub['logged'] = True
+        print(c(f'Topic Reader {reader_label}: processing raw frame data for {topic}, encoding={im.encoding} size={size}B; ', 'cyan'))
+
+    if size == 0:
+        return
 
     if im.encoding == 'rgb8':
         channels = 3  # 3 for RGB format
@@ -321,7 +330,121 @@ def on_raw_image_data(topic:str, msg:any, reader_label:str, active_subs:dict):
         np_array = cv2.applyColorMap(np_array, cv2.COLORMAP_PLASMA)
         np_array = np_array.reshape(im.height, im.width, 3)
     else:
-        print(c(f'Topic Reader: {topic} received unsupported frame type: F{im.header.stamp.sec}:{im.header.stamp.nanosec} {im.width}x{im.height} data={len(im.data)}B enc={im.encoding} is_bigendian={im.is_bigendian} step={im.step}, not processing', 'red'))
+        print(c(f'Topic Reader {reader_label}: received unsupported frame encoding for {topic}:  enc={im.encoding} is_bigendian={im.is_bigendian} {im.width}x{im.height} data={len(im.data)}B step={im.step}, not processing', 'red'))
+        sub['ignore'] = True
+        return
+
+    NS_TO_SEC = 1000000000
+    # software encode h264
+    frame = VideoFrame.from_ndarray(np_array, format="rgb24")
+
+    stamp_ns_raw = int(im.header.stamp.sec*NS_TO_SEC) + int(im.header.stamp.nanosec)
+
+    if not 'first_frame_time_ns' in sub.keys():
+         sub['first_frame_time_ns'] = stamp_ns_raw
+         sub['last_frame_time_ns'] = stamp_ns_raw
+
+    since_last_frame = stamp_ns_raw - sub['last_frame_time_ns']
+    sub['last_frame_time_ns'] = stamp_ns_raw
+
+    stamp_ns = stamp_ns_raw - sub['first_frame_time_ns']
+
+    frame.pts = stamp_ns
+    frame.time_base = fractions.Fraction(1, NS_TO_SEC)
+
+    # at around 5 FPS sw encoding is so slow it's actually better to send every frame as a keyframe
+    force_keyframe = False
+    force_keyframe = 'last_keyframe_stamp_ns' not in sub.keys() \
+        or stamp_ns - sub['last_keyframe_stamp_ns'] >= NS_TO_SEC #keyframe every second
+    if force_keyframe:
+        sub['last_keyframe_stamp_ns'] = stamp_ns
+
+    global encoder_h264
+    if encoder_h264 == None:
+        encoder_h264 = H264Encoder()
+
+    packets, timestamp = encoder_h264.encode(frame=frame, force_keyframe=force_keyframe) # convert to 1/90000
+
+    # print(f'Processor {topic} stamp_ns={stamp_ns} raw={stamp_ns_raw} [{im.header.stamp.sec}:{im.header.stamp.nanosec}] dF={since_last_frame} f0={sub["first_frame_time_ns"]} 1/90000={timestamp} KF={force_keyframe}')
+
+    # # _fp_4 = time.time()
+    # # _log_processed += 1
+    # # _log_cum_time += time.time() - debug_fp_start
+
+    # # if keyframe or _last_log_time < 0 or time.time()-_last_log_time > log_message_every_sec:
+    # #     _last_log_time = time.time() #last logged now
+    # #     # debug_times = f'Total: {"{:.5f}".format(_fp_4-_fp_start)}s\nIM: {"{:.5f}".format(_fp_1-_fp_start)}s\nConv: {"{:.5f}".format(_fp_2-_fp_1)}s\nVideoFrame {"{:.5f}".format(_fp_3-_fp_2)}s\nH264: {"{:.5f}".format(_fp_4-_fp_3)}s'
+    # #     debug_times = f'{_log_processed} in avg {"{:.5f}".format(_log_cum_time/_log_processed)}s'
+    # #     logger.info(f'[FP {topic}] {im.encoding}>H264 {im.width}x{im.height} {len(fbytes)}B > {len(packet)} pkts ' + (colored(' [KF]', 'magenta') if keyframe else '') + ' '+c(debug_times, 'yellow'))
+    # #     _log_processed = 0;
+    # #     _log_cum_time = 0.0
+
+    # # debug_times = f'{_log_processed} in avg {"{:.5f}".format(_log_cum_time/_log_processed)}s'
+
+    # # print(f'Topic Reader: processed frame of {topic} {im.encoding}>H264 {im.width}x{im.height} {len(msg)}B > {len(packets)} pkts' + (c(' [KF]', 'magenta') if keyframe else f' {ns_since_last_keyframe} ns since KF') + ' in '+c(time.time()-debug_fp_start, 'yellow'))
+
+    try:
+        # print(f'Processor pushing image for {topic}')
+        sub['push_task'] = asyncio.get_event_loop().run_in_executor(sub['executor'], sub['pipe'].send, {
+            'topic': topic,
+            'frame_packets': packets,
+            'timestamp': timestamp,
+            'keyframe': force_keyframe, # don't skip keyframes
+        }) # blocks until read, no more frames of this topic are processed until then
+        
+        # await image_push_tasks[topic]
+        # chill a bit while skipping frames of this topic
+        # this affects fps of the output
+        # await asyncio.sleep(0.01)
+
+    except Exception as e:
+        print(c(f'Topic Reader: output err for {topic}: {e}', 'red'))
+        
+def on_compressed_image_data(topic:str, msg:any, reader_label:str, active_subs:dict):
+
+    if not topic in active_subs.keys():
+        return
+    
+    sub = active_subs[topic]
+    
+    if 'ignore' in sub:
+        return
+    
+    if sub['push_task'] and not sub['push_task'].done(): # skipping frames here
+        # print(f'Processsor skipping frame of {topic}, last not yet consumed yet')
+        return
+
+    im:CompressedImage = deserialize_message(msg, CompressedImage)
+    size = len(im.data)
+
+    if not sub['logged']:
+        sub['logged'] = True
+        print(c(f'Topic Reader {reader_label}: processing compressed frame data for {topic}, format={im.format} size={size}B; ', 'cyan'))
+        
+    if size == 0:
+        return
+        
+    # if im.encoding == 'rgb8':
+    #     channels = 3  # 3 for RGB format
+    #     np_array = np.frombuffer(im.data, dtype=np.uint8) # Convert the image data to a NumPy array
+    #     np_array = np_array.reshape(im.height, im.width, channels) # Reshape the array based on the image dimensions
+    if im.format == 'bgr8; jpeg compressed bgr8' or \
+       im.format == 'rgb8; jpeg compressed bgr8':
+
+        np_array = np.frombuffer(im.data, dtype=np.uint8) # Convert the image data to a NumPy array
+        decoded = cv2.imdecode(np_array, cv2.IMREAD_COLOR) # bgr out    
+        np_array = cv2.cvtColor(decoded, cv2.COLOR_BGR2RGB)
+    
+    # TODO: 16UC1 not tested as all cameras I have produce 0B data messages
+    # elif im.format == '16UC1; jpeg compressed mono8':
+    #     channels = 3  # 3 for RGB format
+    #     np_array = np.frombuffer(im.data, dtype=np.uint16) # Convert the image data to a NumPy array
+    #     decoded = cv2.imdecode(np_array, cv2.IMREAD_ANYDEPTH) # bgr in, bgr out
+    #     h, w = decoded.shape[0:2]
+    #     decoded = cv2.applyColorMap(decoded, cv2.COLORMAP_MAGMA)
+    #     np_array = np_array.reshape(h, w, channels)
+    else:
+        print(c(f'Topic Reader {reader_label}: received unsupported compressed frame data for {topic}, format={im.format} size={len(im.data)}B; not processing', 'red'))
         sub['ignore'] = True
         return
 
