@@ -87,7 +87,7 @@ class TopicWritePublisher:
             self.last_received_msg_stamp = msg_s
             expected_delta_s = msg_delta_s
         else:
-            expected_delta_s = 0.033 #temp 30 Hzexpected
+            expected_delta_s = 0.033 #temp 30 Hz expected
 
         self.num_received += 1
         self.last_msg = msg #save last always
