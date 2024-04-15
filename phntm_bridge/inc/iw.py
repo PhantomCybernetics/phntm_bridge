@@ -72,7 +72,7 @@ class IW:
 
         time_nanosec:int = time.time_ns()
         msg.header.stamp.sec = math.floor(time_nanosec / 1000000000)
-        msg.header.stamp.nanosec = time_nanosec - (msg.header.stamp.sec *1000000000)
+        msg.header.stamp.nanosec = time_nanosec % 1000000000
 
         try:
             if 'Frequency' in cfg:

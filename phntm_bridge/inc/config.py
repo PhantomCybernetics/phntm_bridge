@@ -2,6 +2,7 @@ from rclpy.node import Node, Parameter, QoSProfile, Publisher
 from .status_led import StatusLED
 from rclpy.callback_groups import CallbackGroup, MutuallyExclusiveCallbackGroup
 from rclpy.impl.rcutils_logger import RcutilsLogger
+import json
 
 class BridgeControllerConfig():
 
@@ -43,12 +44,24 @@ class BridgeControllerConfig():
         for topic_override in self.topic_overrides:
             if topic_override == '':
                 continue
+            # ROS stuffs
             self.declare_parameter(f'{topic_override}.name', '')
             self.declare_parameter(f'{topic_override}.durability', 0)
             self.declare_parameter(f'{topic_override}.raw', True)
             self.declare_parameter(f'{topic_override}.reliability', 0)
             self.declare_parameter(f'{topic_override}.lifespan', 1) #1s by default; -1 for infinity
-
+            # NN stuffs
+            self.declare_parameter(f'{topic_override}.nn_input_cropped_square', True) # nn input is usually a square
+            self.declare_parameter(f'{topic_override}.nn_input_w', 416)
+            self.declare_parameter(f'{topic_override}.nn_input_h', 416)
+            self.declare_parameter(f'{topic_override}.nn_detection_labels', [ '' ]) # nn class labels
+            # Depth processing
+            self.declare_parameter(f'{topic_override}.depth_colormap', 13) # cv2.COLORMAP_MAGMA
+            self.declare_parameter(f'{topic_override}.depth_range_max', 2.0) # 2m (units depend on sensor)
+            # Battery
+            self.declare_parameter(f'{topic_override}.min_voltage', 0.0)
+            self.declare_parameter(f'{topic_override}.max_voltage', 10.0)
+            
         self.declare_parameter('log_sdp', False)
         self.log_sdp = self.get_parameter('log_sdp').get_parameter_value().bool_value
 
@@ -90,3 +103,32 @@ class BridgeControllerConfig():
         self.declare_parameter('picam_vflip', False)
         self.declare_parameter('picam_bitrate', 5000000)
         self.declare_parameter('picam_framerate', 30)
+        
+        #input configs that get passed to ui
+        self.declare_parameter('keyboard_drivers', [ 'Joy' ])
+        self.declare_parameter(f'keyboard_defaults', '') # defaults to driver's config
+        self.declare_parameter('gamepad_drivers', [ 'Joy' ])
+        self.declare_parameter(f'gamepad_defaults', '') # defaults to driver's config
+        self.keyboard_drivers = self.get_parameter('keyboard_drivers').get_parameter_value().string_array_value
+        self.gamepad_drivers = self.get_parameter('gamepad_drivers').get_parameter_value().string_array_value
+        kb_defaults_file = self.get_parameter('keyboard_defaults').get_parameter_value().string_value
+        gp_defaults_file = self.get_parameter('gamepad_defaults').get_parameter_value().string_value
+        self.keyboard_defaults = None
+        self.gamepad_defaults = None
+        
+        if kb_defaults_file:
+            try:
+                with open(kb_defaults_file, "r") as read_content: 
+                    self.keyboard_defaults = json.load(read_content)
+            except FileNotFoundError:
+                logger.error(f'keyboard_defaults file not found: {kb_defaults_file}')
+                pass
+
+        if gp_defaults_file:
+            try:
+                with open(gp_defaults_file, "r") as read_content: 
+                    self.gamepad_defaults = json.load(read_content)
+            except FileNotFoundError:
+                logger.error(f'gamepad_defaults file not found: {gp_defaults_file}')
+                pass
+        

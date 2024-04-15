@@ -27,6 +27,7 @@ from queue import Empty, Full
 from multiprocessing.connection import Connection
 
 from sensor_msgs.msg import Image, CompressedImage
+from ffmpeg_image_transport_msgs.msg import FFMPEGPacket
 from rclpy.serialization import deserialize_message
 
 from .ros_video_streaming import ImageTopicReadSubscription
@@ -36,6 +37,7 @@ import cv2
 from aiortc.codecs import H264Encoder
 from aiortc.codecs.h264 import DEFAULT_BITRATE, MIN_BITRATE, MAX_BITRATE
 from av.frame import Frame
+from av.packet import Packet
 from av.video.frame import VideoFrame
 import fractions
 
@@ -207,6 +209,8 @@ def on_cmd(reader_node:Node, ctrl_cmd:dict, reader_label:str, active_subs:dict[s
             cb = lambda msg: on_raw_image_data(topic, msg, reader_label, active_subs)
         elif msg_type == ImageTopicReadSubscription.COMPRESSED_MSG_TYPE:
             cb = lambda msg: on_compressed_image_data(topic, msg, reader_label, active_subs)
+        elif msg_type == ImageTopicReadSubscription.STREAM_MSG_TYPE:
+            cb = lambda msg: on_stream_image_data(topic, msg, reader_label, active_subs)
         else:
             cb = lambda msg: on_data(topic, msg, reader_label, active_subs)
         
@@ -399,7 +403,68 @@ def on_raw_image_data(topic:str, msg:any, reader_label:str, active_subs:dict):
 
     except Exception as e:
         print(c(f'Topic Reader: output err for {topic}: {e}', 'red'))
+
+def on_stream_image_data(topic:str, msg:any, reader_label:str, active_subs:dict):
+    if not topic in active_subs.keys():
+        return
+    
+    sub = active_subs[topic]
+    
+    if 'ignore' in sub:
+        return
+    
+    # if sub['push_task'] and not sub['push_task'].done(): # skipping frames here
+    #     # print(f'Processsor skipping frame of {topic}, last not yet consumed yet')
+    #     return
+    
+    frame:FFMPEGPacket = deserialize_message(msg, FFMPEGPacket)
+    size = len(frame.data)
+    
+    if frame.encoding != 'h.264':
+        print(c(f'Topic Reader {reader_label}: received unsupported stream frame data for {topic}, format={frame.encoding} size={len(frame.data)}B; not processing', 'red'))
+        sub['ignore'] = True
+        return
+    
+    if not sub['logged']:
+        sub['logged'] = True
+        print(c(f'Topic Reader {reader_label}: processing stream frame data for {topic}, encoding={frame.encoding} size={size}B; ', 'cyan'))
         
+    if size == 0:
+        return
+    
+    if not 'first_frame_time_ns' in sub.keys():
+        sub['first_frame_time_ns'] = frame.pts
+        sub['last_frame_time_ns'] = frame.pts
+    
+    sub['last_frame_time_ns'] = frame.pts
+    
+    stamp_ns = frame.pts - sub['first_frame_time_ns']
+    
+    # we expect folluu encoded frame and only need to packetize it for transport
+    p = Packet(frame.data)
+    p.pts = stamp_ns
+    p.time_base = fractions.Fraction(1, 90000)
+    
+    global encoder_h264
+    if encoder_h264 == None:
+        encoder_h264 = H264Encoder()
+        
+    packets, ts =  encoder_h264.pack(p)
+    
+    try:
+        # print(f'Processor pushing image for {topic}')
+        # sub['push_task'] =
+        asyncio.get_event_loop().run_in_executor(sub['executor'], sub['pipe'].send, {
+            'topic': topic,
+            'frame_packets': packets,
+            'timestamp': ts,
+            'keyframe': frame.flags == 1, # don't skip keyframes
+        })
+        
+    except Exception as e:
+        print(c(f'Topic Reader: output err for {topic}: {e}', 'red'))
+    
+
 def on_compressed_image_data(topic:str, msg:any, reader_label:str, active_subs:dict):
 
     if not topic in active_subs.keys():
@@ -479,24 +544,6 @@ def on_compressed_image_data(topic:str, msg:any, reader_label:str, active_subs:d
 
     packets, timestamp = encoder_h264.encode(frame=frame, force_keyframe=force_keyframe) # convert to 1/90000
 
-    # print(f'Processor {topic} stamp_ns={stamp_ns} raw={stamp_ns_raw} [{im.header.stamp.sec}:{im.header.stamp.nanosec}] dF={since_last_frame} f0={sub["first_frame_time_ns"]} 1/90000={timestamp} KF={force_keyframe}')
-
-    # # _fp_4 = time.time()
-    # # _log_processed += 1
-    # # _log_cum_time += time.time() - debug_fp_start
-
-    # # if keyframe or _last_log_time < 0 or time.time()-_last_log_time > log_message_every_sec:
-    # #     _last_log_time = time.time() #last logged now
-    # #     # debug_times = f'Total: {"{:.5f}".format(_fp_4-_fp_start)}s\nIM: {"{:.5f}".format(_fp_1-_fp_start)}s\nConv: {"{:.5f}".format(_fp_2-_fp_1)}s\nVideoFrame {"{:.5f}".format(_fp_3-_fp_2)}s\nH264: {"{:.5f}".format(_fp_4-_fp_3)}s'
-    # #     debug_times = f'{_log_processed} in avg {"{:.5f}".format(_log_cum_time/_log_processed)}s'
-    # #     logger.info(f'[FP {topic}] {im.encoding}>H264 {im.width}x{im.height} {len(fbytes)}B > {len(packet)} pkts ' + (colored(' [KF]', 'magenta') if keyframe else '') + ' '+c(debug_times, 'yellow'))
-    # #     _log_processed = 0;
-    # #     _log_cum_time = 0.0
-
-    # # debug_times = f'{_log_processed} in avg {"{:.5f}".format(_log_cum_time/_log_processed)}s'
-
-    # # print(f'Topic Reader: processed frame of {topic} {im.encoding}>H264 {im.width}x{im.height} {len(msg)}B > {len(packets)} pkts' + (c(' [KF]', 'magenta') if keyframe else f' {ns_since_last_keyframe} ns since KF') + ' in '+c(time.time()-debug_fp_start, 'yellow'))
-
     try:
         # print(f'Processor pushing image for {topic}')
         sub['push_task'] = asyncio.get_event_loop().run_in_executor(sub['executor'], sub['pipe'].send, {
@@ -506,11 +553,6 @@ def on_compressed_image_data(topic:str, msg:any, reader_label:str, active_subs:d
             'keyframe': force_keyframe, # don't skip keyframes
         }) # blocks until read, no more frames of this topic are processed until then
         
-        # await image_push_tasks[topic]
-        # chill a bit while skipping frames of this topic
-        # this affects fps of the output
-        # await asyncio.sleep(0.01)
-
     except Exception as e:
         print(c(f'Topic Reader: output err for {topic}: {e}', 'red'))
 

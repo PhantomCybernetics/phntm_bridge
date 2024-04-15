@@ -96,11 +96,15 @@ class Picamera2Subscription:
 
         await asyncio.sleep(2.0) #camera setup time (here?)
 
-        self.logger.info(c(f'Picam2 recording...', 'magenta'))
+        self.logger.info(c(f'Picam2 encoding...', 'magenta'))
 
         # picam2.start_recording()
-        self.picam2.start_encoder(encoder=self.encoder, output=self.output)
-        self.picam2.start()
+        try:
+            self.picam2.start_encoder(encoder=self.encoder, output=self.output)
+            self.picam2.start()
+        except Exception as e:
+            self.logger.error(f'Error starting Picam2 encoder: {e}')
+            return False;
 
         return True
 

@@ -18,6 +18,11 @@ import cv2
 from aiortc.codecs import Vp8Encoder
 from aiortc.codecs import H264Encoder
 
+from ffmpeg_image_transport_msgs.msg import FFMPEGPacket
+from av.packet import Packet
+
+from termcolor import colored as c
+
 from aiortc.codecs.h264 import DEFAULT_BITRATE, MIN_BITRATE, MAX_BITRATE
 DEFAULT_BITRATE = MAX_BITRATE
 
@@ -31,6 +36,8 @@ from rclpy.serialization import deserialize_message
 from sensor_msgs.msg import Image
 from rosidl_runtime_py.utilities import get_message
 # from aiortc.rtcrtpsender import RTCEncodedFrame
+
+encoder_h264:H264Encoder = None
 
 # AUDIO_PTIME = 0.020  # 20ms audio packetization
 # VIDEO_CLOCK_RATE = 1000000000 #ns to s
@@ -61,12 +68,14 @@ SRC_VIDEO_TIME_BASE = fractions.Fraction(1, NS_TO_SEC)
 
 def IsImageType(s:str) -> bool:
     return s == ImageTopicReadSubscription.MSG_TYPE or \
-           s == ImageTopicReadSubscription.COMPRESSED_MSG_TYPE
+           s == ImageTopicReadSubscription.COMPRESSED_MSG_TYPE or \
+           s == ImageTopicReadSubscription.STREAM_MSG_TYPE
 
 class ImageTopicReadSubscription:
 
     MSG_TYPE:str = 'sensor_msgs/msg/Image'
     COMPRESSED_MSG_TYPE:str = 'sensor_msgs/msg/CompressedImage'
+    STREAM_MSG_TYPE:str = 'ffmpeg_image_transport_msgs/msg/FFMPEGPacket'
     
     # def __init__(self, sub:Subscription, peers:list[str], frame_processor, processed_frames_h264:mp.Queue, processed_frames_v8:mp.Queue, make_keyframe_shared:mp.Value, make_h264_shared:mp.Value, make_v8_shared:mp.Value):
     def __init__(self, ctrl_node:Node, bridge_time_started_ns:int, msg_type:str, reader_ctrl_queue:mp.Queue, topic:str, reliability:QoSReliabilityPolicy, durability:DurabilityPolicy, log_message_every_sec:float=5.0, hflip:bool=False, vflip:bool=False, bitrate:int=5000000, framerate:int = 30, process_depth:bool=True, clock_rate:int=1000000000, time_base:int=1):
@@ -78,7 +87,7 @@ class ImageTopicReadSubscription:
         self.pipe_out:Connection = None
         self.pipe_worker:Connection = None
         self.read_task:asyncio.Coroutine = None
-        self.peers:{str:RTCRtpSender} = {} #target outbound dcs
+        self.peers:dict = {} #target outbound dcs
         self.topic:str = topic
         self.msg_type:str = msg_type
     
@@ -87,6 +96,10 @@ class ImageTopicReadSubscription:
         self.last_msg_time:float = -1.0
         self.last_log:float = -1.0
         self.log_message_every_sec:float = log_message_every_sec
+
+        self.logged = False
+        self.ignore = False
+        self.first_frame_time_ns = -1
 
         self.reliability:QoSReliabilityPolicy = reliability
         self.durability:DurabilityPolicy = durability
@@ -146,11 +159,11 @@ class ImageTopicReadSubscription:
 
             message_class = None
             try:
-                message_class = get_message(self.MSG_TYPE)
+                message_class = get_message(self.msg_type)
             except:
                 pass
             if message_class == None:
-                self.ctrl_node.get_logger().error(f'NOT subscribing to topic {self.topic}, msg class {self.MSG_TYPE} not loaded')
+                self.ctrl_node.get_logger().error(f'NOT subscribing to topic {self.topic}, msg class {self.msg_type} not loaded')
                 return False
 
             qosProfile = QoSProfile(history=QoSHistoryPolicy.KEEP_LAST, \
@@ -159,16 +172,16 @@ class ImageTopicReadSubscription:
                                     durability=self.durability, \
                                     lifespan=Infinite \
                                     )
-            self.ctrl_node.get_logger().warn(f'Subscribing to topic {self.topic} {self.MSG_TYPE}')
+            self.ctrl_node.get_logger().warn(f'Subscribing to topic {self.topic} {self.msg_type}')
             self.sub = self.ctrl_node.create_subscription(
                     msg_type=message_class,
                     topic=self.topic,
-                    callback=self.on_msg,
+                    callback=self.on_raw_msg,
                     qos_profile=qosProfile,
                     raw=True,
                 )
             if self.sub == None:
-                self.ctrl_node.get_logger().error(f'Failed subscribing to topic {self.topic}, msg class={self.MSG_TYPE}, peer={id_peer}')
+                self.ctrl_node.get_logger().error(f'Failed subscribing to topic {self.topic}, msg class={self.msg_type}, peer={id_peer}')
                 return False
 
         self.peers[id_peer] = sender
@@ -187,6 +200,55 @@ class ImageTopicReadSubscription:
             except Exception as e:
                 self.ctrl_node.get_logger().error(f'Exception while reading latest from image pipe: {str(e)}')
                 pass
+
+    async def on_raw_msg(self, raw_msg):
+        
+        try:
+        
+            if self.msg_type == ImageTopicReadSubscription.STREAM_MSG_TYPE:
+                
+                frame:FFMPEGPacket = deserialize_message(raw_msg, FFMPEGPacket)
+                size = len(frame.data)
+                
+                if frame.encoding != 'h.264':
+                    print(c(f'Received unsupported stream frame data for {self.topic}, format={frame.encoding} size={len(frame.data)}B; not processing', 'red'))
+                    self.ignore = True
+                    return
+                
+                if not self.logged:
+                    self.logged = True
+                    print(c(f'Processing stream frame data for {self.topic}, encoding={frame.encoding} size={size}B; ', 'cyan'))
+                    
+                if size == 0:
+                    return
+                
+                if self.first_frame_time_ns == -1:
+                    self.first_frame_time_ns = frame.pts
+                
+                stamp_ns = frame.pts - self.first_frame_time_ns
+                
+                # we expect folluu encoded frame and only need to packetize it for transport
+                p = Packet(frame.data)
+                p.pts = stamp_ns
+                p.time_base = fractions.Fraction(1, 1000000000)
+                
+                global encoder_h264
+                if encoder_h264 == None:
+                    encoder_h264 = H264Encoder()
+                
+                packets, ts =  encoder_h264.pack(p)
+                
+                await self.on_msg({
+                        'topic': self.topic,
+                        'frame_packets': packets,
+                        'timestamp': ts,
+                        'keyframe': frame.flags == 1, # don't skip keyframes
+                    })
+        except Exception as e:
+            print(c(f'Exception in on_raw_msg:\n {str(e)}', 'red'))
+            self.ignore = True
+            return
+
 
     # called either by ctrl node's process or when data is received via reader_out_queue (called on ctrl node's process)
     async def on_msg(self, reader_res:dict):
