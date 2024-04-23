@@ -261,6 +261,8 @@ class BridgeController(Node, BridgeControllerConfig):
             id_peer = WRTCPeer.GetId(data)
             if id_peer == None:
                 return { 'err': 2, 'msg': 'No valid peer id provided' }
+            if not id_peer in self.wrtc_peers:
+                return { 'err': 2, 'msg': 'Peer id '+id_peer+' not found here' }
             peer:WRTCPeer = self.wrtc_peers[id_peer]
             if not peer:
                 return { 'err': 2, 'msg': 'Peer not connected' }
