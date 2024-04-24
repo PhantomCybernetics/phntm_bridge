@@ -192,14 +192,15 @@ class ImageTopicReadSubscription:
         while self.sub != None:
             try:
                 res = await self.event_loop.run_in_executor(None, self.pipe_out.recv) #blocks
-                await self.on_msg(res)
-
             except (KeyboardInterrupt, asyncio.CancelledError):
                 print(f'read_piped_images for {self.topic} got err')
                 return
             except Exception as e:
                 self.ctrl_node.get_logger().error(f'Exception while reading latest from image pipe: {str(e)}')
+                self.sub = None
                 pass
+            
+            await self.on_msg(res)
 
     async def on_raw_msg(self, raw_msg):
         
@@ -283,7 +284,7 @@ class ImageTopicReadSubscription:
             or self.peers[id_peer].transport.state == "closed":
                 self.ctrl_node.get_logger().info(f'👁️  Sending {self.topic} to id_peer={id_peer} / id_stream= {str(self.peers[id_peer]._stream_id)} failed; pc={self.peers[id_peer].pc.connectionState}, transport={self.peers[id_peer].transport.state}')
                 if self.peers[id_peer].transport.state != "closed":
-                    self.event_loop.create_task(self.peers[id_peer].transport.close())
+                    self.event_loop.create_task(self.peers[id_peer].transport.stop())
                 del self.peers[id_peer]
                 continue
 

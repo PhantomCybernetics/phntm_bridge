@@ -252,8 +252,11 @@ class PacketsOutput(FileOutput):
                 # self.sub.peers[id_peer].timestamp_origin = convert_timebase(offset_ns, SRC_VIDEO_TIME_BASE, VIDEO_TIME_BASE)
                 
             # payload_type = 101 # =variable
-            self.last_frame_tasks[id_peer] = self.sub.event_loop.create_task(self.sub.peers[id_peer].send_direct(frame_data=payloads, stamp_converted=stamp_converted, keyframe=keyframe))
-            
+            try:
+                self.last_frame_tasks[id_peer] = self.sub.event_loop.create_task(self.sub.peers[id_peer].send_direct(frame_data=payloads, stamp_converted=stamp_converted, keyframe=keyframe))
+            except Exception as e:
+                self.logger.error(f'👁️  Exception while sending {self.sub.id_camera} to id_peer={id_peer} / id_stream= {str(self.sub.peers[id_peer]._stream_id)}, {e}; pc={self.sub.peers[id_peer].pc.connectionState}, transport={self.sub.peers[id_peer].transport.state}')
+                pass
 
         # if self.recording:
         #     if self._firstframe:

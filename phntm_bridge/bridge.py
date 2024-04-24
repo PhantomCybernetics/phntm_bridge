@@ -382,7 +382,7 @@ class BridgeController(Node, BridgeControllerConfig):
             if id_peer == None:
                 return { 'err': 2, 'msg': 'No valid peer id provided' }
             if not id_peer in self.wrtc_peers.keys():
-                return { 'err': 2, 'msg': 'Peer not connected' }
+                return { 'err': 2, 'msg': 'Peer was not connected' }
             self.wrtc_peers[id_peer].sio_connected = False
             self.get_logger().warn(f'Peer {id_peer} disconnected from Socket.io server (fyi, ignoring)')
 
