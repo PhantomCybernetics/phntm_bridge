@@ -704,7 +704,7 @@ class BridgeController(Node, BridgeControllerConfig):
                 return { 'err': 2, 'msg': 'Timed out waiting for ICE gathering state' }
 
         if not peer.sio_connected and peer.pc.connectionState != "failed":
-            self.get_logger().error(f'peer.sio_connected={peer.sio_connected}; peer.pc.connectionState={peer.pc.connectionState}')
+            self.get_logger().error(f'{peer} sio_connected={peer.sio_connected}; pc.connectionState={peer.pc.connectionState}')
             peer.processing_subscriptions = False
             return False
 
