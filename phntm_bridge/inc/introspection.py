@@ -295,7 +295,6 @@ class Introspection (AsyncIOEventEmitter):
         try:
             data = self.get_nodes_data()
             self.logger.info(c(f'Reporting {len(data)} nodes', 'dark_grey'))
-            print(data)
 
             await self.sio.emit(
                 event='nodes',
