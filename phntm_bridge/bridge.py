@@ -541,7 +541,7 @@ class BridgeController(Node, BridgeControllerConfig):
             self.get_logger().warn(f'{peer} was already connected, reusing session...')
             # self.get_logger().warn(f'{self.wrtc_peers[id_peer]} was already connected, killing old...')
             # await self.remove_peer(id_peer, False)
-            return await self.process_peer_subscriptions(peer, send_update=False)
+            return await self.process_peer_subscriptions(peer, send_update=False, ui_config=True)
 
         # pc.addTransceiver('video', direction='sendonly') #must have at least one
         peer = WRTCPeer(id_peer=id_peer,
@@ -563,10 +563,10 @@ class BridgeController(Node, BridgeControllerConfig):
         peer.read_subs = peer_data['read'] if 'read' in peer_data.keys() else []
         peer.write_subs = peer_data['write'] if 'write' in peer_data.keys() else []
 
-        return await self.process_peer_subscriptions(peer, send_update=False)
+        return await self.process_peer_subscriptions(peer, send_update=False, ui_config=True)
 
 
-    async def process_peer_subscriptions(self, peer:WRTCPeer, send_update=False) -> dict: # send_update=False => return res
+    async def process_peer_subscriptions(self, peer:WRTCPeer, send_update=False, ui_config=False) -> dict: # send_update=False => return res
         
         if not await self.peer_processing_state_checker(peer):
             self.get_logger().error(f'Failed to process {peer} subs, peer busy. read={peer.read_subs} write={peer.write_subs}; signalingState={peer.pc.signalingState} iceGatheringState={peer.pc.iceGatheringState}')
@@ -584,11 +584,17 @@ class BridgeController(Node, BridgeControllerConfig):
             'write_data_channels': [],
         }
         
-        if not send_update: # on conect only
+        if ui_config: # = on conect only, adding config extras for the client
             res['kb_drivers'] = self.keyboard_drivers
             res['kb_defaults'] = self.keyboard_defaults
             res['gp_drivers'] = self.gamepad_drivers
             res['gp_defaults'] = self.gamepad_defaults
+            res['ui'] = {
+                'battery_topic': self.get_parameter('ui_battery_topic').get_parameter_value().string_value,
+                'iw_monitor_topic': self.get_parameter('iw_monitor_topic').get_parameter_value().string_value,
+                'docker_control': self.get_parameter('ui_docker_control').get_parameter_value().bool_value,
+                'enable_wifi_scan': self.get_parameter('ui_enable_wifi_scan').get_parameter_value().bool_value
+            }
 
         peer.topics_not_discovered = []
         peer.cameras_not_discovered = []
@@ -608,7 +614,7 @@ class BridgeController(Node, BridgeControllerConfig):
                 if not is_image:
                     reliable = self.get_parameter_or(f'{sub}.reliability', Parameter(name='', value=0)).get_parameter_value().integer_value == 1 # 1=RELIABLE
                     id_dc = await self.subscribe_data_topic(sub, reliable, peer)
-                    topic_conf = {} # extras forwarded to the UI
+                    topic_conf = {} # passing config extras to the UI
                     match msg_type:
                         case 'vision_msgs/msg/Detection2DArray':
                             topic_conf['nn_input_cropped_square'] = self.get_parameter(f'{sub}.nn_input_cropped_square').get_parameter_value().bool_value
@@ -681,9 +687,8 @@ class BridgeController(Node, BridgeControllerConfig):
         if len(res['read_video_streams']) == 0 and len(res['read_data_channels']) == 0 and len(res['write_data_channels']) == 0:
             self.get_logger().debug(c(f'{peer} connected, nothing else to do here', 'dark_grey'))
             peer.processing_subscriptions = False
-            return {
-                'success' : 1 # SDF can't be generated with no channels
-            }
+            res['success'] = 1
+            return res  # SDF can't be generated with no channels
 
         if not await self.peer_signalling_stable_checker(peer):
             peer.processing_subscriptions = False
@@ -714,9 +719,11 @@ class BridgeController(Node, BridgeControllerConfig):
         res['offer'] = peer.pc.localDescription.sdp
 
         if not send_update:
+            # self.get_logger().debug(c(f'Returning update for {peer}: {str(res)}', 'cyan'))
             peer.processing_subscriptions = False
             return res
         else:
+            # self.get_logger().debug(c(f'Pushing update for {peer}: {str(res)}', 'cyan'))
             return await self.update_peer(peer, res)
 
 

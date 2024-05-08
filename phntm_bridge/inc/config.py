@@ -104,6 +104,10 @@ class BridgeControllerConfig():
         self.declare_parameter('picam_bitrate', 5000000)
         self.declare_parameter('picam_framerate', 30)
         
+        self.declare_parameter('ui_battery_topic', '/battery') # use this in ui 
+        self.declare_parameter('ui_docker_control', True)
+        self.declare_parameter('ui_enable_wifi_scan', False)
+        
         #input configs that get passed to ui
         self.declare_parameter('keyboard_drivers', [ 'Joy' ])
         self.declare_parameter(f'keyboard_defaults', '') # defaults to driver's config
