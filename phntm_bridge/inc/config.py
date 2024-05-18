@@ -113,12 +113,18 @@ class BridgeControllerConfig():
         self.declare_parameter(f'keyboard_defaults', '') # defaults to driver's config
         self.declare_parameter('gamepad_drivers', [ 'Joy' ])
         self.declare_parameter(f'gamepad_defaults', '') # defaults to driver's config
+        self.declare_parameter('touch_drivers', [ 'Joy' ])
+        self.declare_parameter(f'touch_defaults', '') # defaults to driver's config
+        
         self.keyboard_drivers = self.get_parameter('keyboard_drivers').get_parameter_value().string_array_value
         self.gamepad_drivers = self.get_parameter('gamepad_drivers').get_parameter_value().string_array_value
+        self.touch_drivers = self.get_parameter('touch_drivers').get_parameter_value().string_array_value
         kb_defaults_file = self.get_parameter('keyboard_defaults').get_parameter_value().string_value
         gp_defaults_file = self.get_parameter('gamepad_defaults').get_parameter_value().string_value
+        touch_defaults_file = self.get_parameter('touch_defaults').get_parameter_value().string_value
         self.keyboard_defaults = None
         self.gamepad_defaults = None
+        self.touch_defaults = None
         
         if kb_defaults_file:
             try:
@@ -134,5 +140,13 @@ class BridgeControllerConfig():
                     self.gamepad_defaults = json.load(read_content)
             except FileNotFoundError:
                 logger.error(f'gamepad_defaults file not found: {gp_defaults_file}')
+                pass
+        
+        if touch_defaults_file:
+            try:
+                with open(touch_defaults_file, "r") as read_content: 
+                    self.touch_defaults = json.load(read_content)
+            except FileNotFoundError:
+                logger.error(f'touch_defaults file not found: {touch_defaults_file}')
                 pass
         
