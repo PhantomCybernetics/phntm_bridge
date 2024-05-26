@@ -109,44 +109,18 @@ class BridgeControllerConfig():
         self.declare_parameter('ui_enable_wifi_scan', False)
         
         #input configs that get passed to ui
-        self.declare_parameter('keyboard_drivers', [ 'Joy' ])
-        self.declare_parameter(f'keyboard_defaults', '') # defaults to driver's config
-        self.declare_parameter('gamepad_drivers', [ 'Joy' ])
-        self.declare_parameter(f'gamepad_defaults', '') # defaults to driver's config
-        self.declare_parameter('touch_drivers', [ 'Joy' ])
-        self.declare_parameter(f'touch_defaults', '') # defaults to driver's config
+        self.declare_parameter('input_drivers', [ 'Joy' ])
+        self.declare_parameter(f'input_defaults', '') 
         
-        self.keyboard_drivers = self.get_parameter('keyboard_drivers').get_parameter_value().string_array_value
-        self.gamepad_drivers = self.get_parameter('gamepad_drivers').get_parameter_value().string_array_value
-        self.touch_drivers = self.get_parameter('touch_drivers').get_parameter_value().string_array_value
-        kb_defaults_file = self.get_parameter('keyboard_defaults').get_parameter_value().string_value
-        gp_defaults_file = self.get_parameter('gamepad_defaults').get_parameter_value().string_value
-        touch_defaults_file = self.get_parameter('touch_defaults').get_parameter_value().string_value
-        self.keyboard_defaults = None
-        self.gamepad_defaults = None
-        self.touch_defaults = None
+        self.input_drivers = self.get_parameter('input_drivers').get_parameter_value().string_array_value
+        input_defaults_file = self.get_parameter('input_defaults').get_parameter_value().string_value
+        self.input_defaults = None
         
-        if kb_defaults_file:
+        if input_defaults_file:
             try:
-                with open(kb_defaults_file, "r") as read_content: 
-                    self.keyboard_defaults = json.load(read_content)
+                with open(input_defaults_file, "r") as read_content: 
+                    self.input_defaults = json.load(read_content)
             except FileNotFoundError:
-                logger.error(f'keyboard_defaults file not found: {kb_defaults_file}')
-                pass
-
-        if gp_defaults_file:
-            try:
-                with open(gp_defaults_file, "r") as read_content: 
-                    self.gamepad_defaults = json.load(read_content)
-            except FileNotFoundError:
-                logger.error(f'gamepad_defaults file not found: {gp_defaults_file}')
-                pass
-        
-        if touch_defaults_file:
-            try:
-                with open(touch_defaults_file, "r") as read_content: 
-                    self.touch_defaults = json.load(read_content)
-            except FileNotFoundError:
-                logger.error(f'touch_defaults file not found: {touch_defaults_file}')
+                logger.error(f'input_defaults file not found: {input_defaults_file}')
                 pass
         

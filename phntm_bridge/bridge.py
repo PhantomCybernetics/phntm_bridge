@@ -30,8 +30,6 @@ import traceback
 import netifaces
 import uuid 
 
-import contextvars
-
 # if built with picamera2 support 
 try:
     from picamera2.encoders import H264Encoder
@@ -585,12 +583,8 @@ class BridgeController(Node, BridgeControllerConfig):
         }
         
         if ui_config: # = on conect only, adding config extras for the client
-            res['kb_drivers'] = self.keyboard_drivers
-            res['kb_defaults'] = self.keyboard_defaults
-            res['gp_drivers'] = self.gamepad_drivers
-            res['gp_defaults'] = self.gamepad_defaults
-            res['touch_drivers'] = self.touch_drivers
-            res['touch_defaults'] = self.touch_defaults
+            res['input_drivers'] = self.input_drivers
+            res['input_defaults'] = self.input_defaults
             res['ui'] = {
                 'battery_topic': self.get_parameter('ui_battery_topic').get_parameter_value().string_value,
                 'iw_monitor_topic': self.get_parameter('iw_monitor_topic').get_parameter_value().string_value,
