@@ -1169,8 +1169,12 @@ class BridgeController(Node, BridgeControllerConfig):
                 timeout_sec -= .1
             is_timeout = timeout_sec <= 0.0
             self.get_logger().warn(f"Service {service} call finished with result: {str(future.result())}{(' TIMEOUT' if is_timeout else '')}")
-        await srv_finished_checker()
+            return is_timeout
+        is_timeout = await srv_finished_checker()
 
+        if is_timeout:
+            return { 'err': 2, 'msg': f'Service execution timeout' }
+        
         return str(future.result())
 
 
