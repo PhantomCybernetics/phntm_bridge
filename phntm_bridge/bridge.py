@@ -1151,7 +1151,11 @@ class BridgeController(Node, BridgeControllerConfig):
 
         req = None
         if payload:
-            req = message_class.Request(data=payload)
+            try:
+                req = message_class.Request(data=payload)
+            except Exception as e:
+                self.get_logger().error(f'Error passing data to setvice {service}: {e}')
+                return { 'err': 2, 'msg': f'{e}' }
         else:
             req = message_class.Request()
         future = self.service_clients[service].call_async(req)
