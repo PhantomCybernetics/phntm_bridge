@@ -4,12 +4,9 @@ from  rclpy.impl.rcutils_logger import RcutilsLogger
 from rclpy.callback_groups import CallbackGroup
 from rclpy.context import Context
 from rclpy.node import Node, Parameter, QoSProfile, Publisher
+
 try:
-    from picamera2 import Picamera2
-except ModuleNotFoundError:
-    pass
-try:
-    from .camera import get_camera_info, picam2_has_camera
+    from .camera import get_camera_info
 except ModuleNotFoundError:
     pass
 import socketio

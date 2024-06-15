@@ -109,10 +109,13 @@ class BridgeControllerConfig():
         self.declare_parameter('ui_enable_wifi_scan', False)
         
         #input configs that get passed to ui
-        self.declare_parameter('input_drivers', [ 'Joy' ])
+        self.declare_parameter('input_drivers', [ 'Joy' ]) # [ '' ] to disable input entirely
         self.declare_parameter(f'input_defaults', '') 
         
         self.input_drivers = self.get_parameter('input_drivers').get_parameter_value().string_array_value
+        if len(self.input_drivers) == 0 or (len(self.input_drivers) == 1 and self.input_drivers[0] == ''):
+            self.input_drivers = []
+        
         input_defaults_file = self.get_parameter('input_defaults').get_parameter_value().string_value
         self.input_defaults = None
         

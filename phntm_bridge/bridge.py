@@ -29,19 +29,25 @@ import sys
 import traceback
 import netifaces
 import uuid 
+import os
 
 # if built with picamera2 support 
 try:
-    from picamera2.encoders import H264Encoder
-    from picamera2.outputs import FileOutput
     from picamera2 import Picamera2
-except ModuleNotFoundError:
+    class MyPicam2(Picamera2): # this only suppresses the error in desctrucror on failure
+        def close(self) -> None:
+            try:
+                super.close()
+            except (AttributeError) as e:
+                pass
+    print('Picamera2 loaded fine')
+except (ModuleNotFoundError, AttributeError) as e:
     pass
 
 import time
 try:
     from .inc.camera import get_camera_info, picam2_has_camera, CameraVideoStreamTrack, Picamera2Subscription, IsPiCameraId
-except ModuleNotFoundError:
+except (ModuleNotFoundError, AttributeError) as e:
     pass
 
 from .inc.ros_video_streaming import ImageTopicReadSubscription, IsImageType
@@ -98,11 +104,11 @@ class BridgeController(Node, BridgeControllerConfig):
         self.picam2 = None
         if self.picam_enabled:
             try:
-                self.picam2 = Picamera2()
+                self.picam2 = MyPicam2()
+                print (c(f'Picamera2 yo'))
                 print (c(f'Picamera2 global info: ', 'cyan') + str(self.picam2.global_camera_info()))
             except (Exception, AttributeError) as e:
-                print(c('Picamera2 init failed', 'red'))
-                pass
+                print(c(f'Picamera2 init failed: {str(e)}', 'red'))
 
         # separate process
         self.topic_read_subscriptions:dict[str: TopicReadSubscription] = {}
@@ -1243,25 +1249,24 @@ async def main_async():
         print(c('Udev rules initialized', 'magenta'))
         await asyncio.sleep(1.0) # needs a bit for the udev rules to take effect and picam init sucessfuly
 
-    try:
-        from picamera2 import Picamera2
-    except Exception as e:
-        print(c('Failed to import picamera2', 'red'), e)
-        pass
 
     try:
         bridge_node = BridgeController(image_reader_ctrl_queue=image_reader_ctrl_queue,
                                        data_reader_ctrl_queue=data_reader_ctrl_queue)
-        try:
-            bridge_node.iw = IW(iface=bridge_node.get_parameter('iw_interface').get_parameter_value().string_value,
-                                monitor_period_s=bridge_node.get_parameter('iw_monitor_period_sec').get_parameter_value().double_value,
-                                node=bridge_node,
-                                wrtc_peers=bridge_node.wrtc_peers,
-                                topic=bridge_node.get_parameter('iw_monitor_topic').get_parameter_value().string_value
-                                )
-        except Exception as e:
-            bridge_node.iw = None
-            print(c('IW monitor init failed', 'red'))
+        iw_iface = bridge_node.get_parameter('iw_interface').get_parameter_value().string_value
+        if iw_iface:
+            try:
+                bridge_node.iw = IW(iface=iw_iface,
+                                    monitor_period_s=bridge_node.get_parameter('iw_monitor_period_sec').get_parameter_value().double_value,
+                                    node=bridge_node,
+                                    wrtc_peers=bridge_node.wrtc_peers,
+                                    topic=bridge_node.get_parameter('iw_monitor_topic').get_parameter_value().string_value
+                                    )
+            except Exception as e:
+                bridge_node.iw = None
+                print(c(f'IW monitor init failed for iface "{iw_iface}": {str(e)}', 'red'))
+        else:
+             print(c(f'IW monitor is disabled'))
 
         sio_task = asyncio.get_event_loop().create_task(bridge_node.spin_sio_client(), name="sio_task")
         # spin_future = asyncio.get_event_loop().run_in_executor(None, lambda: rclpy.spin(bridge_node))

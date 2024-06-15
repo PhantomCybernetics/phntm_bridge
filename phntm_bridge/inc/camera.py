@@ -1,22 +1,19 @@
-
-from picamera2 import Picamera2
-from picamera2.encoders import H264Encoder
-from picamera2.outputs import FileOutput
-from picamera2 import Picamera2
 from aiortc.contrib.media import MediaStreamTrack
 from typing import Tuple, Union, List
 from termcolor import colored as c
 import av
 import fractions
 import time
-
 import asyncio
-
 from rclpy.impl.rcutils_logger import RcutilsLogger
 
-from picamera2.outputs import FileOutput
-from picamera2 import Picamera2
-import libcamera
+try:
+    from picamera2 import Picamera2
+    from picamera2.encoders import H264Encoder
+    from picamera2.outputs import FileOutput
+    import libcamera
+except (Exception, AttributeError) as e:
+    print(f'!!!!! {str(e)}')
 
 from aiortc import RTCRtpSender
 from aiortc.codecs.h264 import PACKET_MAX
