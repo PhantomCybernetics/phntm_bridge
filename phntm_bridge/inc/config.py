@@ -65,6 +65,9 @@ class BridgeControllerConfig():
         self.declare_parameter('log_sdp', False)
         self.log_sdp = self.get_parameter('log_sdp').get_parameter_value().bool_value
 
+        self.declare_parameter('log_heartbeat', False)
+        self.log_heartbeat = self.get_parameter('log_heartbeat').get_parameter_value().bool_value
+    
         logger.info(f'Loaded config topic_overrides: {str(self.topic_overrides)}')
 
         self.sio_address = self.get_parameter('sio_address').get_parameter_value().string_value

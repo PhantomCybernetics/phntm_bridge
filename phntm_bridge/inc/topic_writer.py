@@ -75,8 +75,7 @@ class TopicWritePublisher:
         return True
 
     def publish(self, id_peer:str, msg:any):
-
-        # print (self.message_class)
+        
         drop=False
         msg_header:Header = None
 

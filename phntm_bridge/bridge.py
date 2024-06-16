@@ -1030,16 +1030,17 @@ class BridgeController(Node, BridgeControllerConfig):
 
     # OPEN WRITE data channel
     async def open_write_channel(self, topic:str, msg_type:str, peer:WRTCPeer) -> str:
-        if not topic in self.topic_write_publishers:
-            self.topic_write_publishers[topic] = TopicWritePublisher(node=self,
-                                                                    topic=topic,
-                                                                    protocol=msg_type,
-                                                                    log_message_every_sec=self.log_message_every_sec)
-            asyncio.get_event_loop().create_task(self.introspection.start()) # created publisher => inrospect & update
+        if topic != '_heartbeat':
+            if not topic in self.topic_write_publishers:
+                self.topic_write_publishers[topic] = TopicWritePublisher(node=self,
+                                                                        topic=topic,
+                                                                        protocol=msg_type,
+                                                                        log_message_every_sec=self.log_message_every_sec)
+                asyncio.get_event_loop().create_task(self.introspection.start()) # created publisher => inrospect & update
 
-        if not self.topic_write_publishers[topic].start(peer.id):
-            self.get_logger().error(f'Topic {topic} failed to start publisher in on_write_subscription_change, {peer}')
-            return None
+            if not self.topic_write_publishers[topic].start(peer.id):
+                self.get_logger().error(f'Topic {topic} failed to start publisher in on_write_subscription_change, {peer}')
+                return None
 
         if not topic in peer.inbound_data_channels.keys():
             dc = self.make_publisher_dc(peer, topic, msg_type)
@@ -1079,6 +1080,7 @@ class BridgeController(Node, BridgeControllerConfig):
 
     def make_publisher_dc(self, peer, topic, protocol) -> RTCDataChannel:
         self.wrtc_nextChannelId += 1
+        is_heartbeat = (topic == '_heartbeat')
         dc = peer.pc.createDataChannel(topic,
                                         id=self.wrtc_nextChannelId,
                                         protocol=protocol,
@@ -1087,7 +1089,12 @@ class BridgeController(Node, BridgeControllerConfig):
                                         maxRetransmits=None)
         @dc.on('message')
         def on_inbound_channel_message(msg):
-            self.topic_write_publishers[topic].publish(peer.id, msg)
+            if is_heartbeat:
+                if self.log_heartbeat:
+                    print(f'Got heartbeat from '+peer.id)
+                peer.last_heartbeat = time.time()
+            else:
+                self.topic_write_publishers[topic].publish(peer.id, msg)
         return dc
 
     ##

@@ -35,7 +35,9 @@ class WRTCPeer:
         
         self.topics_not_discovered:list[str] = []
         self.cameras_not_discovered:list[str] = []
-
+        
+        self.last_heartbeat:float = -1
+        
         config = RTCConfiguration(
             iceServers=[
                 RTCIceServer(
