@@ -310,18 +310,24 @@ class BridgeController(Node, BridgeControllerConfig):
             if not peer:
                 return { 'err': 2, 'msg': 'Peer not connected' }
 
+            res = []
             for src in data['sources']:
                 topic = src[0]
                 msg_type = src[1]
                 topic_active = False
-                for sub in peer.write_subs:
-                    if sub[0] == topic:
+                for sub in peer.write_subs: 
+                    if sub[0] == topic: # already exists
                         topic_active = True
+                        id_dc = peer.inbound_data_channels[topic].id
+                        res.append([topic, id_dc, msg_type])
                         break
-                if not topic_active:
+                if not topic_active: # open new
                     peer.write_subs.append([topic, msg_type])
+                    id_dc = await self.open_write_channel(topic, msg_type, peer)
+                    res.append([topic, id_dc, msg_type])
 
-            await self.process_peer_subscriptions(peer, send_update=True)
+            return { 'write_data_channels': res }
+            # await self.process_peer_subscriptions(peer, send_update=True)
 
         # CLOSE WRITE SUBS
         @self.sio.on('unsubscribe:write')
@@ -851,7 +857,7 @@ class BridgeController(Node, BridgeControllerConfig):
             dc:RTCDataChannel = peer.pc.createDataChannel(topic,
                                                             id=self.wrtc_nextChannelId,
                                                             protocol=msg_type,
-                                                            negotiated=False, # negotiated by the app layer?
+                                                            negotiated=False, # false = negotiated by webrtc layer
                                                             ordered=False if not reliable else True,
                                                             maxRetransmits=None if reliable else 0)
             peer.outbound_data_channels[topic] = dc
@@ -1084,7 +1090,7 @@ class BridgeController(Node, BridgeControllerConfig):
         dc = peer.pc.createDataChannel(topic,
                                         id=self.wrtc_nextChannelId,
                                         protocol=protocol,
-                                        negotiated=True,
+                                        negotiated=True, # true = negotiated by the app, not webrtc layer
                                         ordered=False,
                                         maxRetransmits=None)
         @dc.on('message')
