@@ -394,7 +394,8 @@ class BridgeController(Node, BridgeControllerConfig):
             if not id_peer in self.wrtc_peers.keys():
                 return { 'err': 2, 'msg': 'Peer was not connected' }
             self.wrtc_peers[id_peer].sio_connected = False
-            self.get_logger().warn(f'Peer {id_peer} disconnected from Socket.io server (fyi, ignoring)')
+            self.get_logger().warn(f'Peer {id_peer} disconnected from Socket.io server (clearing webrtc)')
+            await self.remove_peer(id_peer, False)
 
         @self.sio.on('file')
         async def on_file_request(data):
@@ -546,12 +547,14 @@ class BridgeController(Node, BridgeControllerConfig):
 
         self.get_logger().debug(c(f'Peer {id_peer} connected... w peer_data={peer_data}', 'magenta'))
 
-        if id_peer in self.wrtc_peers.keys():
-            peer = self.wrtc_peers[id_peer]
-            self.get_logger().warn(f'{peer} was already connected, reusing session...')
-            # self.get_logger().warn(f'{self.wrtc_peers[id_peer]} was already connected, killing old...')
-            # await self.remove_peer(id_peer, False)
-            return await self.process_peer_subscriptions(peer, send_update=False, ui_config=True)
+        # if id_peer in self.wrtc_peers.keys():
+        #     peer = self.wrtc_peers[id_peer]
+        #     peer.sio_connected = True
+        #     if peer.pc.connectionState != "failed" and peer.id_instance == peer_data['id_instance']:
+        #         self.get_logger().warn(f'{peer} was already connected w state {peer.pc.connectionState}, reusing session...')
+        #         # self.get_logger().warn(f'{self.wrtc_peers[id_peer]} was already connected, killing old...')
+        #         # await self.remove_peer(id_peer, False)
+        #         return await self.process_peer_subscriptions(peer, send_update=False, ui_config=True)
 
         # pc.addTransceiver('video', direction='sendonly') #must have at least one
         peer = WRTCPeer(id_peer=id_peer,
@@ -1097,7 +1100,7 @@ class BridgeController(Node, BridgeControllerConfig):
         def on_inbound_channel_message(msg):
             if is_heartbeat:
                 if self.log_heartbeat:
-                    print(f'Got heartbeat from '+peer.id)
+                    print(f'🫀 Got heartbeat from '+peer.id)
                 peer.last_heartbeat = time.time()
             else:
                 self.topic_write_publishers[topic].publish(peer.id, msg)
