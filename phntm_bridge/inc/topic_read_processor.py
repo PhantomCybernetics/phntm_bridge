@@ -149,7 +149,13 @@ async def TopicReadProcessorLoop(reader_node, reader_label:str, rcl_executor, ru
         # newest_messages_by_topic.clear()
         await asyncio.sleep(.001)
 
-    # spin_future.set_result(True)
+
+def send_error_catcher(f):
+    try:
+        e = f.exception()
+        if e:
+            print(c(f'Topic Reader: output err: {e}', 'red'))
+    except: pass
 
 
 def on_cmd(reader_node:Node, ctrl_cmd:dict, reader_label:str, active_subs:dict[str:dict], newest_messages_by_topic:dict[str:list]):
@@ -270,21 +276,12 @@ def on_data(topic:str, msg:any, reader_label:str, active_subs:dict):
         # print(f'Processsor skipping frame of {topic}, last not yet consumed yet')
         return
     
-    try:
-        # print(f'Processor pushing image for {topic}')
-        sub['push_task'] = asyncio.get_event_loop().run_in_executor(sub['executor'], sub['pipe'].send, {
-            'topic': topic,
-            'msg': msg
-        }) # blocks until read, no more frames of this topic are processed until then
-        
-        # await data_push_tasks[topic]
-        # chill a bit while skipping frames of this topic
-        # this affects fps of the output
-        # await asyncio.sleep(0.01)
+    f = sub['push_task'] = asyncio.get_event_loop().run_in_executor(sub['executor'], sub['pipe'].send, {
+        'topic': topic,
+        'msg': msg
+    }) # blocks until read, no more frames of this topic are processed until then
+    f.add_done_callback(send_error_catcher)
 
-    except Exception as e:
-        print(c(f'Topic Reader {reader_label}: output err for {topic}: {e}', 'red'))
-        
 
 def on_raw_image_data(topic:str, msg:any, reader_label:str, active_subs:dict):
 
@@ -387,22 +384,14 @@ def on_raw_image_data(topic:str, msg:any, reader_label:str, active_subs:dict):
 
     # # print(f'Topic Reader: processed frame of {topic} {im.encoding}>H264 {im.width}x{im.height} {len(msg)}B > {len(packets)} pkts' + (c(' [KF]', 'magenta') if keyframe else f' {ns_since_last_keyframe} ns since KF') + ' in '+c(time.time()-debug_fp_start, 'yellow'))
 
-    try:
-        # print(f'Processor pushing image for {topic}')
-        sub['push_task'] = asyncio.get_event_loop().run_in_executor(sub['executor'], sub['pipe'].send, {
-            'topic': topic,
-            'frame_packets': packets,
-            'timestamp': timestamp,
-            'keyframe': force_keyframe, # don't skip keyframes
-        }) # blocks until read, no more frames of this topic are processed until then
-        
-        # await image_push_tasks[topic]
-        # chill a bit while skipping frames of this topic
-        # this affects fps of the output
-        # await asyncio.sleep(0.01)
+    f = sub['push_task'] = asyncio.get_event_loop().run_in_executor(sub['executor'], sub['pipe'].send, {
+        'topic': topic,
+        'frame_packets': packets,
+        'timestamp': timestamp,
+        'keyframe': force_keyframe, # don't skip keyframes
+    }) # blocks until read, no more frames of this topic are processed until then
+    f.add_done_callback(send_error_catcher)
 
-    except Exception as e:
-        print(c(f'Topic Reader: output err for {topic}: {e}', 'red'))
 
 def on_stream_image_data(topic:str, msg:any, reader_label:str, active_subs:dict):
     if not topic in active_subs.keys():
@@ -451,19 +440,14 @@ def on_stream_image_data(topic:str, msg:any, reader_label:str, active_subs:dict)
         
     packets, ts =  encoder_h264.pack(p)
     
-    try:
-        # print(f'Processor pushing image for {topic}')
-        # sub['push_task'] =
-        asyncio.get_event_loop().run_in_executor(sub['executor'], sub['pipe'].send, {
-            'topic': topic,
-            'frame_packets': packets,
-            'timestamp': ts,
-            'keyframe': frame.flags == 1, # don't skip keyframes
-        })
-        
-    except Exception as e:
-        print(c(f'Topic Reader: output err for {topic}: {e}', 'red'))
-    
+    f = asyncio.get_event_loop().run_in_executor(sub['executor'], sub['pipe'].send, {
+        'topic': topic,
+        'frame_packets': packets,
+        'timestamp': ts,
+        'keyframe': frame.flags == 1, # don't skip keyframes
+    })
+    f.add_done_callback(send_error_catcher)
+
 
 def on_compressed_image_data(topic:str, msg:any, reader_label:str, active_subs:dict):
 
@@ -543,16 +527,13 @@ def on_compressed_image_data(topic:str, msg:any, reader_label:str, active_subs:d
         encoder_h264 = H264Encoder()
 
     packets, timestamp = encoder_h264.encode(frame=frame, force_keyframe=force_keyframe) # convert to 1/90000
-
-    try:
-        # print(f'Processor pushing image for {topic}')
-        sub['push_task'] = asyncio.get_event_loop().run_in_executor(sub['executor'], sub['pipe'].send, {
-            'topic': topic,
-            'frame_packets': packets,
-            'timestamp': timestamp,
-            'keyframe': force_keyframe, # don't skip keyframes
-        }) # blocks until read, no more frames of this topic are processed until then
-        
-    except Exception as e:
-        print(c(f'Topic Reader: output err for {topic}: {e}', 'red'))
+    
+    # print(f'Processor pushing image for {topic}')
+    f = sub['push_task'] = asyncio.get_event_loop().run_in_executor(sub['executor'], sub['pipe'].send, {
+        'topic': topic,
+        'frame_packets': packets,
+        'timestamp': timestamp,
+        'keyframe': force_keyframe, # don't skip keyframes
+    }) # blocks until read, no more frames of this topic are processed until then
+    f.add_done_callback(send_error_catcher)
 
