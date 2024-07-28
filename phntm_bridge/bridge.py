@@ -501,17 +501,16 @@ class BridgeController(Node, BridgeControllerConfig):
             self.get_logger().warn('Unhandled: Socket.io event ' + str(event) + ' with ' + str(data))
 
         @self.sio.event
-        def connect_error(data):
+        async def connect_error(data):
             self.get_logger().error('Socket.io connection failed')
+            await self.remove_all_peers()
+            await self.clear_conn_leds()
 
         @self.sio.event
-        def disconnect():
+        async def disconnect():
             self.get_logger().warn('Socket.io disconnected from server')
-            if self.conn_led != None:
-                if not self.shutting_down:
-                    self.conn_led.set_fast_pulse()
-                else:
-                    self.conn_led.off()
+            await self.remove_all_peers()
+            await self.clear_conn_leds()
 
     ##
     # spin socket.io
@@ -790,6 +789,25 @@ class BridgeController(Node, BridgeControllerConfig):
                 self.get_logger().info(c(f'Exception while closing pc of {peer}, {e}', 'red'))
                 pass
             del self.wrtc_peers[id_peer]
+    
+    
+    async def remove_all_peers(self):
+        if len(self.wrtc_peers.values()) == 0:
+            return # we cool
+        peer_remove_coros = [self.remove_peer(peer.id, False) for peer in self.wrtc_peers.values()]
+        print(c(f'Disconnecting {len(self.wrtc_peers)} peers...', 'cyan'))
+        await asyncio.gather(*peer_remove_coros)
+        print(c(f'{len(peer_remove_coros)} peer{"" if len(peer_remove_coros) < 2 else "s"} disconnected', 'cyan'))
+    
+    
+    async def clear_conn_leds(self):
+        if self.conn_led != None or self.data_led != None:
+            if self.conn_led != None:
+                self.conn_led.clear()
+            if self.data_led != None:
+                self.data_led.clear()
+            #TODO actually I should spin ros node some more here
+            await asyncio.sleep(1) # wait a bit
     
     
     async def peer_signalling_stable_checker(self, peer:WRTCPeer) -> bool:
@@ -1190,7 +1208,8 @@ class BridgeController(Node, BridgeControllerConfig):
                     await event_loop.run_in_executor(None, lambda: rclpy.spin_once(self, timeout_sec=0.1)) # gotta spin to hear back
                     # await fut
                 except Exception as e:
-                    print(f'Exception while spinning for service {service}: {e}')
+                    if (str(e) != 'cannot use Destroyable because destruction was requeste'):
+                        print(f'Exception while spinning for service {service}: {e}')
                 await asyncio.sleep(.1)
                 timeout_sec -= .1
             is_timeout = timeout_sec <= 0.0
@@ -1207,10 +1226,7 @@ class BridgeController(Node, BridgeControllerConfig):
     async def shutdown_cleanup(self):
 
         # close peer connections
-        peer_remove_coros = [self.remove_peer(peer.id, False) for peer in self.wrtc_peers.values()]
-        print(c(f'Disconnecting {len(self.wrtc_peers)} peers...', 'cyan'))
-        await asyncio.gather(*peer_remove_coros)
-        print(c(f'{len(peer_remove_coros)} peer{"" if len(peer_remove_coros) < 2 else "s"} disconnected', 'cyan'))
+        await self.remove_all_peers()
 
         await self.sio.disconnect()
         if self.spin_task != None:
@@ -1224,13 +1240,7 @@ class BridgeController(Node, BridgeControllerConfig):
             self.sio_reconnect_wait_task.cancel()
             await self.sio_reconnect_wait_task
 
-        if self.conn_led != None or self.data_led != None:
-            if self.conn_led != None:
-                self.conn_led.clear()
-            if self.data_led != None:
-                self.data_led.clear()
-            #TODO actually I should spin ros node some more here
-            await asyncio.sleep(1) # wait a bit
+        await self.clear_conn_leds()
 
 
 async def main_async():
