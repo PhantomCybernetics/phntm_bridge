@@ -504,13 +504,13 @@ class BridgeController(Node, BridgeControllerConfig):
         async def connect_error(data):
             self.get_logger().error('Socket.io connection failed')
             await self.remove_all_peers()
-            await self.clear_conn_leds()
+            await self.reset_conn_leds()
 
         @self.sio.event
         async def disconnect():
             self.get_logger().warn('Socket.io disconnected from server')
             await self.remove_all_peers()
-            await self.clear_conn_leds()
+            await self.reset_conn_leds()
 
     ##
     # spin socket.io
@@ -808,6 +808,13 @@ class BridgeController(Node, BridgeControllerConfig):
                 self.data_led.clear()
             #TODO actually I should spin ros node some more here
             await asyncio.sleep(1) # wait a bit
+    
+    
+    async def reset_conn_leds(self):
+        if self.conn_led != None:
+            self.conn_led.set_fast_pulse()
+        if self.data_led != None:
+            self.data_led.off()
     
     
     async def peer_signalling_stable_checker(self, peer:WRTCPeer) -> bool:
