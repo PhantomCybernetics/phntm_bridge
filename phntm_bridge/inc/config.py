@@ -109,6 +109,7 @@ class BridgeControllerConfig():
         
         self.declare_parameter('ui_battery_topic', '/battery') # use this in ui 
         self.declare_parameter('ui_docker_control', True)
+        self.docker_control_enabled = self.get_parameter('ui_docker_control').get_parameter_value().bool_value
         self.declare_parameter('ui_enable_wifi_scan', False)
         
         #input configs that get passed to ui

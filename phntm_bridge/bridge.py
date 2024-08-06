@@ -227,6 +227,8 @@ class BridgeController(Node, BridgeControllerConfig):
 
         @self.sio.on('docker')
         async def on_docker_call(data):
+            if not self.docker_control_enabled:
+                return { 'err': 2, 'msg': 'Docker control disabled' }
             id_peer:str = WRTCPeer.GetId(data)
             if id_peer == None:
                 return { 'err': 2, 'msg': 'No valid peer id provided' }
@@ -602,7 +604,7 @@ class BridgeController(Node, BridgeControllerConfig):
             res['ui'] = {
                 'battery_topic': self.get_parameter('ui_battery_topic').get_parameter_value().string_value,
                 'iw_monitor_topic': self.get_parameter('iw_monitor_topic').get_parameter_value().string_value,
-                'docker_control': self.get_parameter('ui_docker_control').get_parameter_value().bool_value,
+                'docker_control': self.docker_control_enabled,
                 'enable_wifi_scan': self.get_parameter('ui_enable_wifi_scan').get_parameter_value().bool_value
             }
 
