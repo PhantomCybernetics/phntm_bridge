@@ -15,7 +15,7 @@ setup(
          # Include all launch files.
         (os.path.join('share', package_name, 'launch'), glob(os.path.join('launch', '*launch.[pxy][yma]*')))
     ],
-    install_requires=['setuptools==58.2.0', 'python-engineio'],
+    install_requires=['setuptools', 'python-engineio'],
     zip_safe=True,
     maintainer='Mirek Burkon',
     maintainer_email='mirek@phntm.io',

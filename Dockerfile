@@ -23,7 +23,7 @@ RUN apt-get install -y libavdevice-dev libavfilter-dev libopus-dev libvpx-dev pk
 # gazebo
 # RUN apt install -y ros-$ROS_DISTRO-ros-gz
 
-RUN pip install setuptools==58.2.0 \
+RUN pip install setuptools \
                 python-socketio \
                 opencv-python \
                 termcolor \
