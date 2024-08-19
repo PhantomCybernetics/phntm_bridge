@@ -5,7 +5,7 @@ from aiortc import RTCPeerConnection, RTCSessionDescription, RTCDataChannel, RTC
 from rclpy.node import Node, Parameter, Subscription, QoSProfile, Publisher
 from rclpy.duration import Duration, Infinite
 from rclpy.impl.rcutils_logger import RcutilsLogger
-from rosidl_runtime_py.utilities import get_message, get_interface
+from rosidl_runtime_py.utilities import get_message
 from rclpy.qos import QoSHistoryPolicy, QoSReliabilityPolicy, DurabilityPolicy
 
 from typing import Callable

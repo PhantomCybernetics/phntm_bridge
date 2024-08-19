@@ -57,11 +57,11 @@ RUN mkdir -p $ROS_WS/src
 
 # kms++ from source (for picamera2) \
 RUN apt-get install -y libdrm-common libdrm-dev
-WORKDIR $ROS_WS
+WORKDIR /opt
 RUN git clone https://github.com/tomba/kmsxx.git
-WORKDIR $ROS_WS/kmsxx
+WORKDIR /opt/kmsxx
 RUN git submodule update --init
-ENV PYTHONPATH=$PYTHONPATH":/ros2_ws/kmsxx/build/py"
+ENV PYTHONPATH=$PYTHONPATH":/opt/kmsxx/build/py"
 ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH":/usr/local/lib/"$ARCH"-linux-gnu"
 RUN /root/.local/bin/meson build
 RUN ninja -C build install
@@ -69,13 +69,13 @@ RUN ninja -C build install
 RUN apt-get install -y libcap-dev
 
 # libcamera (makes its python bidings for picamera2)
-WORKDIR $ROS_WS
+WORKDIR /opt
 
 # libcamera from src works on pi4b + bullseye
 # libcamera v0.1.0 works with picamera2==0.3.12
 RUN if [ "$PI_CAMERA" = "Old" ]; then \
     git clone https://git.libcamera.org/libcamera/libcamera.git; \
-    cd $ROS_WS/libcamera; \
+    cd /opt/libcamera; \
     git checkout v0.1.0; \
     /root/.local/bin/meson setup build -D pycamera=enabled -D v4l2=True --reconfigure; \
     ninja -C build install; \
@@ -86,16 +86,16 @@ fi
 # works on pi5 w bookworm (sw only encoding)
 RUN if [ "$PI_CAMERA" = "True" ]; then \
     git clone https://github.com/raspberrypi/libcamera.git; \
-    cd $ROS_WS/libcamera; \
+    cd /opt/libcamera; \
     /root/.local/bin/meson setup build -D pycamera=enabled -D v4l2=True --reconfigure; \
     ninja -C build install; \
-    cd $ROS_WS; \
+    cd /opt; \
     git clone -b next https://github.com/PhantomCybernetics/picamera2.git; \
-    pip install -e /ros2_ws/picamera2; \
+    pip install -e picamera2; \
 fi
-ENV PYTHONPATH=$PYTHONPATH":/ros2_ws/libcamera/build/src/py"
+ENV PYTHONPATH=$PYTHONPATH":/opt/libcamera/build/src/py"
 
-# needed by reload-devies.sh (reloads docker devices after the container has been created)
+# needed by reload-devices.sh (reloads docker devices after the container has been created)
 RUN apt-get install -y udev
 
 # fix numpy version to >= 1.25.2
@@ -126,23 +126,33 @@ RUN chmod a+x /ros_entrypoint.sh
 RUN echo 'source /opt/ros/'$ROS_DISTRO'/setup.bash' >> /root/.bashrc
 RUN echo 'test -f "/ros2_ws/install/setup.bash" && source "/ros2_ws/install/setup.bash"' >> /root/.bashrc
 
-WORKDIR $ROS_WS
+WORKDIR /opt
 
 # clone forked aioice repo and install with pip
-RUN git clone -b fixes https://github.com/PhantomCybernetics/aioice.git /ros2_ws/aioice
-RUN pip install -e /ros2_ws/aioice
+RUN git clone -b fixes https://github.com/PhantomCybernetics/aioice.git /opt/aioice
+RUN pip install -e /opt/aioice
 
 # install aiortc fork from phntm github
-RUN git clone -b performance https://github.com/PhantomCybernetics/aiortc.git /ros2_ws/aiortc
-RUN pip install -e /ros2_ws/aiortc
+RUN git clone -b performance https://github.com/PhantomCybernetics/aiortc.git /opt/aiortc
+RUN pip install -e /opt/aiortc
 
-# clone and install phntm interfaces and bridge
+WORKDIR $ROS_WS
+
+# clone and install phntm interfaces
 RUN git clone https://github.com/PhantomCybernetics/phntm_interfaces.git /ros2_ws/src/phntm_interfaces
 RUN . /opt/ros/$ROS_DISTRO/setup.sh && \
     rosdep update --rosdistro $ROS_DISTRO && \
     rosdep install -i --from-path src/phntm_interfaces --rosdistro $ROS_DISTRO -y && \
     colcon build --symlink-install --packages-select phntm_interfaces
 
+# clone and install phntm agent
+RUN git clone https://github.com/PhantomCybernetics/phntm_agent.git /ros2_ws/src/phntm_agent
+RUN . /opt/ros/$ROS_DISTRO/setup.sh && \
+    . /ros2_ws/install/setup.sh && \
+    rosdep install -i --from-path src/phntm_agent --rosdistro $ROS_DISTRO -y && \
+    colcon build --symlink-install --packages-select phntm_agent
+
+# clone and install phntm bridge
 RUN git clone https://github.com/PhantomCybernetics/phntm_bridge.git /ros2_ws/src/phntm_bridge
 RUN . /opt/ros/$ROS_DISTRO/setup.sh && \
     . /ros2_ws/install/setup.sh && \
