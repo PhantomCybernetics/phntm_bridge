@@ -621,7 +621,7 @@ class BridgeController(Node, BridgeControllerConfig):
                         peer.cameras_not_discovered.append(sub) # introspection will keep running
 
             elif sub in self.introspection.discovered_topics.keys():
-                msg_type = self.introspection.discovered_topics[sub]['msg_types'][0]
+                msg_type = self.introspection.discovered_topics[sub]['msg_type']
                 is_image = IsImageType(msg_type)
                 if not is_image:
                     reliable = self.get_parameter_or(f'{sub}.reliability', Parameter(name='', value=0)).get_parameter_value().integer_value == 1 # 1=RELIABLE
@@ -861,7 +861,7 @@ class BridgeController(Node, BridgeControllerConfig):
         if not topic in self.introspection.discovered_topics.keys():
             return None
 
-        msg_type:str = self.introspection.discovered_topics[topic]['msg_types'][0]
+        msg_type:str = self.introspection.discovered_topics[topic]['msg_type']
         if IsImageType(msg_type):
             return None
 
@@ -925,7 +925,7 @@ class BridgeController(Node, BridgeControllerConfig):
         if not topic in self.introspection.discovered_topics.keys():
             return None
 
-        msg_type:str = self.introspection.discovered_topics[topic]['msg_types'][0]
+        msg_type:str = self.introspection.discovered_topics[topic]['msg_type']
         if not IsImageType(msg_type):
             return None
 
@@ -1167,7 +1167,7 @@ class BridgeController(Node, BridgeControllerConfig):
             return { 'err': 2, 'msg': f'Service {service} not discovered (yet?)' }
 
         message_class = None
-        msg_type = self.introspection.discovered_services[service]["msg_types"][0]
+        msg_type = self.introspection.discovered_services[service]["msg_type"]
         try:
             message_class = get_interface(msg_type)
         except:

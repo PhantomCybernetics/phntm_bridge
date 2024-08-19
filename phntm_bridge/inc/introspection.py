@@ -32,8 +32,8 @@ class Introspection (AsyncIOEventEmitter):
         self.picam2 = ctrl_node.picam2
         self.docker_client = docker_client
 
-        self.discovered_topics:dict[str: dict['msg_types':list[str]]] =  {}
-        self.discovered_services:dict[str: dict['msg_types':list[str]]] = {}
+        self.discovered_topics:dict[str: dict['msg_type':str]] =  {}
+        self.discovered_services:dict[str: dict['msg_type':str]] = {}
         self.discovered_cameras:dict[str: any] = {}
         self.discovered_docker_containers:dict[str: [ docker.models.containers.Container, str ]] = {}
         self.discovered_nodes:dict[str: dict[
@@ -159,11 +159,11 @@ class Introspection (AsyncIOEventEmitter):
                     
             for pub_info in new_publishers:
                 topic = pub_info[0]
-                msg_types = pub_info[1]
+                msg_type = pub_info[1][0]
                 if not topic in self.discovered_nodes[node]['publishers'].keys() \
-                    or self.discovered_nodes[node]['publishers'][topic] != msg_types:
-                    self.discovered_nodes[node]['publishers'][topic] = msg_types
-                    self.logger.info(c(f'{node} > {topic} {msg_types}', 'light_green'))
+                or self.discovered_nodes[node]['publishers'][topic] != msg_type:
+                    self.discovered_nodes[node]['publishers'][topic] = msg_type
+                    self.logger.info(c(f'{node} > {topic} [{msg_type}]', 'light_green'))
                     nodes_changed = True
 
             new_subscribers = await asyncio.get_event_loop().run_in_executor(None, self.ctrl_node.get_subscriber_names_and_types_by_node, node, namespace)
@@ -180,11 +180,11 @@ class Introspection (AsyncIOEventEmitter):
             
             for sub_info in new_subscribers:
                 topic = sub_info[0]
-                msg_types = sub_info[1]
+                msg_type = sub_info[1][0]
                 if not topic in self.discovered_nodes[node]['subscribers'].keys() \
-                    or self.discovered_nodes[node]['subscribers'][topic] != msg_types:
-                    self.discovered_nodes[node]['subscribers'][topic] = msg_types
-                    self.logger.info(c(f'{node} < {topic} {msg_types}', 'light_green'))
+                or self.discovered_nodes[node]['subscribers'][topic] != msg_type:
+                    self.discovered_nodes[node]['subscribers'][topic] = msg_type
+                    self.logger.info(c(f'{node} < {topic} {msg_type}', 'light_green'))
                     nodes_changed = True
 
             new_services = await asyncio.get_event_loop().run_in_executor(None, self.ctrl_node.get_service_names_and_types_by_node, node, namespace)
@@ -201,11 +201,14 @@ class Introspection (AsyncIOEventEmitter):
             
             for serv_info in new_services:
                 id_service = serv_info[0]
-                msg_types = serv_info[1]
+                msg_type = serv_info[1][0]
                 if not id_service in self.discovered_nodes[node]['services'].keys() \
-                    or self.discovered_nodes[node]['services'][id_service] != msg_types:
-                    self.discovered_nodes[node]['services'][id_service] = msg_types
-                    self.logger.info(c(f'{node} <> {id_service} {msg_types}', 'light_green'))
+                or self.discovered_nodes[node]['services'][id_service] != msg_type:
+                    self.discovered_nodes[node]['services'][id_service] = msg_type
+                    if len(serv_info[1]) > 1:
+                        self.logger.info(c(f'srv {id_service} @ {node} [{msg_type}] ?? {str(serv_info[1])}', 'red'))
+                    else:
+                        self.logger.info(c(f'srv {id_service} @ {node} [{msg_type}]', 'light_green'))
                     nodes_changed = True
 
         if nodes_changed:
@@ -219,8 +222,10 @@ class Introspection (AsyncIOEventEmitter):
             topic = topic_info[0]
             # TODO: blacklist topics
             if not topic in self.discovered_topics:
-                self.logger.info(c(f'Discovered topic {topic}', 'light_blue'))
-                self.discovered_topics[topic] = { 'msg_types': topic_info[1] }
+                msg_type = topic_info[1][0]
+                
+                self.logger.info(c(f'Discovered topic {topic} [{msg_type}]', 'light_blue'))
+                self.discovered_topics[topic] = { 'msg_type': msg_type }
                 topics_changed = True
         if topics_changed:
             await self.report_topics()
@@ -233,9 +238,10 @@ class Introspection (AsyncIOEventEmitter):
             service = service_info[0]
             # TODO: blacklist services
             if not service in self.discovered_services:
-                self.discovered_services[service] = { 'msg_types': service_info[1] }
+                msg_type = service_info[1][0]
+                self.discovered_services[service] = { 'msg_type': msg_type }
                 services_changed = True
-                self.logger.info(c(f'Discovered service {service}', 'magenta'))
+                self.logger.info(c(f'Discovered service {service} [{msg_type}]', 'magenta'))
         if services_changed:
             await self.report_services()
 
@@ -304,9 +310,10 @@ class Introspection (AsyncIOEventEmitter):
     def get_topics_data(self):
         data = []
         for topic in self.discovered_topics.keys():
-            topic_data = [ topic ] # msg types follow
-            for msg_type in self.discovered_topics[topic]['msg_types']:
-                topic_data.append(msg_type)
+            topic_data = [
+                topic,
+                self.discovered_topics[topic]['msg_type']
+                ]
             data.append(topic_data)
         return data
 
@@ -332,9 +339,10 @@ class Introspection (AsyncIOEventEmitter):
     def get_services_data(self):
         data = []
         for service in self.discovered_services.keys():
-            service_data = [ service ]  # msg types follow
-            for msg_type in self.discovered_services[service]['msg_types']:
-                service_data.append(msg_type)
+            service_data = [
+                service,
+                self.discovered_services[service]['msg_type']
+                ]
             data.append(service_data)
         return data
 
