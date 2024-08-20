@@ -46,7 +46,6 @@ class TopicWritePublisher:
             self.message_class = get_message(self.protocol)
         except:
             pass
-
         if self.message_class == None:
             self.node.get_logger().error(f'NOT creating publisher for topic {self.topic}, msg class {self.protocol} not loaded')
             return False

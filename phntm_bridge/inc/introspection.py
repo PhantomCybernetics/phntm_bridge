@@ -4,6 +4,9 @@ from  rclpy.impl.rcutils_logger import RcutilsLogger
 from rclpy.callback_groups import CallbackGroup
 from rclpy.context import Context
 from rclpy.node import Node, Parameter, QoSProfile, Publisher
+from rosidl_runtime_py.utilities import get_message, get_interface
+from rosidl_runtime_py import get_interface_path
+import os
 
 try:
     from .camera import get_camera_info
@@ -33,6 +36,7 @@ class Introspection (AsyncIOEventEmitter):
         self.docker_client = docker_client
 
         self.discovered_topics:dict[str: dict['msg_type':str]] =  {}
+        self.discovered_idls:dict[str:str] = {}
         self.discovered_services:dict[str: dict['msg_type':str]] = {}
         self.discovered_cameras:dict[str: any] = {}
         self.discovered_docker_containers:dict[str: [ docker.models.containers.Container, str ]] = {}
@@ -105,6 +109,48 @@ class Introspection (AsyncIOEventEmitter):
             self.waiting_peers = []
             if report:
                 await self.report_introspection()
+
+    async def collect_idls(self, msg_type) -> bool:
+        if msg_type in self.discovered_idls:
+            return False # no change
+        
+        idl_path = get_interface_path(msg_type)
+        idl_path = os.path.splitext(idl_path)[0] + '.idl'
+        idl_raw = ''
+        try:
+            with open(idl_path, 'r') as file:
+                idl_raw = file.read()
+        except FileNotFoundError:
+            self.logger.error(f'IDL not found for {msg_type}, file not found at {idl_path}')
+            return False # no change
+        
+        idl_clear = ''
+        first_valid_line = False
+        inluded_message_types = []
+        for line in idl_raw.splitlines():
+            if line.startswith('//'): # skipping comments
+                continue
+            if line == '' and not first_valid_line:
+                continue
+            if line != '':
+                first_valid_line = True
+            idl_clear = idl_clear + line + '\n'
+
+            if line.startswith('#include') and line.find('.idl') > -1: # handle includes
+                inc_path = line.replace('#include', '').strip(' "\'')
+                inc_msg_type = inc_path.replace('.idl', '');
+                inluded_message_types.append(inc_msg_type)
+            
+        self.discovered_idls[msg_type] = idl_clear
+        self.logger.info(c(f'Loaded {idl_path} for [{msg_type}]', 'light_yellow'))
+        # print(c(f'{msg_type}: {idl_path}:\n{idl_clear}', 'light_magenta'))
+
+        for inc_msg_type in inluded_message_types:
+            if not inc_msg_type in self.discovered_idls:
+                # print(c(f'#inc {inc_msg_type} > ', 'light_yellow'))
+                await self.collect_idls(inc_msg_type)
+    
+        return True
 
 
     # spinned by timer
@@ -211,26 +257,23 @@ class Introspection (AsyncIOEventEmitter):
                         self.logger.info(c(f'srv {id_service} @ {node} [{msg_type}]', 'light_green'))
                     nodes_changed = True
 
-        if nodes_changed:
-            await self.report_nodes()
+        idls_changed = False
 
-        #topics
+        # topics + extract message type idls
         topics_changed = False
         new_topics = self.ctrl_node.get_topic_names_and_types()
-
+        
         for topic_info in new_topics:
             topic = topic_info[0]
             # TODO: blacklist topics
             if not topic in self.discovered_topics:
                 msg_type = topic_info[1][0]
-                
-                self.logger.info(c(f'Discovered topic {topic} [{msg_type}]', 'light_blue'))
                 self.discovered_topics[topic] = { 'msg_type': msg_type }
                 topics_changed = True
-        if topics_changed:
-            await self.report_topics()
+                self.logger.info(c(f'Discovered topic {topic} [{msg_type}]', 'light_blue'))
+                idls_changed = await self.collect_idls(msg_type) or idls_changed
 
-        #services
+        # services + extract message type idls
         services_changed = False
         new_services = self.ctrl_node.get_service_names_and_types()
 
@@ -242,6 +285,17 @@ class Introspection (AsyncIOEventEmitter):
                 self.discovered_services[service] = { 'msg_type': msg_type }
                 services_changed = True
                 self.logger.info(c(f'Discovered service {service} [{msg_type}]', 'magenta'))
+                idls_changed = await self.collect_idls(msg_type) or idls_changed
+        
+        if not 'std_msgs/msg/Byte' in self.discovered_idls: # force add byte as we use on the client to send heartbeat (but not producing into a topic => no auto type discovery)
+            idls_changed = await self.collect_idls('std_msgs/msg/Byte') or idls_changed
+        
+        if idls_changed:
+            await self.report_idls()
+        if nodes_changed:
+            await self.report_nodes()
+        if topics_changed:
+            await self.report_topics()
         if services_changed:
             await self.report_services()
 
@@ -301,6 +355,26 @@ class Introspection (AsyncIOEventEmitter):
 
             await self.sio.emit(
                 event='nodes',
+                data=data,
+                callback=None
+                )
+        except:
+            pass
+
+    def get_idls_data(self):
+        return self.discovered_idls
+
+    async def report_idls(self):
+
+        if not self.sio or not self.sio.connected:
+            return
+
+        try:
+            data = self.get_idls_data()
+            self.logger.info(c(f'Reporting {len(data)} idls', 'dark_grey'))
+
+            await self.sio.emit(
+                event='idls',
                 data=data,
                 callback=None
                 )

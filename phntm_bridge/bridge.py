@@ -180,7 +180,8 @@ class BridgeController(Node, BridgeControllerConfig):
             if self.conn_led != None:
                 self.conn_led.on()
 
-            # push introspection result to the server
+            # push latest introspection results to the server
+            asyncio.get_event_loop().create_task(self.introspection.report_idls())
             asyncio.get_event_loop().create_task(self.introspection.report_nodes())
             asyncio.get_event_loop().create_task(self.introspection.report_cameras())
             asyncio.get_event_loop().create_task(self.introspection.report_topics())
