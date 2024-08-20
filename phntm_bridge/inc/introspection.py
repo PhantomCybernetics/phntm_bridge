@@ -367,6 +367,7 @@ class Introspection (AsyncIOEventEmitter):
     async def report_idls(self):
 
         if not self.sio or not self.sio.connected:
+            self.logger.error(f'Not reporting IDLS, socket not ready')
             return
 
         try:
@@ -378,7 +379,8 @@ class Introspection (AsyncIOEventEmitter):
                 data=data,
                 callback=None
                 )
-        except:
+        except Exception as e:
+            self.logger.error(f'Exception while reporting idls: {str(e)}')
             pass
 
     def get_topics_data(self):
