@@ -101,6 +101,9 @@ class BridgeController(Node, BridgeControllerConfig):
         self.get_logger().set_level(rclpy.logging.LoggingSeverity.DEBUG)
         self.load_config(self.get_logger())
 
+        self.ros_distro = os.environ["ROS_DISTRO"]
+        self.get_logger().debug(f'ROS Distro is: {self.ros_distro}')
+        
         self.picam2 = None
         if self.picam_enabled:
             try:
@@ -405,7 +408,6 @@ class BridgeController(Node, BridgeControllerConfig):
             file_url:str = data
             pkg:str = None
             pkg_prefix = ""
-            ROS_DISTRO = os.environ["ROS_DISTRO"]
             
             if file_url.startswith('file:/'):
                 file_url = file_url.replace('file://', '')
@@ -429,12 +431,12 @@ class BridgeController(Node, BridgeControllerConfig):
                 self.get_logger().warn(f'Bridge requesting file in pkg {pkg}: {file_url}')
                 
                 if pkg is not None:
-                    res = subprocess.run([f"/opt/ros/{ROS_DISTRO}/bin/ros2", "pkg", "prefix", pkg], capture_output=True)
+                    res = subprocess.run([f"/opt/ros/{self.ros_distro}/bin/ros2", "pkg", "prefix", pkg], capture_output=True)
                     if res.stdout:
                         pkg_prefix = res.stdout.decode("ASCII").rstrip() + '/share'
-                        self.get_logger().info(f'local ros2 {ROS_DISTRO} pkg prefix is {pkg_prefix}')
+                        self.get_logger().info(f'local ros2 {self.ros_distro} pkg prefix is {pkg_prefix}')
                     else:
-                        self.get_logger().info(f'local ros2 {ROS_DISTRO} pkg prefix for {pkg} not found in this fs')
+                        self.get_logger().info(f'local ros2 {self.ros_distro} pkg prefix for {pkg} not found in this fs')
             else:
                 self.get_logger().warn(f'Bridge requesting invalid file {file_url}')
                 return None # file not found
@@ -457,7 +459,7 @@ class BridgeController(Node, BridgeControllerConfig):
                 for container in docker_containers:
                     pkg_prefix = ""    
                     if pkg:
-                        cmd = f'/bin/bash -c "export PS1=phntm && . /opt/ros/$ROS_DISTRO/setup.bash && . ~/.bashrc && /opt/ros/$ROS_DISTRO/bin/ros2 pkg prefix {pkg}"'
+                        cmd = f'/bin/bash -c "export PS1=phntm && . /opt/ros/{self.ros_distro}/setup.bash && . ~/.bashrc && /opt/ros/{self.ros_distro}/bin/ros2 pkg prefix {pkg}"'
                         res = container.exec_run(cmd)
                         if res.exit_code == 1:
                             self.get_logger().info(f'pkg not found in cont {container.name} \nout={res.output}\ncmd={cmd}')
@@ -525,7 +527,8 @@ class BridgeController(Node, BridgeControllerConfig):
                 auth_data = {
                     'id_robot': self.id_robot,
                     'key': self.auth_key,
-                    'name': self.robot_name
+                    'name': self.robot_name,
+                    'ros_distro': self.ros_distro
                 }
                 await self.sio.connect(url=f'{self.sio_address}:{self.sio_port}', socketio_path=self.sio_path, auth=auth_data)
 
