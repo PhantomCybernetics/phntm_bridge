@@ -609,6 +609,7 @@ class BridgeController(Node, BridgeControllerConfig):
                 'battery_topic': self.get_parameter('ui_battery_topic').get_parameter_value().string_value,
                 'iw_monitor_topic': self.get_parameter('iw_monitor_topic').get_parameter_value().string_value,
                 'docker_control': self.docker_control_enabled,
+                'docker_monitor_topic': self.get_parameter('docker_monitor_topic').get_parameter_value().string_value,
                 'enable_wifi_scan': self.get_parameter('ui_enable_wifi_scan').get_parameter_value().bool_value
             }
 
