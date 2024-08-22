@@ -140,7 +140,7 @@ class TopicReadSubscription:
         #print(f'TopicReadSubscription:on_msg() {threading.get_ident()}')
 
         log_msg = False
-        if self.num_received == 1 or self.lifespan_sec == -1: # first data in
+        if log_msg or self.num_received == 1 or self.lifespan_sec == -1: # first data in
             self.ctrl_node.get_logger().debug(f'⚡️ Receiving {type(reader_res["msg"]).__name__} from {self.topic}')
 
         if self.last_log < 0 or self.last_msg_time-self.last_log > self.log_message_every_sec:
@@ -171,18 +171,8 @@ class TopicReadSubscription:
                     print(f'⚡️ Exception in on_msg: {e}')
                     traceback.print_exception(e)
 
-            # else:
-                # self.node.get_logger().info(c(f'DC {self.topic} for id_peer={id_peer} not open, not sending', 'dark_grey'))
-                # self.peers.pop(id_peer)
-                # dc.close()
-                # self.stop(id_peer)
-
-        # print(f' hello? {self.topic}')
-
         if self.on_msg_cb is not None:
             self.on_msg_cb()
-        else:
-            self.ctrl_node.get_logger().debug(f'on_msg_cb is {self.on_msg_cb}')
 
 
     # this might send a message twice or hang when there's nothing in the topic (exits when peer disconnects)

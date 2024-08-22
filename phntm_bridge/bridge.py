@@ -888,7 +888,7 @@ class BridgeController(Node, BridgeControllerConfig):
             dc:RTCDataChannel = peer.pc.createDataChannel(topic,
                                                             id=self.wrtc_nextChannelId,
                                                             protocol=msg_type,
-                                                            negotiated=False, # false = negotiated by webrtc layer
+                                                            negotiated=True, # true = negotiated by the app, not webrtc layer
                                                             ordered=False if not reliable else True,
                                                             maxRetransmits=None if reliable else 0)
             peer.outbound_data_channels[topic] = dc
