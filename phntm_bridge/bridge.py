@@ -3,31 +3,22 @@ from rclpy.node import Node, Parameter, QoSProfile, Publisher
 from rclpy.qos import QoSHistoryPolicy, QoSReliabilityPolicy, DurabilityPolicy
 from rclpy.duration import Duration, Infinite
 from rclpy.serialization import deserialize_message
+from rclpy_message_converter import message_converter
 
 from .inc.status_led import StatusLED
 from termcolor import colored as c
 
 import subprocess
 
-import docker
-docker_client = None
-try:
-    host_docker_socket = 'unix:///host_run/docker.sock' # link /var/run/ to /host_run/ in docker-compose
-    # host_docker_socket = 'tcp://0.0.0.0:2375'
-    docker_client = docker.DockerClient(base_url=host_docker_socket)
-except Exception as e:
-    print(c(f'Failed to init docker client with {host_docker_socket} {e}', 'red'))
-    pass
-
 import fractions
 import tarfile, io
 
-from rcl_interfaces.msg import ParameterDescriptor
-import signal
+# from rcl_interfaces.msg import ParameterDescriptor
+# import signal
 import time
-import sys
+# import sys
 import traceback
-import netifaces
+# import netifaces
 import uuid 
 import os
 
@@ -54,8 +45,6 @@ from .inc.ros_video_streaming import ImageTopicReadSubscription, IsImageType
 
 # from rclpy.subscription import TypeVar
 from rosidl_runtime_py.utilities import get_message, get_interface
-import std_msgs
-import std_srvs
 
 import asyncio
 import multiprocessing as mp
@@ -81,7 +70,6 @@ from .inc.peer import WRTCPeer
 
 from .inc.introspection import Introspection
 from .inc.config import BridgeControllerConfig
-from .inc.iw import IW
 
 import subprocess
 
@@ -133,14 +121,11 @@ class BridgeController(Node, BridgeControllerConfig):
 
         self.create_sio_client()
 
-        self.iw:IW = None
-
         discovery_period:float = self.get_parameter('discovery_period_sec').get_parameter_value().double_value
         stop_discovery_after:float = self.get_parameter('stop_discovery_after_sec').get_parameter_value().double_value
         self.introspection:Introspection = Introspection(period=discovery_period,
                                                          stop_after=stop_discovery_after,
                                                          ctrl_node=self,
-                                                         docker_client=docker_client,
                                                          sio=self.sio)
 
         self.conn_led = None
@@ -215,55 +200,6 @@ class BridgeController(Node, BridgeControllerConfig):
                 asyncio.get_event_loop().create_task(self.introspection.stop())
                 # await self.introspection.stop()
             return { 'success': 1, 'introspection': self.introspection.running }
-
-        @self.sio.on('iw:scan')
-        async def on_iw_scan(data):
-            id_peer:str = WRTCPeer.GetId(data)
-            if id_peer == None:
-                return { 'err': 2, 'msg': 'No valid peer id provided' }
-            if not id_peer in self.wrtc_peers.keys():
-                return { 'err': 2, 'msg': 'Peer not connected' }
-
-            roam = data['roam'] if 'roam' in data else False
-            res = await self.iw.scan(roam)
-
-            return { 'success': 1, 'res': res }
-
-        @self.sio.on('docker')
-        async def on_docker_call(data):
-            if not self.docker_control_enabled:
-                return { 'err': 2, 'msg': 'Docker control disabled' }
-            id_peer:str = WRTCPeer.GetId(data)
-            if id_peer == None:
-                return { 'err': 2, 'msg': 'No valid peer id provided' }
-            if not id_peer in self.wrtc_peers.keys():
-                return { 'err': 2, 'msg': 'Peer not connected' }
-            id_container = data['container']
-            msg = data['msg']
-            if not id_container:
-                return { 'err': 2, 'msg': 'No container id provided' }
-            if not msg:
-                return { 'err': 2, 'msg': 'No container msg provided' }
-
-            cont = self.introspection.discovered_docker_containers[id_container]
-            if not cont:
-                return { 'err': 2, 'msg': 'Container not found here'}
-
-            self.get_logger().warn(f'Peer {id_peer} calling {msg} on docker container {cont[0].name} [{cont[0].status}]')
-
-            match msg:
-                case 'start':
-                    event_loop.run_in_executor(None, cont[0].start)
-                case 'stop':
-                    event_loop.run_in_executor(None, lambda: cont[0].stop(timeout=3)) # wait 3s then kill
-                case 'restart':
-                    event_loop.run_in_executor(None, lambda: cont[0].restart(timeout=3) ) # wait 3s then kill
-                case _:
-                   return { 'err': 2, 'msg': 'Invalid container action provided (start, stop or restart)'}
-
-            asyncio.get_event_loop().create_task(self.introspection.start())
-
-            return { 'success': 1 }
 
         # subscribe topics and cameras
         @self.sio.on('subscribe')
@@ -607,10 +543,10 @@ class BridgeController(Node, BridgeControllerConfig):
             res['input_defaults'] = self.input_defaults
             res['ui'] = {
                 'battery_topic': self.get_parameter('ui_battery_topic').get_parameter_value().string_value,
-                'iw_monitor_topic': self.get_parameter('iw_monitor_topic').get_parameter_value().string_value,
                 'docker_control': self.docker_control_enabled,
                 'docker_monitor_topic': self.get_parameter('docker_monitor_topic').get_parameter_value().string_value,
-                'enable_wifi_scan': self.get_parameter('ui_enable_wifi_scan').get_parameter_value().bool_value
+                'wifi_monitor_topic': self.get_parameter('ui_wifi_monitor_topic').get_parameter_value().string_value,
+                'enable_wifi_scan': self.get_parameter('ui_enable_wifi_scan').get_parameter_value().bool_value,
             }
 
         peer.topics_not_discovered = []
@@ -647,12 +583,9 @@ class BridgeController(Node, BridgeControllerConfig):
                     res['read_video_streams'].append([ sub, id_track ])
 
             else: #topic not discovered yet
-                if sub == '/iw_status' and not self.iw:
-                    self.get_logger().info(c(f'{peer} missing {sub}, ignoring', 'dark_grey'))
-                else:
-                    self.get_logger().info(c(f'{peer} missing {sub}, not discovered yet', 'dark_grey'))
-                    if not sub in peer.topics_not_discovered:
-                        peer.topics_not_discovered.append(sub) # introspection will keep running
+                self.get_logger().info(c(f'{peer} missing {sub}, not discovered yet', 'dark_grey'))
+                if not sub in peer.topics_not_discovered:
+                    peer.topics_not_discovered.append(sub) # introspection will keep running
 
         if not disconnected and (len(peer.topics_not_discovered) > 0 or len(peer.cameras_not_discovered) > 0):
             self.introspection.add_waiting_peer(peer)
@@ -1204,14 +1137,15 @@ class BridgeController(Node, BridgeControllerConfig):
             return { 'err': 2, 'msg': f'Service client init timeout' }
 
         req = None
-        if payload:
+        if payload: 
             try:
-                req = message_class.Request(data=payload)
+                req = message_class.Request(**payload)
             except Exception as e:
-                self.get_logger().error(f'Error passing data to setvice {service}: {e}')
+                self.get_logger().error(f'Error making service message for {service}: {e}; payload={str(payload)}')
                 return { 'err': 2, 'msg': f'{e}' }
         else:
             req = message_class.Request()
+        
         future = self.service_clients[service].call_async(req)
         # ftrs = set()
         # rclpy.spin_until_future_complete(self, self.future)
@@ -1223,7 +1157,7 @@ class BridgeController(Node, BridgeControllerConfig):
                     # await fut
                 except Exception as e:
                     if (str(e) != 'cannot use Destroyable because destruction was requeste'):
-                        print(f'Exception while spinning for service {service}: {e}')
+                        print(f'Exception while spinning node for service {service}: {e}')
                 await asyncio.sleep(.1)
                 timeout_sec -= .1
             is_timeout = timeout_sec <= 0.0
@@ -1234,8 +1168,10 @@ class BridgeController(Node, BridgeControllerConfig):
         if is_timeout:
             return { 'err': 2, 'msg': f'Service execution timeout' }
         
-        return str(future.result())
-
+        reply = message_converter.convert_ros_message_to_dictionary(future.result())
+        self.get_logger().debug(f'Returning service {service} reply: {str(reply)}')
+        return reply
+    
 
     async def shutdown_cleanup(self):
 
@@ -1293,27 +1229,10 @@ async def main_async():
     try:
         bridge_node = BridgeController(image_reader_ctrl_queue=image_reader_ctrl_queue,
                                        data_reader_ctrl_queue=data_reader_ctrl_queue)
-        iw_iface = bridge_node.get_parameter('iw_interface').get_parameter_value().string_value
-        if iw_iface:
-            try:
-                bridge_node.iw = IW(iface=iw_iface,
-                                    monitor_period_s=bridge_node.get_parameter('iw_monitor_period_sec').get_parameter_value().double_value,
-                                    node=bridge_node,
-                                    wrtc_peers=bridge_node.wrtc_peers,
-                                    topic=bridge_node.get_parameter('iw_monitor_topic').get_parameter_value().string_value
-                                    )
-            except Exception as e:
-                bridge_node.iw = None
-                print(c(f'IW monitor init failed for iface "{iw_iface}": {str(e)}', 'red'))
-        else:
-             print(c(f'IW monitor is disabled'))
-
         sio_task = asyncio.get_event_loop().create_task(bridge_node.spin_sio_client(), name="sio_task")
         # spin_future = asyncio.get_event_loop().run_in_executor(None, lambda: rclpy.spin(bridge_node))
         initial_introspection_task = asyncio.get_event_loop().create_task(bridge_node.introspection.start(), name="initial_introspection_task")
-        if bridge_node.iw != None:
-            iw_monitor_task = asyncio.get_event_loop().create_task(bridge_node.iw.start_monitor(), name="iw_task")
-
+        
         # concurrently execute both tasks on this process
         await asyncio.wait([ sio_task ], return_when=asyncio.ALL_COMPLETED)
 
@@ -1326,9 +1245,6 @@ async def main_async():
     print('SHUTTING DOWN')
     # bridge_node.get_logger().log_rosout_disabled 
     bridge_node.shutting_down = True
-
-    if bridge_node.iw:
-        await bridge_node.iw.stop_monitor()
 
     image_reader_ctrl_queue.close();
     readers_enabled.value = 0 # stops reader threads

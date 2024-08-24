@@ -17,17 +17,17 @@ except ModuleNotFoundError:
 import socketio
 from termcolor import colored as c
 import time
-import docker
-import json
+
 from .peer import WRTCPeer
 import traceback
 
 from pyee.base import EventEmitter
 from pyee.asyncio import AsyncIOEventEmitter
+from phntm_interfaces.msg import DockerStatus, DockerContainerStatus
 
 class Introspection (AsyncIOEventEmitter):
 
-    def __init__(self, period:float, stop_after:float, ctrl_node:Node, docker_client:docker.DockerClient, sio:socketio.AsyncClient):
+    def __init__(self, period:float, stop_after:float, ctrl_node:Node, sio:socketio.AsyncClient):
         super().__init__()
         self.period:float = period
         self.stop_after:float = stop_after
@@ -36,13 +36,12 @@ class Introspection (AsyncIOEventEmitter):
         self.logger = ctrl_node.get_logger()
 
         self.picam2 = ctrl_node.picam2
-        self.docker_client = docker_client
 
         self.discovered_topics:dict[str: dict['msg_type':str]] =  {}
         self.discovered_idls:dict[str:str] = {}
         self.discovered_services:dict[str: dict['msg_type':str]] = {}
         self.discovered_cameras:dict[str: any] = {}
-        self.discovered_docker_containers:dict[str: [ docker.models.containers.Container, str ]] = {}
+        self.discovered_docker_containers:dict[str: DockerStatus] = {} # last received docker status message by host
         self.discovered_nodes:dict[str: dict[
             'namespace':str,
             'publishers':dict[str:list[str]],
@@ -162,6 +161,43 @@ class Introspection (AsyncIOEventEmitter):
     
         return True
 
+    async def on_docker_message(self, msg:DockerStatus):
+        host = msg.header.frame_id
+        docker_containers_changed = False        
+        
+        if not host in self.discovered_docker_containers:
+            docker_containers_changed = True
+        elif len(msg.containers) != len(self.discovered_docker_containers[host].containers):
+            docker_containers_changed = True
+        else:
+            for i in range(len(msg.containers)):
+                if msg.containers[i].id != self.discovered_docker_containers[host].containers[i].id \
+                or msg.containers[i].name != self.discovered_docker_containers[host].containers[i].name \
+                or msg.containers[i].satate != self.discovered_docker_containers[host].containers[i].satate:
+                    docker_containers_changed = True
+                    break
+
+        self.discovered_docker_containers[host] = msg
+        
+        if docker_containers_changed:
+            await self.report_docker()
+            
+            # # new nodes and topics aren't detected (on Humble) when started after the bridge node
+            # # calling ros2cli topic list seems to flush the cache, so trigering it when a change is
+            # # detected in docker containers
+            try:
+                self.logger.info(c(f'Docker containers changed, calling ros-cli topic list to flush cache'))    
+                process = subprocess.Popen(['ros2', 'topic', 'list'],
+                                                stdout=self.devnull, 
+                                                stderr=subprocess.STDOUT)
+                process.wait()
+            except Exception as e:
+                self.logger.info(c(f'Exception while calling ros2cli topic list: {e}'))
+            # 
+            # make sure instrospection is running as there are likely things to be detected
+            if not self.running:
+                asyncio.get_event_loop().create_task(self.start())
+                
 
     # spinned by timer
     async def run_discovery(self) -> bool:
@@ -333,38 +369,6 @@ class Introspection (AsyncIOEventEmitter):
             if cameras_changed:
                 await self.report_cameras()
 
-            #docker
-            docker_containers_changed = False
-            new_docker_containers = []
-            if self.docker_client:
-                new_docker_containers = self.docker_client.containers.list(all=True)
-            for container in new_docker_containers:
-                # print (f'container "{container.id}" <<{container.name}>>')
-                # id_cam = cam_info[0]
-                # TODO: blacklist conainers?
-                if not container.id in self.discovered_docker_containers.keys():
-                    self.discovered_docker_containers[container.id] = [ container, container.status ]
-                    docker_containers_changed = True
-                    self.logger.info(c(f'Discovered Docker container {container.name} aka {container.short_id} {container.status}', 'blue'))
-                elif self.discovered_docker_containers[container.id][1] != container.status:
-                    self.discovered_docker_containers[container.id][0] = container
-                    self.discovered_docker_containers[container.id][1] = f'{container.status}' #copy
-                    docker_containers_changed = True
-                    self.logger.info(c(f'Docker container {container.name} aka {container.short_id} changed status to {container.status}', 'blue'))
-            if docker_containers_changed:
-                await self.report_docker()
-                try:
-                    # new nodes and topics aren't detected (on Humble) when started after the bridge node
-                    # calling ros2cli topic list seems to flush the cache, so trigering it when a change is
-                    # detected in docker containers
-                    self.logger.info(c(f'Docker containers changed, calling ros-cli topic list to flush cache'))    
-                    process = subprocess.Popen(['ros2', 'topic', 'list'],
-                                                    stdout=self.devnull, 
-                                                    stderr=subprocess.STDOUT)
-                    process.wait()
-                except Exception as e:
-                    self.logger.info(c(f'Exception while calling ros2cli topic list: {e}'))
-        
         except Exception as e:
             self.logger.error(f'Exception in introspection: {e}')
             self.logger.error(traceback.format_exception(e))
@@ -500,18 +504,7 @@ class Introspection (AsyncIOEventEmitter):
             pass
 
     def get_docker_data(self):
-        data = []
-        for id_container in self.discovered_docker_containers.keys():
-            cont = self.discovered_docker_containers[id_container][0]
-            cont_data = {
-                'id': id_container,
-                'name': cont.name,
-                'image': cont.image.id,
-                'short_id': cont.short_id,
-                'status': cont.status
-            }
-            data.append(cont_data)
-        return data
+        return self.discovered_docker_containers # latest cached docker status msg per host
 
     async def report_docker(self):
 

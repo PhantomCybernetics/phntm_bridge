@@ -95,10 +95,9 @@ class BridgeControllerConfig():
         self.declare_parameter('param_blacklist', [ '' ])
 
         # wifi monitoring + scan
-        self.declare_parameter('iw_interface', 'wlan0')
-        self.declare_parameter('iw_monitor_period_sec', 1.0)
-        self.declare_parameter('iw_monitor_topic', '/iw_status')
-
+        self.declare_parameter('ui_wifi_monitor_topic', '/iw_status') # agent writes here
+        self.declare_parameter('ui_enable_wifi_scan', False) # enables re-scan and roaming
+         
         # picamera2
         self.declare_parameter('picam_enabled', False)
         self.picam_enabled = self.get_parameter('picam_enabled').get_parameter_value().bool_value
@@ -111,7 +110,6 @@ class BridgeControllerConfig():
         self.declare_parameter('ui_docker_control', True)
         self.declare_parameter('docker_monitor_topic', '/docker_info')
         self.docker_control_enabled = self.get_parameter('ui_docker_control').get_parameter_value().bool_value
-        self.declare_parameter('ui_enable_wifi_scan', False)
         
         #input configs that get passed to ui
         self.declare_parameter('input_drivers', [ 'Joy' ]) # [ '' ] to disable input entirely

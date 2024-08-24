@@ -12,6 +12,7 @@
   <exec_depend>ffmpeg_image_transport_msgs</exec_depend>
   <exec_depend>vision_msgs</exec_depend>
   <exec_depend>phntm_interfaces</exec_depend>
+  <exec_depend>rclpy_message_converter</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
