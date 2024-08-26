@@ -564,9 +564,18 @@ class BridgeController(Node, BridgeControllerConfig):
             elif sub in self.introspection.discovered_topics.keys():
                 msg_type = self.introspection.discovered_topics[sub]['msg_type']
                 is_image = IsImageType(msg_type)
+                
+                if sub in self.topic_overrides:
+                    reliability = self.get_parameter(f'{sub}.reliability').get_parameter_value().integer_value
+                    durability = self.get_parameter(f'{sub}.durability').get_parameter_value().integer_value
+                    lifespan = self.get_parameter(f'{sub}.lifespan_sec').get_parameter_value().integer_value
+                else: #default for all topics without overrides in config 
+                    reliability = 0 # best effort
+                    durability = 0 # system default
+                    lifespan = -1 # infinite
+                    
                 if not is_image:
-                    reliable = self.get_parameter_or(f'{sub}.reliability', Parameter(name='', value=0)).get_parameter_value().integer_value == 1 # 1=RELIABLE
-                    id_dc = await self.subscribe_data_topic(sub, reliable, peer)
+                    id_dc = await self.subscribe_data_topic(sub, reliability, durability, lifespan, peer)
                     topic_conf = {} # passing config extras to the UI
                     match msg_type:
                         case 'vision_msgs/msg/Detection2DArray':
@@ -577,9 +586,9 @@ class BridgeController(Node, BridgeControllerConfig):
                         case 'sensor_msgs/msg/BatteryState':
                             topic_conf['min_voltage'] = self.get_parameter(f'{sub}.min_voltage').get_parameter_value().double_value
                             topic_conf['max_voltage'] = self.get_parameter(f'{sub}.max_voltage').get_parameter_value().double_value
-                    res['read_data_channels'].append([sub, id_dc, msg_type, reliable, topic_conf])
+                    res['read_data_channels'].append([sub, id_dc, msg_type, reliability == QoSReliabilityPolicy.RELIABLE, topic_conf])
                 elif is_image:
-                    id_track = await self.subscribe_image_topic(sub, peer)
+                    id_track = await self.subscribe_image_topic(sub, reliability, durability, lifespan, peer)
                     res['read_video_streams'].append([ sub, id_track ])
 
             else: #topic not discovered yet
@@ -794,7 +803,7 @@ class BridgeController(Node, BridgeControllerConfig):
 
 
     # SUBSCRIBE data topic
-    async def subscribe_data_topic(self, topic:str, reliable:bool, peer:WRTCPeer) -> str:
+    async def subscribe_data_topic(self, topic:str, reliability:int, durability:int, lifespan:int, peer:WRTCPeer) -> str:
 
         if not topic in self.introspection.discovered_topics.keys():
             return None
@@ -804,9 +813,7 @@ class BridgeController(Node, BridgeControllerConfig):
             return None
 
         if not topic in self.topic_read_subscriptions.keys():
-            reliability = self.get_parameter_or(f'{topic}.reliability', Parameter(name='', value=QoSReliabilityPolicy.BEST_EFFORT)).get_parameter_value().integer_value
-            durability = self.get_parameter_or(f'{topic}.durability', Parameter(name='', value=DurabilityPolicy.VOLATILE)).get_parameter_value().integer_value
-            lifespan = self.get_parameter_or(f'{topic}.lifespan', Parameter(name='', value=1)).get_parameter_value().integer_value
+    
             self.topic_read_subscriptions[topic] = TopicReadSubscription(ctrl_node=self,
                                                                             reader_ctrl_queue=self.data_reader_ctrl_queue,
                                                                             topic=topic,
@@ -822,15 +829,16 @@ class BridgeController(Node, BridgeControllerConfig):
         send_latest = False
         if not topic in peer.outbound_data_channels.keys():
             self.wrtc_nextChannelId += 1
+            is_reliable = reliability == QoSReliabilityPolicy.RELIABLE
             dc:RTCDataChannel = peer.pc.createDataChannel(topic,
                                                             id=self.wrtc_nextChannelId,
                                                             protocol=msg_type,
                                                             negotiated=True, # true = negotiated by the app, not webrtc layer
-                                                            ordered=False if not reliable else True,
-                                                            maxRetransmits=None if reliable else 0)
+                                                            ordered=is_reliable,
+                                                            maxRetransmits=None if is_reliable else 0)
             peer.outbound_data_channels[topic] = dc
-            self.get_logger().debug(f'{peer} subscribed to {topic} (protocol={msg_type}, ch_id={dc.id}); reliable={reliable}')
-            if reliable:
+            self.get_logger().debug(f'{peer} subscribed to {topic} (protocol={msg_type}, ch_id={dc.id}); reliable={is_reliable}')
+            if is_reliable:
                 send_latest = True
 
         if not self.topic_read_subscriptions[topic].start(peer.id, peer.outbound_data_channels[topic]):
@@ -858,7 +866,7 @@ class BridgeController(Node, BridgeControllerConfig):
 
 
     # SUBSCRIBE image topic
-    async def subscribe_image_topic(self, topic:str, peer:WRTCPeer) -> str:
+    async def subscribe_image_topic(self, topic:str, reliability:int, durability:int, lifespan:int, peer:WRTCPeer) -> str:
 
         if not topic in self.introspection.discovered_topics.keys():
             return None
@@ -868,16 +876,13 @@ class BridgeController(Node, BridgeControllerConfig):
             return None
 
         if not topic in self.image_topic_read_subscriptions.keys():
-            # default is best effort / volatile
-            reliability = self.get_parameter_or(f'{topic}.reliability', Parameter(name='', value=QoSReliabilityPolicy.BEST_EFFORT)).get_parameter_value().integer_value
-            durability = self.get_parameter_or(f'{topic}.durability', Parameter(name='', value=DurabilityPolicy.VOLATILE)).get_parameter_value().integer_value
-
             self.image_topic_read_subscriptions[topic] = ImageTopicReadSubscription(ctrl_node=self,
                                                                                     reader_ctrl_queue=self.image_reader_ctrl_queue, # if msg_type != ImageTopicReadSubscription.STREAM_MSG_TYPE else None),
                                                                                     topic=topic,
                                                                                     msg_type=msg_type,
                                                                                     reliability=reliability,
                                                                                     durability=durability,
+                                                                                    lifespan_sec=lifespan,
                                                                                     log_message_every_sec=self.log_message_every_sec,
                                                                                     clock_rate=1000000000,
                                                                                     time_base=1,

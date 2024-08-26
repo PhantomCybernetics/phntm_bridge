@@ -62,7 +62,7 @@ class TopicReadSubscription:
     def start(self, id_peer:str, dc:RTCDataChannel) -> bool:
 
         if self.sub != None:
-            self.peers[id_peer] = dc
+            self.peers[id_peer] = dc # add peer's dc to targets
             return True #all done, one sub for all
 
         if self.reader_ctrl_queue: # subscribe on processor's process
@@ -99,7 +99,7 @@ class TopicReadSubscription:
                                     depth=1, \
                                     reliability=self.reliability, \
                                     durability=self.durability, \
-                                    lifespan=Infinite \
+                                    lifespan=self.lifespan_sec \
                                     )
             self.ctrl_node.get_logger().warn(f'Subscribing to topic {self.topic} {self.protocol}')
             no_skip:bool = self.protocol in [ 'std_msgs/msg/String', 'rcl_interfaces/msg/Log' ]
@@ -115,7 +115,7 @@ class TopicReadSubscription:
                 self.ctrl_node.get_logger().error(f'Failed subscribing to topic {self.topic}, msg class={self.protocol}, peer={id_peer}')
                 return False
 
-        self.peers[id_peer] = dc
+        self.peers[id_peer] = dc # add peer's dc to targets
 
         return True
 
@@ -140,7 +140,7 @@ class TopicReadSubscription:
         #print(f'TopicReadSubscription:on_msg() {threading.get_ident()}')
 
         log_msg = False
-        if log_msg or self.num_received == 1 or self.lifespan_sec == -1: # first data in
+        if log_msg or self.num_received == 1: # first data in
             self.ctrl_node.get_logger().debug(f'⚡️ Receiving {type(reader_res["msg"]).__name__} from {self.topic}')
 
         if self.last_log < 0 or self.last_msg_time-self.last_log > self.log_message_every_sec:

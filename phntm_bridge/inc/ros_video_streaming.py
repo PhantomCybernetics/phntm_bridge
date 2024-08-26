@@ -78,7 +78,7 @@ class ImageTopicReadSubscription:
     STREAM_MSG_TYPE:str = 'ffmpeg_image_transport_msgs/msg/FFMPEGPacket'
     
     # def __init__(self, sub:Subscription, peers:list[str], frame_processor, processed_frames_h264:mp.Queue, processed_frames_v8:mp.Queue, make_keyframe_shared:mp.Value, make_h264_shared:mp.Value, make_v8_shared:mp.Value):
-    def __init__(self, ctrl_node:Node, bridge_time_started_ns:int, msg_type:str, reader_ctrl_queue:mp.Queue, topic:str, reliability:QoSReliabilityPolicy, durability:DurabilityPolicy, log_message_every_sec:float=5.0, hflip:bool=False, vflip:bool=False, bitrate:int=5000000, framerate:int = 30, process_depth:bool=True, clock_rate:int=1000000000, time_base:int=1):
+    def __init__(self, ctrl_node:Node, bridge_time_started_ns:int, msg_type:str, reader_ctrl_queue:mp.Queue, topic:str, reliability:QoSReliabilityPolicy, durability:DurabilityPolicy, lifespan_sec:int, log_message_every_sec:float=5.0, hflip:bool=False, vflip:bool=False, bitrate:int=5000000, framerate:int = 30, process_depth:bool=True, clock_rate:int=1000000000, time_base:int=1):
 
         self.sub:Subscription|bool = None
         self.ctrl_node:Node = ctrl_node
@@ -103,7 +103,8 @@ class ImageTopicReadSubscription:
 
         self.reliability:QoSReliabilityPolicy = reliability
         self.durability:DurabilityPolicy = durability
-
+        self.lifespan_sec:int = lifespan_sec
+        
         self.on_msg_cb:Callable = None
         self.event_loop = asyncio.get_event_loop() #safe current
         self.last_send_future:asyncio.Future = None
@@ -126,9 +127,10 @@ class ImageTopicReadSubscription:
 
         if self.sub != None: #running
             if id_peer in self.peers.keys():
-                self.ctrl_node.get_logger().warn(f'Streamer was already running for {self.topic} with peer {id_peer}! old track_id={ self.peers[id_peer]._track_id} new track_id={sender._track_id}')
-            self.peers[id_peer] = sender
-            self.ctrl_node.get_logger().warn(f'Streamer was already running for {self.topic} adding peer {id_peer}, track_id={sender._track_id}')
+                self.ctrl_node.get_logger().warn(f'Streamer was already running for {self.topic} with peer {id_peer} subscribed! old track_id was { self.peers[id_peer]._track_id} new track_id is {sender._track_id}')
+            else:
+                self.ctrl_node.get_logger().info(f'Streamer was already running for {self.topic}, adding peer {id_peer}, track_id={sender._track_id}')    
+            self.peers[id_peer] = sender            
             # print(self.peers.keys())
             return True #all done, one sub for all
 
@@ -142,6 +144,7 @@ class ImageTopicReadSubscription:
                                                'msg_type': self.msg_type,
                                                'reliability': self.reliability,
                                                'durability': self.durability,
+                                               'lifespan': self.lifespan_sec,
                                                'hflip': self.hflip,
                                                'vflip': self.vflip,
                                                'bitrate': self.bitrate,

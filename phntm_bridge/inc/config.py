@@ -46,10 +46,10 @@ class BridgeControllerConfig():
                 continue
             # ROS stuffs
             self.declare_parameter(f'{topic_override}.name', '')
-            self.declare_parameter(f'{topic_override}.durability', 0)
+            self.declare_parameter(f'{topic_override}.reliability', 0) # 0 = best effort, 1 = reliable
+            self.declare_parameter(f'{topic_override}.durability', 0) # 0 system default, 1 = transient local, 2 = volatile
+            self.declare_parameter(f'{topic_override}.lifespan_sec', -1) # num sec as int, -1 infinity
             self.declare_parameter(f'{topic_override}.raw', True)
-            self.declare_parameter(f'{topic_override}.reliability', 0)
-            self.declare_parameter(f'{topic_override}.lifespan', 1) #1s by default; -1 for infinity
             # NN stuffs
             self.declare_parameter(f'{topic_override}.nn_input_cropped_square', True) # nn input is usually a square
             self.declare_parameter(f'{topic_override}.nn_input_w', 416)

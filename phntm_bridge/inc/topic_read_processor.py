@@ -8,6 +8,7 @@ from rclpy.duration import Duration, Infinite
 from rclpy.impl.rcutils_logger import RcutilsLogger
 from rosidl_runtime_py.utilities import get_message, get_interface
 from rclpy.callback_groups import CallbackGroup
+from rclpy.constants import S_TO_NS
 from rclpy.qos import QoSHistoryPolicy, QoSReliabilityPolicy, DurabilityPolicy
 
 from termcolor import colored as c
@@ -109,7 +110,7 @@ async def TopicReadProcessorLoop(reader_node, reader_label:str, rcl_executor, ru
     while running_shared.value > 0:
         # print(c(f'yellow! {reader_node}', 'yellow'))
 
-        # rclpy.spin_once(reader_node, executor=rcl_executor, timeout_sec=0.1)
+        rclpy.spin_once(reader_node, executor=rcl_executor, timeout_sec=0.1)
 
         #recieve cmd messages
         while True:
@@ -179,16 +180,17 @@ def on_cmd(reader_node:Node, ctrl_cmd:dict, reader_label:str, active_subs:dict[s
 
     if ctrl_cmd['action'] == 'subscribe':
         msg_type = ctrl_cmd['msg_type']
-        reliability = ctrl_cmd['reliability']
-        durability = ctrl_cmd['durability']
+        reliability = QoSReliabilityPolicy(ctrl_cmd['reliability'])
+        durability = DurabilityPolicy(ctrl_cmd['durability'])
         # reader_node.get_logger().error(f'Topic Reader: {topic} raw lifespan={ctrl_cmd["lifespan"]}')
-        if 'lifespan' in ctrl_cmd.keys():
-            if ctrl_cmd['lifespan'] == -1:
-                lifespan = Infinite
-            else:
-                lifespan = Duration(seconds=ctrl_cmd['lifespan'])
+        lifespan_hr = ''
+        if not 'lifespan' in ctrl_cmd or ctrl_cmd['lifespan'] < 0:
+            lifespan = Infinite
+            lifespan_hr = 'Infinite'
         else:
-            lifespan = Duration(seconds=.01)
+            lifespan = Duration(seconds=ctrl_cmd['lifespan'])
+            lifespan_hr = f'{lifespan.nanoseconds/S_TO_NS}s'
+
         pipe = ctrl_cmd['pipe'] if 'pipe' in ctrl_cmd.keys() else None
 
         message_class = None
@@ -197,56 +199,61 @@ def on_cmd(reader_node:Node, ctrl_cmd:dict, reader_label:str, active_subs:dict[s
         except:
             pass
         if message_class == None:
-            reader_node.get_logger().error(f'Topic Reader {reader_label}: NOT subscribing to topic {topic}, msg class {msg_type} not loaded')
+            reader_node.get_logger().error(f'NOT subscribing to topic {topic}, msg class {msg_type} not loaded')
             return
 
-        qosProfile = QoSProfile(
-                        history=QoSHistoryPolicy.KEEP_LAST,
-                        depth=1,
-                        reliability=reliability,
-                        durability=durability,
-                        lifespan=lifespan
+        try:
+            qosProfile = QoSProfile(
+                            history=QoSHistoryPolicy.KEEP_LAST,
+                            depth=1,
+                            reliability=reliability,
+                            durability=durability,
+                            lifespan=lifespan
+                            )
+            reader_node.get_logger().warn(c(f'Subscribing to topic {topic} {msg_type} qosProfile={qosProfile} lifespan={lifespan_hr}', 'cyan'))
+            no_skip:bool = ctrl_cmd['no_skip'] if 'no_skip' in ctrl_cmd.keys() else False
+            
+            cb = None
+            if msg_type == ImageTopicReadSubscription.MSG_TYPE:
+                cb = lambda msg: on_raw_image_data(topic, msg, reader_label, active_subs)
+            elif msg_type == ImageTopicReadSubscription.COMPRESSED_MSG_TYPE:
+                cb = lambda msg: on_compressed_image_data(topic, msg, reader_label, active_subs)
+            elif msg_type == ImageTopicReadSubscription.STREAM_MSG_TYPE:
+                cb = lambda msg: on_stream_image_data(topic, msg, reader_label, active_subs)
+            else:
+                cb = lambda msg: on_data(topic, msg, reader_label, active_subs)
+            
+            sub = reader_node.create_subscription(
+                            msg_type=message_class,
+                            topic=topic,
+                            callback=cb,
+                            qos_profile=qosProfile,
+                            raw=True,
                         )
-        reader_node.get_logger().warn(f'Topic Reader {reader_label}: Subscribing to topic {topic} {msg_type} reliability={reliability} durability={durability} lifespan={lifespan}')
-        no_skip:bool = ctrl_cmd['no_skip'] if 'no_skip' in ctrl_cmd.keys() else False
-        
-        cb = None
-        if msg_type == ImageTopicReadSubscription.MSG_TYPE:
-            cb = lambda msg: on_raw_image_data(topic, msg, reader_label, active_subs)
-        elif msg_type == ImageTopicReadSubscription.COMPRESSED_MSG_TYPE:
-            cb = lambda msg: on_compressed_image_data(topic, msg, reader_label, active_subs)
-        elif msg_type == ImageTopicReadSubscription.STREAM_MSG_TYPE:
-            cb = lambda msg: on_stream_image_data(topic, msg, reader_label, active_subs)
-        else:
-            cb = lambda msg: on_data(topic, msg, reader_label, active_subs)
-        
-        sub = reader_node.create_subscription(
-                        msg_type=message_class,
-                        topic=topic,
-                        callback=cb,
-                        qos_profile=qosProfile,
-                        raw=True,
-                    )
 
-        args = ctrl_cmd
-        args.pop('action')
-        if 'reliability' in args.keys():
-            args.pop('reliability')
-        if 'durability' in args.keys():
-            args.pop('durability')
-        if 'pipe' in args.keys():
-            args.pop('pipe')
+            args = ctrl_cmd
+            args.pop('action')
+            if 'reliability' in args.keys():
+                args.pop('reliability')
+            if 'durability' in args.keys():
+                args.pop('durability')
+            if 'pipe' in args.keys():
+                args.pop('pipe')
 
-        active_subs[topic] = {
-            'sub': sub,
-            'args': args,
-            'pipe': pipe,
-            'push_task': None,
-            'logged': False,
-            'executor': concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        }
-        if not topic in active_subs.keys():
-            reader_node.get_logger().error(f'Topic Reader {reader_label}: Failed subscribing to topic {topic}, msg class={msg_type}')
+            active_subs[topic] = {
+                'sub': sub,
+                'args': args,
+                'pipe': pipe,
+                'push_task': None,
+                'logged': False,
+                'executor': concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            }
+            if not topic in active_subs.keys():
+                reader_node.get_logger().error(f'Failed subscribing to topic {topic}, msg class={msg_type}')
+            
+        except Exception as e:
+            reader_node.get_logger().error(f'Failed subscribing to topic {topic}, msg class={msg_type}: {e}')
+
 
 # def save_newest_msg(topic:str, msg:any, newest_messages_by_topic:dict[str:list], no_skip:bool, pipe:Connection):
 #     # reader_node.get_logger().info(f' >> {msg_topic}, got {len(msg)} B')
@@ -394,6 +401,9 @@ def on_raw_image_data(topic:str, msg:any, reader_label:str, active_subs:dict):
 
 
 def on_stream_image_data(topic:str, msg:any, reader_label:str, active_subs:dict):
+    
+    # print(c(f'Topic Reader {reader_label}: got frame data for {topic}', 'cyan'))
+    
     if not topic in active_subs.keys():
         return
     
