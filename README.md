@@ -22,6 +22,7 @@ TODO
 - TODO: USB camera support?
 - TODO: Sound in/out
 - TODO: Compressed PointCloud
+- TODO: Compressed Costmap
 
 # Install
 
