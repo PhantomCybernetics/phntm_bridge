@@ -30,11 +30,11 @@ from queue import Empty, Full
 class TopicReadSubscription:
 
     # def __init__(self, sub:Subscription, peers:list[str], frame_processor, processed_frames_h264:mp.Queue, processed_frames_v8:mp.Queue, make_keyframe_shared:mp.Value, make_h264_shared:mp.Value, make_v8_shared:mp.Value):
-    def __init__(self, ctrl_node:Node, reader_ctrl_queue:mp.Queue, topic:str, protocol:str, reliability:QoSReliabilityPolicy, durability:DurabilityPolicy, lifespan_sec:int, event_loop:object, log_message_every_sec:float):
+    def __init__(self, ctrl_node:Node, worker_ctrl_queue:mp.Queue, topic:str, protocol:str, reliability:QoSReliabilityPolicy, durability:DurabilityPolicy, lifespan_sec:int, event_loop:object, log_message_every_sec:float):
 
         self.sub:Subscription|bool = None
         self.ctrl_node:Node = ctrl_node
-        self.reader_ctrl_queue:mp.Queue = reader_ctrl_queue
+        self.worker_ctrl_queue:mp.Queue = worker_ctrl_queue
 
         self.peers:{str:RTCDataChannel} = {} #target outbound dcs
         self.topic:str = topic
@@ -65,12 +65,12 @@ class TopicReadSubscription:
             self.peers[id_peer] = dc # add peer's dc to targets
             return True #all done, one sub for all
 
-        if self.reader_ctrl_queue: # subscribe on processor's process
+        if self.worker_ctrl_queue: # subscribe on processor's process
 
             self.pipe_out, self.pipe_worker = mp.Pipe()
             no_skip:bool = self.reliability == QoSReliabilityPolicy.RELIABLE
             # no_skip = True
-            self.reader_ctrl_queue.put_nowait({'action': 'subscribe',
+            self.worker_ctrl_queue.put_nowait({'action': 'subscribe',
                                                'pipe': self.pipe_worker,
                                                'topic': self.topic,
                                                'msg_type': self.protocol,
@@ -119,17 +119,28 @@ class TopicReadSubscription:
 
         return True
 
+    def clear_pipe(self):
+        self.ctrl_node.get_logger().info(f'Topic reader for {self.topic} received pipe close')
+        self.pipe_out.close()
+        self.read_task.cancel()
+        self.executor.shutdown(False, cancel_futures=True) 
+
+
     async def read_piped_data(self):
         while self.read_task and not self.read_task.cancelled():
             try:
                 res = await self.event_loop.run_in_executor(self.executor, self.pipe_out.recv) #blocks
-                await self.on_msg(res)
+                if res['msg'] != None:
+                    await self.on_msg(res)
+                else: # closing pipe from the worker
+                    self.clear_pipe()
+                    return
             except (KeyboardInterrupt, asyncio.CancelledError):
                 print(f'read_piped_data for {self.topic} got interrupt')
                 return
             except Exception as e:
-                self.ctrl_node.get_logger().error(f'Exception while reading latest from data pipe: {str(e)}')
-                pass
+                self.ctrl_node.get_logger().error(f'Exception while reading latest {self.topic} from data pipe: {str(e)}')
+                
 
     # called either by ctrl node's process or when data is received via reader_out_queue (called on ctrl node's process)
     async def on_msg(self, reader_res:dict):
@@ -219,29 +230,26 @@ class TopicReadSubscription:
             return False # active subscribers
 
         if self.sub == True:
-            self.reader_ctrl_queue.put_nowait({'action': 'unsubscribe', 'topic':self.topic })
+            self.worker_ctrl_queue.put_nowait({'action': 'unsubscribe', 'topic':self.topic })
         else:
             self.ctrl_node.get_logger().info(f'Destroying local subscriber for {self.topic}')
             self.ctrl_node.destroy_subscription(self.sub)
         
-        if self.read_task and not self.read_task.cancelled():
-            self.ctrl_node.get_logger().info(f'Cancelling read task for subscriber of {self.topic}')
-            self.read_task.cancel()
+        # if self.read_task and not self.read_task.cancelled():
+        #     self.ctrl_node.get_logger().info(f'Cancelling read task for subscriber of {self.topic}')
+        #     self.read_task.cancel()
         
-        try:
-            if self.pipe_out.poll():
-                self.ctrl_node.get_logger().info(f'Cleaning pipe for {self.topic}')
-                self.pipe_out.recv()
-        except Exception as e:
-            self.ctrl_node.get_logger().info(f'Error cleaning pipe for {self.topic}')
-            pass
-        self.pipe_out.close()
+        # try:
+        #     while self.pipe_out.poll():
+        #         self.ctrl_node.get_logger().info(f'Cleaning pipe for {self.topic}')
+        #         self.pipe_out.get_nowait() # blocks
+        # except Exception as e:
+        #     self.ctrl_node.get_logger().info(f'Error cleaning pipe for {self.topic}')
+        #     pass
+        # self.pipe_out.close()
+        # self.pipe_out.join_thread()
         
-        self.executor.shutdown(False, cancel_futures=True) 
         self.sub = None
         # self.topic = None
 
         return True #destroyed
-    
-    def __del__(self):
-        print(f"Reader {self.topic} is being destroyed here")

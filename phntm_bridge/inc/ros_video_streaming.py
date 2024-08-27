@@ -78,11 +78,11 @@ class ImageTopicReadSubscription:
     STREAM_MSG_TYPE:str = 'ffmpeg_image_transport_msgs/msg/FFMPEGPacket'
     
     # def __init__(self, sub:Subscription, peers:list[str], frame_processor, processed_frames_h264:mp.Queue, processed_frames_v8:mp.Queue, make_keyframe_shared:mp.Value, make_h264_shared:mp.Value, make_v8_shared:mp.Value):
-    def __init__(self, ctrl_node:Node, bridge_time_started_ns:int, msg_type:str, reader_ctrl_queue:mp.Queue, topic:str, reliability:QoSReliabilityPolicy, durability:DurabilityPolicy, lifespan_sec:int, log_message_every_sec:float=5.0, hflip:bool=False, vflip:bool=False, bitrate:int=5000000, framerate:int = 30, process_depth:bool=True, clock_rate:int=1000000000, time_base:int=1):
+    def __init__(self, ctrl_node:Node, bridge_time_started_ns:int, msg_type:str, worker_ctrl_queue:mp.Queue, topic:str, reliability:QoSReliabilityPolicy, durability:DurabilityPolicy, lifespan_sec:int, log_message_every_sec:float=5.0, hflip:bool=False, vflip:bool=False, bitrate:int=5000000, framerate:int = 30, process_depth:bool=True, clock_rate:int=1000000000, time_base:int=1):
 
         self.sub:Subscription|bool = None
         self.ctrl_node:Node = ctrl_node
-        self.reader_ctrl_queue:mp.Queue = reader_ctrl_queue
+        self.worker_ctrl_queue:mp.Queue = worker_ctrl_queue
 
         self.pipe_out:Connection = None
         self.pipe_worker:Connection = None
@@ -121,6 +121,9 @@ class ImageTopicReadSubscription:
         self.last_frame_tasks:dict[str:asyncio.Task] = {}
         
         self.bridge_time_started_ns:int = bridge_time_started_ns
+        
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=3, thread_name_prefix=f'{topic}_read')
+
         #print(f'TopicReadSubscription:__init__() {threading.get_ident()}')
 
     def start(self, id_peer:str, sender:RTCRtpSender) -> bool:
@@ -134,11 +137,11 @@ class ImageTopicReadSubscription:
             # print(self.peers.keys())
             return True #all done, one sub for all
 
-        if self.reader_ctrl_queue: # subscribe on processor's process
+        if self.worker_ctrl_queue: # subscribe on processor's process
 
             self.pipe_out, self.pipe_worker = mp.Pipe()
 
-            self.reader_ctrl_queue.put_nowait({'action': 'subscribe',
+            self.worker_ctrl_queue.put_nowait({'action': 'subscribe',
                                                'pipe': self.pipe_worker,
                                                'topic': self.topic,
                                                'msg_type': self.msg_type,
@@ -191,17 +194,26 @@ class ImageTopicReadSubscription:
 
         return True
 
+    def clear_pipe(self):
+        self.ctrl_node.get_logger().info(f'Image reader for {self.topic} received pipe close')
+        self.pipe_out.close()
+        self.read_task.cancel()
+        self.executor.shutdown(False, cancel_futures=True) 
+
     async def read_piped_images(self):
-        while self.sub != None:
+        while self.read_task and not self.read_task.cancelled():
             try:
-                res = await self.event_loop.run_in_executor(None, self.pipe_out.recv) #blocks
+                res = await self.event_loop.run_in_executor(self.executor, self.pipe_out.recv) #blocks
+                if 'msg' in res and res['msg'] == None: # closing pipe from the worker
+                    self.clear_pipe()
+                    return
             except (KeyboardInterrupt, asyncio.CancelledError):
                 print(f'read_piped_images for {self.topic} got err')
                 return
             except Exception as e:
-                self.ctrl_node.get_logger().error(f'Exception while reading latest from image pipe: {str(e)}')
+                self.ctrl_node.get_logger().error(f'Exception while reading latest from image pipe {self.topic}: {str(e)}')
                 self.sub = None
-                pass
+                return
             
             await self.on_msg(res)
 
@@ -320,7 +332,7 @@ class ImageTopicReadSubscription:
             return False
 
         if self.sub == True: #mp
-            self.reader_ctrl_queue.put_nowait({'action': 'unsubscribe', 'topic': self.topic})
+            self.worker_ctrl_queue.put_nowait({'action': 'unsubscribe', 'topic': self.topic})
         else:
             self.ctrl_node.get_logger().info(f'👁️  Destroying local subscriber for {self.topic}')
             self.ctrl_node.destroy_subscription(self.sub)

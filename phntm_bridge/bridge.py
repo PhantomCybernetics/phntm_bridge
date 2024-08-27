@@ -64,7 +64,7 @@ import os
 import platform
 
 from .inc.topic_reader import TopicReadSubscription
-from .inc.topic_read_processor import TopicReadProcessor
+from .inc.topic_read_worker import TopicReadWorker
 from .inc.topic_writer import TopicWritePublisher
 from .inc.peer import WRTCPeer
 
@@ -79,7 +79,7 @@ class BridgeController(Node, BridgeControllerConfig):
     ##
     # node constructor
     ##
-    def __init__(self, image_reader_ctrl_queue:mp.Queue=None, data_reader_ctrl_queue:mp.Queue=None):
+    def __init__(self, image_worker_ctrl_queue:mp.Queue=None, data_worker_ctrl_queue:mp.Queue=None):
         super().__init__(node_name='phntm_bridge',
                          use_global_arguments=True)
 
@@ -140,8 +140,8 @@ class BridgeController(Node, BridgeControllerConfig):
             self.data_led = StatusLED('data', node=self, mode=StatusLED.Mode.OFF, topic=self.data_led_topic, qos=QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT))
             #self.data_led.off()
 
-        self.image_reader_ctrl_queue:mp.Queue = image_reader_ctrl_queue
-        self.data_reader_ctrl_queue:mp.Queue = data_reader_ctrl_queue
+        self.image_worker_ctrl_queue:mp.Queue = image_worker_ctrl_queue
+        self.data_worker_ctrl_queue:mp.Queue = data_worker_ctrl_queue
         # self.reader_image_topic_pipes:dict = {}
 
         self.time_started_ns:int = time.time_ns() # used to synchronize all video stream stamps
@@ -815,7 +815,7 @@ class BridgeController(Node, BridgeControllerConfig):
         if not topic in self.topic_read_subscriptions.keys():
     
             self.topic_read_subscriptions[topic] = TopicReadSubscription(ctrl_node=self,
-                                                                            reader_ctrl_queue=self.data_reader_ctrl_queue,
+                                                                            worker_ctrl_queue=self.data_worker_ctrl_queue,
                                                                             topic=topic,
                                                                             protocol=msg_type,
                                                                             reliability=reliability,
@@ -877,7 +877,7 @@ class BridgeController(Node, BridgeControllerConfig):
 
         if not topic in self.image_topic_read_subscriptions.keys():
             self.image_topic_read_subscriptions[topic] = ImageTopicReadSubscription(ctrl_node=self,
-                                                                                    reader_ctrl_queue=self.image_reader_ctrl_queue, # if msg_type != ImageTopicReadSubscription.STREAM_MSG_TYPE else None),
+                                                                                    worker_ctrl_queue=self.image_worker_ctrl_queue, # if msg_type != ImageTopicReadSubscription.STREAM_MSG_TYPE else None),
                                                                                     topic=topic,
                                                                                     msg_type=msg_type,
                                                                                     reliability=reliability,
@@ -1201,25 +1201,25 @@ class BridgeController(Node, BridgeControllerConfig):
 async def main_async():
 
     # reader runs on a separate process
-    readers_enabled = mp.Value('b', 1, lock=False)
+    workers_enabled = mp.Value('b', 1, lock=False)
     
-    image_reader_ctrl_queue = mp.Queue()
-    data_reader_ctrl_queue = mp.Queue()
     # reader_out_image_queue = mp.Queue()
-    data_topic_read_processor = mp.Process(target=TopicReadProcessor,
-                                      args=(readers_enabled,
+    data_worker_ctrl_queue = mp.Queue()
+    data_topic_read_worker = mp.Process(target=TopicReadWorker,
+                                      args=(workers_enabled,
                                             'data',
-                                            data_reader_ctrl_queue,
+                                            data_worker_ctrl_queue,
                                             None))
-    data_topic_read_processor.start()
+    data_topic_read_worker.start()
     
-    image_topic_read_processor = mp.Process(target=TopicReadProcessor,
-                                      args=(readers_enabled,
+    image_worker_ctrl_queue = mp.Queue()
+    image_topic_read_worker = mp.Process(target=TopicReadWorker,
+                                      args=(workers_enabled,
                                             'img',
-                                            image_reader_ctrl_queue,
+                                            image_worker_ctrl_queue,
                                             None, #writes into pipes (??)
                                             None))
-    image_topic_read_processor.start()
+    image_topic_read_worker.start()
 
     rclpy.init()
 
@@ -1232,11 +1232,11 @@ async def main_async():
 
 
     try:
-        bridge_node = BridgeController(image_reader_ctrl_queue=image_reader_ctrl_queue,
-                                       data_reader_ctrl_queue=data_reader_ctrl_queue)
+        bridge_node = BridgeController(image_worker_ctrl_queue=image_worker_ctrl_queue,
+                                       data_worker_ctrl_queue=data_worker_ctrl_queue)
         sio_task = asyncio.get_event_loop().create_task(bridge_node.spin_sio_client(), name="sio_task")
         # spin_future = asyncio.get_event_loop().run_in_executor(None, lambda: rclpy.spin(bridge_node))
-        initial_introspection_task = asyncio.get_event_loop().create_task(bridge_node.introspection.start(), name="initial_introspection_task")
+        asyncio.get_event_loop().create_task(bridge_node.introspection.start(), name="initial_introspection_task")
         
         # concurrently execute both tasks on this process
         await asyncio.wait([ sio_task ], return_when=asyncio.ALL_COMPLETED)
@@ -1251,14 +1251,14 @@ async def main_async():
     # bridge_node.get_logger().log_rosout_disabled 
     bridge_node.shutting_down = True
 
-    image_reader_ctrl_queue.close();
-    readers_enabled.value = 0 # stops reader threads
+    image_worker_ctrl_queue.close();
+    workers_enabled.value = 0 # stops worker threads
     
-    image_topic_read_processor.join()
-    image_topic_read_processor.terminate()
+    image_topic_read_worker.join()
+    image_topic_read_worker.terminate()
     
-    data_topic_read_processor.join()
-    data_topic_read_processor.terminate()
+    data_topic_read_worker.join()
+    data_topic_read_worker.terminate()
     
     # cancel tasks
     # if spin_task.cancel():
