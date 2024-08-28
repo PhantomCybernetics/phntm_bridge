@@ -56,20 +56,24 @@ class TopicReadSubscription:
         
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=3, thread_name_prefix=f'{topic}_read')
 
+        self.msg_callbacks:list = []
+        
         # self.send_pool = concurrent.futures.ThreadPoolExecutor()
         #print(f'TopicReadSubscription:__init__() {threading.get_ident()}')
 
-    def start(self, id_peer:str, dc:RTCDataChannel) -> bool:
+    def start(self, peer:WRTCPeer, msg_callback) -> bool:
 
-        if self.sub != None:
-            self.peers[id_peer] = dc # add peer's dc to targets
+        if self.sub != None: # already subscribed
+            if peer:
+                self.peers[peer.id] = peer.outbound_data_channels[self.topic] # add peers dc
+            if msg_callback and msg_callback not in msg_callback: 
+                self.msg_callbacks.append(msg_callback) # add callback
             return True #all done, one sub for all
 
         if self.worker_ctrl_queue: # subscribe on processor's process
 
             self.pipe_out, self.pipe_worker = mp.Pipe()
             no_skip:bool = self.reliability == QoSReliabilityPolicy.RELIABLE
-            # no_skip = True
             self.worker_ctrl_queue.put_nowait({'action': 'subscribe',
                                                'pipe': self.pipe_worker,
                                                'topic': self.topic,
@@ -115,7 +119,10 @@ class TopicReadSubscription:
                 self.ctrl_node.get_logger().error(f'Failed subscribing to topic {self.topic}, msg class={self.protocol}, peer={id_peer}')
                 return False
 
-        self.peers[id_peer] = dc # add peer's dc to targets
+        if peer:
+            self.peers[peer.id] = peer.outbound_data_channels[self.topic] # add peer's dc
+        if msg_callback and msg_callback not in self.msg_callbacks:
+            self.msg_callbacks.append(msg_callback) # add callback
 
         return True
 
@@ -140,7 +147,7 @@ class TopicReadSubscription:
                 return
             except Exception as e:
                 self.ctrl_node.get_logger().error(f'Exception while reading latest {self.topic} from data pipe: {str(e)}')
-                
+                traceback.print_exc(e)
 
     # called either by ctrl node's process or when data is received via reader_out_queue (called on ctrl node's process)
     async def on_msg(self, reader_res:dict):
@@ -157,6 +164,9 @@ class TopicReadSubscription:
         if self.last_log < 0 or self.last_msg_time-self.last_log > self.log_message_every_sec:
             log_msg = True
             self.last_log = self.last_msg_time #last logged now
+
+        for msg_callback in self.msg_callbacks:
+            await msg_callback(self.last_msg)
 
         for id_peer in self.peers.keys():
             peer_dc:RTCDataChannel = self.peers[id_peer]
@@ -188,45 +198,55 @@ class TopicReadSubscription:
 
     # this might send a message twice or hang when there's nothing in the topic (exits when peer disconnects)
     # only used to ensure delivery of reliable topics
-    async def report_latest_when_ready(self, peer:WRTCPeer):
+    async def report_latest_when_ready(self, peer:WRTCPeer, msg_callback):
         while True:
-
-            if not peer.id in self.peers.keys():
-                return #unsubscribed already
             
-            if peer.pc == None or peer.pc.signalingState != 'stable':
-                await asyncio.sleep(.1) # wait for stable
-                continue
-            
-            dc:RTCDataChannel = self.peers[peer.id]
+            dc:RTCDataChannel = None
+            if peer:
+                if not peer.id in self.peers.keys():
+                    return # unsubscribed already
+                
+                if peer.pc == None or peer.pc.signalingState != 'stable':
+                    await asyncio.sleep(.1) # wait for stable
+                    continue
+                
+                dc:RTCDataChannel = self.peers[peer.id]
+            if msg_callback:
+                if not msg_callback in self.msg_callbacks:
+                    return # unsubscribed already
 
             if self.last_msg == None:
                 await asyncio.sleep(.1) # wait for data
                 continue
-
-            if dc.readyState != 'open':
-                await asyncio.sleep(.1) #wait until dc opens
-                continue
             
-            # asyncio.get_event_loop().create_task(self.peers[id_peer].send())
-            self.ctrl_node.get_logger().debug(f'⚡️ Sending latest {len(self.last_msg)}B msg of {self.topic} to {peer.id}')
-            try:
-                # await asyncio.sleep(1.0) # wait for the dc to fully init (this could be better)
-                dc.send(self.last_msg)
-                return #all done
-            except Exception as e:
-                self.ctrl_node.get_logger().debug(f'⚡️ Exception while sending latest of {self.topic} to {peer.id}: {e}')
-                await asyncio.sleep(.1) #wait until dc opens
-                pass
+            if msg_callback:
+                self.ctrl_node.get_logger().debug(f'⚡️ Sending latest {len(self.last_msg)}B msg of {self.topic} to cb {msg_callback}')
+                await msg_callback(self.last_msg)
+            if (dc):
+                if dc.readyState != 'open':
+                    await asyncio.sleep(.1) #wait until dc opens
+                    continue
                 
+                self.ctrl_node.get_logger().debug(f'⚡️ Sending latest {len(self.last_msg)}B msg of {self.topic} to {peer.id}')
+                try:
+                    # await asyncio.sleep(1.0) # wait for the dc to fully init (this could be better)
+                    dc.send(self.last_msg)
+                    return #all done
+                except Exception as e:
+                    self.ctrl_node.get_logger().debug(f'⚡️ Exception while sending latest of {self.topic} to {peer.id}: {e}')
+                    await asyncio.sleep(.1) #wait until dc opens
+        
                 
-    async def stop(self, id_peer:str) -> bool:
+    async def stop(self, peer:WRTCPeer, msg_callback) -> bool:
 
-        if id_peer in self.peers.keys():
-            peer_dc:RTCDataChannel = self.peers.pop(id_peer)
+        if peer and peer.id in self.peers.keys():
+            peer_dc:RTCDataChannel = self.peers.pop(peer.id)
             peer_dc.close()
+            
+        if msg_callback and msg_callback in self.msg_callbacks:
+            self.msg_callbacks.remove(msg_callback)
 
-        if len(self.peers.keys()) > 0:
+        if len(self.peers.keys()) > 0 or len(self.msg_callbacks) > 0:
             return False # active subscribers
 
         if self.sub == True:

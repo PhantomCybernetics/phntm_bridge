@@ -613,7 +613,7 @@ class BridgeController(Node, BridgeControllerConfig):
         for topic in list(peer.outbound_data_channels.keys()):
             if not topic in peer.read_subs:
                 self.get_logger().info(f'{peer} unsubscribing from {topic}')
-                await self.unsubscribe_data_topic(topic, peer)
+                await self.unsubscribe_data_topic(topic, peer=peer, msg_callback=None)
                 res['read_data_channels'].append([ topic ]) # no id => unsubscribed
 
         # unsubscribe from video streams
@@ -803,7 +803,7 @@ class BridgeController(Node, BridgeControllerConfig):
 
 
     # SUBSCRIBE data topic
-    async def subscribe_data_topic(self, topic:str, reliability:int, durability:int, lifespan:int, peer:WRTCPeer) -> str:
+    async def subscribe_data_topic(self, topic:str, reliability:int, durability:int, lifespan:int, peer:WRTCPeer=None, msg_callback=None) -> str:
 
         if not topic in self.introspection.discovered_topics.keys():
             return None
@@ -827,39 +827,43 @@ class BridgeController(Node, BridgeControllerConfig):
             self.topic_read_subscriptions[topic].on_msg_cb = self.on_msg_blink # blinker
 
         send_latest = False
-        if not topic in peer.outbound_data_channels.keys():
-            self.wrtc_nextChannelId += 1
-            is_reliable = reliability == QoSReliabilityPolicy.RELIABLE
-            dc:RTCDataChannel = peer.pc.createDataChannel(topic,
-                                                            id=self.wrtc_nextChannelId,
-                                                            protocol=msg_type,
-                                                            negotiated=True, # true = negotiated by the app, not webrtc layer
-                                                            ordered=is_reliable,
-                                                            maxRetransmits=None if is_reliable else 0)
-            peer.outbound_data_channels[topic] = dc
-            self.get_logger().debug(f'{peer} subscribed to {topic} (protocol={msg_type}, ch_id={dc.id}); reliable={is_reliable}')
-            if is_reliable:
-                send_latest = True
+        if peer:
+            if not topic in peer.outbound_data_channels.keys():
+                self.wrtc_nextChannelId += 1
+                is_reliable = reliability == QoSReliabilityPolicy.RELIABLE
+                dc:RTCDataChannel = peer.pc.createDataChannel(topic,
+                                                                id=self.wrtc_nextChannelId,
+                                                                protocol=msg_type,
+                                                                negotiated=True, # true = negotiated by the app, not webrtc layer
+                                                                ordered=is_reliable,
+                                                                maxRetransmits=None if is_reliable else 0)
+                peer.outbound_data_channels[topic] = dc
+                self.get_logger().debug(f'{peer} subscribed to {topic} (protocol={msg_type}, ch_id={dc.id}); reliable={is_reliable}')
+                if is_reliable:
+                    send_latest = True
 
-        if not self.topic_read_subscriptions[topic].start(peer.id, peer.outbound_data_channels[topic]):
-            self.get_logger().error(f'Topic {topic} failed to subscribee in on_read_subscriptions_change, {peer}')
+        if not self.topic_read_subscriptions[topic].start(peer, msg_callback):
+            self.get_logger().error(f'Topic {topic} failed to subscribee in on_read_subscriptions_change , peer={peer}, msg_callback={msg_callback}')
             return None
 
         if send_latest:
-            asyncio.get_event_loop().create_task(self.topic_read_subscriptions[topic].report_latest_when_ready(peer))
-
-        return peer.outbound_data_channels[topic].id
+            asyncio.get_event_loop().create_task(self.topic_read_subscriptions[topic].report_latest_when_ready(peer, msg_callback))
+        
+        if peer != None:
+            return peer.outbound_data_channels[topic].id
+        else:
+            return None
 
     # UNSUBSCRIBE data topic
-    async def unsubscribe_data_topic(self, topic:str, peer:WRTCPeer):
-        if topic in peer.outbound_data_channels.keys():
+    async def unsubscribe_data_topic(self, topic:str, peer:WRTCPeer=None, msg_callback=None):
+        if peer and topic in peer.outbound_data_channels.keys():
             self.get_logger().debug(f'{peer} no longer subscribing to {topic}')
             id_closed_dc = peer.outbound_data_channels[topic].id
             peer.outbound_data_channels[topic].close()
             peer.outbound_data_channels.pop(topic)
 
         if topic in self.topic_read_subscriptions.keys():
-            if await self.topic_read_subscriptions[topic].stop(peer.id):
+            if await self.topic_read_subscriptions[topic].stop(peer, msg_callback):
                 self.get_logger().debug(f'No longer reading {topic}')
                 self.topic_read_subscriptions.pop(topic)
                 asyncio.get_event_loop().create_task(self.introspection.start())

@@ -6,9 +6,11 @@ from rclpy.context import Context
 from rclpy.node import Node, Parameter, QoSProfile, Publisher
 from rosidl_runtime_py.utilities import get_message, get_interface
 from rosidl_runtime_py import get_interface_path
+from rclpy_message_converter import message_converter
 import rclpy
 import os
 import subprocess
+from rclpy.qos import QoSHistoryPolicy, QoSReliabilityPolicy, DurabilityPolicy
 
 try:
     from .camera import get_camera_info
@@ -24,6 +26,7 @@ import traceback
 from pyee.base import EventEmitter
 from pyee.asyncio import AsyncIOEventEmitter
 from phntm_interfaces.msg import DockerStatus, DockerContainerStatus
+from rclpy.serialization import deserialize_message
 
 class Introspection (AsyncIOEventEmitter):
 
@@ -36,7 +39,7 @@ class Introspection (AsyncIOEventEmitter):
         self.logger = ctrl_node.get_logger()
 
         self.picam2 = ctrl_node.picam2
-
+        self.docker_monitor_topic:str = self.ctrl_node.get_parameter(f'docker_monitor_topic').get_parameter_value().string_value
         self.discovered_topics:dict[str: dict['msg_type':str]] =  {}
         self.discovered_idls:dict[str:str] = {}
         self.discovered_services:dict[str: dict['msg_type':str]] = {}
@@ -161,32 +164,61 @@ class Introspection (AsyncIOEventEmitter):
     
         return True
 
-    async def on_docker_message(self, msg:DockerStatus):
-        host = msg.header.frame_id
-        docker_containers_changed = False        
+    async def start_docker_subscription(self, topic:str):
+        
+        await self.ctrl_node.subscribe_data_topic(topic,
+                                                  reliability=QoSReliabilityPolicy.BEST_EFFORT,
+                                                  durability=DurabilityPolicy.SYSTEM_DEFAULT,
+                                                  lifespan=-1, #infinity
+                                                  peer=None,
+                                                  msg_callback=self._on_docker_message)
+    
+    async def stop_docker_subscription(self, topic:str):
+        await self.ctrl_node.unsubscribe_data_topic(topic, peer=None, msg_callback=self._on_docker_message)
+             
+
+    async def _on_docker_message(self, raw_msg:DockerStatus):
+        
+        msg:DockerStatus = deserialize_message(raw_msg, DockerStatus)
+        
+        host = 'phntm_agent_'+msg.header.frame_id if msg.header.frame_id else 'phntm_agent' # default frame id is empty
+        docker_containers_changed = False
         
         if not host in self.discovered_docker_containers:
             docker_containers_changed = True
         elif len(msg.containers) != len(self.discovered_docker_containers[host].containers):
             docker_containers_changed = True
-        else:
+       
+        if host in self.discovered_docker_containers:
             for i in range(len(msg.containers)):
                 if msg.containers[i].id != self.discovered_docker_containers[host].containers[i].id \
                 or msg.containers[i].name != self.discovered_docker_containers[host].containers[i].name \
-                or msg.containers[i].satate != self.discovered_docker_containers[host].containers[i].satate:
+                or msg.containers[i].status != self.discovered_docker_containers[host].containers[i].status:
                     docker_containers_changed = True
                     break
-
+        else: # new host id, try looking for hosts we have and match id by container names
+            old_hosts = self.discovered_docker_containers.keys()
+            for i in range(len(msg.containers)):
+                for old_host in old_hosts:
+                    for j in range(len(self.discovered_docker_containers[old_host].containers)):
+                        if msg.containers[i].id == self.discovered_docker_containers[old_host].containers[j].id:
+                            # agent host changed
+                            self.logger.info(c(f'Agent host {old_host} => { msg.containers[i].id}; removing old'))    
+                            del self.discovered_docker_containers[old_host]
+                            docker_containers_changed = True
+                            break
+                            
         self.discovered_docker_containers[host] = msg
         
         if docker_containers_changed:
+            
             await self.report_docker()
             
             # # new nodes and topics aren't detected (on Humble) when started after the bridge node
             # # calling ros2cli topic list seems to flush the cache, so trigering it when a change is
             # # detected in docker containers
             try:
-                self.logger.info(c(f'Docker containers changed, calling ros-cli topic list to flush cache'))    
+                self.logger.info(c(f'Docker containers changed, calling ros-cli topic list to flush the cache'))    
                 process = subprocess.Popen(['ros2', 'topic', 'list'],
                                                 stdout=self.devnull, 
                                                 stderr=subprocess.STDOUT)
@@ -329,6 +361,9 @@ class Introspection (AsyncIOEventEmitter):
                     self.logger.info(c(f'Discovered topic {topic} [{msg_type}]', 'light_blue'))
                     idls_changed = await self.collect_idls(msg_type) or idls_changed
 
+                    if topic == self.docker_monitor_topic:
+                        await self.start_docker_subscription(topic)
+                    
             # services + extract message type idls
             new_services =  await asyncio.get_event_loop().run_in_executor(None, self.ctrl_node.get_service_names_and_types)
             for service_info in new_services:
@@ -504,25 +539,29 @@ class Introspection (AsyncIOEventEmitter):
             pass
 
     def get_docker_data(self):
-        return self.discovered_docker_containers # latest cached docker status msg per host
+        print(self.discovered_docker_containers);
+        data = {}
+        for host in self.discovered_docker_containers.keys():
+            data[host] = message_converter.convert_ros_message_to_dictionary(self.discovered_docker_containers[host])
+        return data # latest cached docker status msg per host
 
     async def report_docker(self):
-
-        self.emit('docker', self.discovered_docker_containers.keys())
 
         if not self.sio or not self.sio.connected:
             return # reports all on socket connect
 
         try:
             data = self.get_docker_data()
-            self.logger.info(c(f'Reporting {len(data)} docker containers', 'dark_grey'))
+            self.logger.info(c(f'Reporting docker update from host/s: {", ".join(data.keys())}', 'dark_grey'))
 
             await self.sio.emit(
                 event='docker',
                 data=data,
                 callback=None
                 )
-        except:
+        except Exception as e:
+            self.logger.error('Exception while reporting Docker data')
+            traceback.print_exception(e)
             pass
 
     async def report_introspection(self):
