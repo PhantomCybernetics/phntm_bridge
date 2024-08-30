@@ -73,6 +73,16 @@ from .inc.config import BridgeControllerConfig
 
 import subprocess
 
+import docker
+docker_client = None
+try:
+    host_docker_socket = 'unix:///host_run/docker.sock' # link /var/run/ to /host_run/ in docker-compose
+    # host_docker_socket = 'tcp://0.0.0.0:2375'
+    docker_client = docker.DockerClient(base_url=host_docker_socket)
+except Exception as e:
+    print(c(f'Failed to init docker client with {host_docker_socket} {e}', 'red'))
+    pass
+
 ROOT = os.path.dirname(__file__)
 
 class BridgeController(Node, BridgeControllerConfig):
