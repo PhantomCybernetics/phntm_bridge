@@ -120,8 +120,7 @@ class BridgeController(Node, BridgeControllerConfig):
         self.camera_subscriptions:dict[str: Picamera2Subscription] = {}
 
         self.service_clients:dict[str: any] = {} # service name => client
-
-        self.wrtc_nextChannelId = 1
+        
         self.wrtc_peers:dict[str: WRTCPeer] = {}
 
         self.spin_thread: threading.Thread = None
@@ -839,10 +838,10 @@ class BridgeController(Node, BridgeControllerConfig):
         send_latest = False
         if peer:
             if not topic in peer.outbound_data_channels.keys():
-                self.wrtc_nextChannelId += 1
+                peer.wrtc_nextChannelId += 1
                 is_reliable = reliability == QoSReliabilityPolicy.RELIABLE
                 dc:RTCDataChannel = peer.pc.createDataChannel(topic,
-                                                                id=self.wrtc_nextChannelId,
+                                                                id=peer.wrtc_nextChannelId,
                                                                 protocol=msg_type,
                                                                 negotiated=True, # true = negotiated by the app, not webrtc layer
                                                                 ordered=is_reliable,
@@ -1072,10 +1071,10 @@ class BridgeController(Node, BridgeControllerConfig):
        
 
     def make_publisher_dc(self, peer, topic, protocol) -> RTCDataChannel:
-        self.wrtc_nextChannelId += 1
+        peer.wrtc_nextChannelId += 1
         is_heartbeat = (topic == '_heartbeat')
         dc = peer.pc.createDataChannel(topic,
-                                        id=self.wrtc_nextChannelId,
+                                        id=peer.wrtc_nextChannelId,
                                         protocol=protocol,
                                         negotiated=True, # true = negotiated by the app, not webrtc layer
                                         ordered=False,

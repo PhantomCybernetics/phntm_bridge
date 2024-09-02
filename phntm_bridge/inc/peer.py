@@ -33,6 +33,8 @@ class WRTCPeer:
         self.sio_connected = True
         self.session = session
         
+        self.wrtc_nextChannelId = 1
+        
         self.topics_not_discovered:list[str] = []
         self.cameras_not_discovered:list[str] = []
         
