@@ -119,6 +119,9 @@ class Introspection (AsyncIOEventEmitter):
                 await self.report_introspection()
 
     async def collect_idls(self, msg_type) -> bool:
+        if msg_type in self.ctrl_node.blacklist_msg_types:
+            return False
+        
         if msg_type in self.discovered_idls:
             return False # no change
         try:
@@ -292,6 +295,8 @@ class Introspection (AsyncIOEventEmitter):
                 for pub_info in new_publishers:
                     topic = pub_info[0]
                     msg_type = pub_info[1][0]
+                    if topic in self.ctrl_node.blacklist_topics or msg_type in self.ctrl_node.blacklist_topics:
+                        continue
                     if not topic in self.discovered_nodes[node]['publishers'].keys() \
                     or self.discovered_nodes[node]['publishers'][topic] != msg_type:
                         self.discovered_nodes[node]['publishers'][topic] = msg_type
@@ -316,6 +321,8 @@ class Introspection (AsyncIOEventEmitter):
                 for sub_info in new_subscribers:
                     topic = sub_info[0]
                     msg_type = sub_info[1][0]
+                    if topic in self.ctrl_node.blacklist_topics or msg_type in self.ctrl_node.blacklist_topics:
+                        continue
                     if not topic in self.discovered_nodes[node]['subscribers'].keys() \
                     or self.discovered_nodes[node]['subscribers'][topic] != msg_type:
                         self.discovered_nodes[node]['subscribers'][topic] = msg_type
@@ -340,6 +347,8 @@ class Introspection (AsyncIOEventEmitter):
                 for serv_info in new_node_services:
                     id_service = serv_info[0]
                     msg_type = serv_info[1][0]
+                    if id_service in self.ctrl_node.blacklist_services or msg_type in self.ctrl_node.blacklist_services:
+                        continue
                     if not id_service in self.discovered_nodes[node]['services'].keys() \
                     or self.discovered_nodes[node]['services'][id_service] != msg_type:
                         self.discovered_nodes[node]['services'][id_service] = msg_type
@@ -349,13 +358,16 @@ class Introspection (AsyncIOEventEmitter):
                             self.logger.info(c(f'srv {id_service} @ {node} [{msg_type}]', 'light_green'))
                         nodes_changed = True
             
-            # topics + extract message type idls
+            # flat topics + extract message type idls
             new_topics =  await asyncio.get_event_loop().run_in_executor(None, self.ctrl_node.get_topic_names_and_types)
             for topic_info in new_topics:
                 topic = topic_info[0]
-                # TODO: blacklist topics
+                if topic in self.ctrl_node.blacklist_topics:
+                    continue
                 if not topic in self.discovered_topics:
                     msg_type = topic_info[1][0]
+                    if msg_type in self.ctrl_node.blacklist_topics:
+                        continue
                     self.discovered_topics[topic] = { 'msg_type': msg_type }
                     topics_changed = True
                     self.logger.info(c(f'Discovered topic {topic} [{msg_type}]', 'light_blue'))
@@ -364,13 +376,16 @@ class Introspection (AsyncIOEventEmitter):
                     if topic == self.docker_monitor_topic:
                         await self.start_docker_subscription(topic)
                     
-            # services + extract message type idls
+            # flat services + extract message type idls
             new_services =  await asyncio.get_event_loop().run_in_executor(None, self.ctrl_node.get_service_names_and_types)
             for service_info in new_services:
                 service = service_info[0]
-                # TODO: blacklist services
+                if service in self.ctrl_node.blacklist_services:
+                    continue
                 if not service in self.discovered_services:
                     msg_type = service_info[1][0]
+                    if msg_type in self.ctrl_node.blacklist_services:
+                        continue
                     self.discovered_services[service] = { 'msg_type': msg_type }
                     services_changed = True
                     self.logger.info(c(f'Discovered service {service} [{msg_type}]', 'magenta'))

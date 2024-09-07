@@ -21,6 +21,13 @@ class BridgeControllerConfig():
             logger.error(f'Param key not provided!')
             exit(1)
 
+        # will check these packages on 1st (container) start
+        self.declare_parameter('extra_packages', [  ''  ])
+        self.extra_packages = self.get_parameter('extra_packages').get_parameter_value().string_array_value
+        if len(self.extra_packages) == 1 and self.extra_packages[0] == '':
+            self.extra_packages = []
+        self.declare_parameter('collapse_unhandled_services', True)
+        
         #webrtc
         self.declare_parameter('ice_servers', [  'turn:turn.phntm.io:3478', 'turn:turn.phntm.io:3479'  ])
         self.declare_parameter('ice_username', 'robo')
@@ -61,14 +68,42 @@ class BridgeControllerConfig():
             # Battery
             self.declare_parameter(f'{topic_override}.min_voltage', 0.0)
             self.declare_parameter(f'{topic_override}.max_voltage', 10.0)
-            
+        logger.info(f'Loaded config topic_overrides: {str(self.topic_overrides)}')
+        
+        # TODO:
+        # services collapsed in the ui menu (still operational, parameneter services by default; msg type or full service id)
+        self.declare_parameter('collapse_services', [ 'rcl_interfaces/srv/DescribeParameters', 'rcl_interfaces/srv/GetParameterTypes', 'rcl_interfaces/srv/GetParameters', 'rcl_interfaces/srv/ListParameters', 'rcl_interfaces/srv/SetParameters', 'rcl_interfaces/srv/SetParametersAtomically' ])
+        self.collapse_services = self.get_parameter('collapse_services').get_parameter_value().string_array_value
+        if len(self.collapse_services) == 1 and self.collapse_services[0] == '':
+            self.collapse_services = []
+        
+        # blacklist topics from discovery (msg type or full topic id)
+        self.declare_parameter('blacklist_topics', [ '' ])
+        self.blacklist_topics = self.get_parameter('blacklist_topics').get_parameter_value().string_array_value
+        if len(self.blacklist_topics) == 1 and self.blacklist_topics[0] == '':
+            self.blacklist_topics = []
+        logger.info(f'Blacklisted topics: {str(self.blacklist_topics)}')
+        
+        # blacklist services from discovery (msg type or full topic id)
+        self.declare_parameter('blacklist_services', [ '' ])
+        self.blacklist_services = self.get_parameter('blacklist_services').get_parameter_value().string_array_value
+        if len(self.blacklist_services) == 1 and self.blacklist_services[0] == '':
+            self.blacklist_services = []
+        logger.info(f'Blacklisted services: {str(self.blacklist_services)}')
+
+        # blacklist msg types (topics/services are discovered but not deserialized or serialized)
+        # pointcloud and costmap are here until fully suported (until then break browsers with too much unoptimized data)
+        self.declare_parameter('blacklist_msg_types', [ 'sensor_msgs/PointCloud', 'sensor_msgs/msg/PointCloud2', 'cost_map_msgs/CostMap', 'nav_msgs/msg/OccupancyGrid' ])
+        self.blacklist_msg_types = self.get_parameter('blacklist_msg_types').get_parameter_value().string_array_value
+        if len(self.blacklist_msg_types) == 1 and self.blacklist_msg_types[0] == '':
+            self.blacklist_msg_types = []
+        logger.info(f'Blacklisted message types: {str(self.blacklist_msg_types)}')
+        
         self.declare_parameter('log_sdp', False)
         self.log_sdp = self.get_parameter('log_sdp').get_parameter_value().bool_value
 
         self.declare_parameter('log_heartbeat', False)
         self.log_heartbeat = self.get_parameter('log_heartbeat').get_parameter_value().bool_value
-    
-        logger.info(f'Loaded config topic_overrides: {str(self.topic_overrides)}')
 
         self.sio_address = self.get_parameter('sio_address').get_parameter_value().string_value
         self.sio_port = self.get_parameter('sio_port').get_parameter_value().integer_value
@@ -78,25 +113,28 @@ class BridgeControllerConfig():
         if (self.sio_address == None or self.sio_address == ''): self.get_logger().error(f'Param sio_address not provided!')
         if (self.sio_port == None): logger.error(f'Param sio_port not provided!')
 
-        # Comm LED
+        # Conn LED (blinks when connecting; on when connected; off = bridge not running)
         self.declare_parameter('conn_led_topic', '' )
         self.conn_led_topic = self.get_parameter('conn_led_topic').get_parameter_value().string_value
+        # TODO:
+        self.declare_parameter('conn_led_pin', -1)
+        self.conn_led_pin = self.get_parameter('conn_led_pin').get_parameter_value().integer_value
 
-        # Net LED
+        # Data LED (flashes when any data is sent via webrtc; off when not connected)
         self.declare_parameter('data_led_topic', '' )
         self.data_led_topic = self.get_parameter('data_led_topic').get_parameter_value().string_value
+        # TODO:
+        self.declare_parameter('data_led_pin', -1)
+        self.data_led_pin = self.get_parameter('data_led_pin').get_parameter_value().integer_value
 
-        # TOPIC DICOVERY
+        # Discovery
         self.declare_parameter('discovery_period_sec', 5.0)
         self.declare_parameter('stop_discovery_after_sec', -1.0) # < 0 => never
-        self.declare_parameter('topic_whitelist', [ '.*' ])
-        self.declare_parameter('topic_blacklist', [ '/led/', '/_', '/rosout' ] )
-        self.declare_parameter('param_whitelist', [ '.*' ])
-        self.declare_parameter('param_blacklist', [ '' ])
 
         # wifi monitoring + scan
         self.declare_parameter('ui_wifi_monitor_topic', '/iw_status') # agent writes here
-        self.declare_parameter('ui_enable_wifi_scan', False) # enables re-scan and roaming
+        self.declare_parameter('ui_enable_wifi_scan', True) # enables scan without roaming
+        self.declare_parameter('ui_enable_wifi_roam', False) # enables roaming (potentially dangerous)
          
         # picamera2
         self.declare_parameter('picam_enabled', False)
@@ -112,7 +150,7 @@ class BridgeControllerConfig():
         self.docker_control_enabled = self.get_parameter('ui_docker_control').get_parameter_value().bool_value
         
         #input configs that get passed to ui
-        self.declare_parameter('input_drivers', [ 'Joy' ]) # [ '' ] to disable input entirely
+        self.declare_parameter('input_drivers', [ 'Joy' ]) # [ '' ] to disable input entirely, services are still set up
         self.declare_parameter(f'input_defaults', '') 
         
         self.input_drivers = self.get_parameter('input_drivers').get_parameter_value().string_array_value

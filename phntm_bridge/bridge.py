@@ -549,13 +549,16 @@ class BridgeController(Node, BridgeControllerConfig):
         
         if ui_config: # = on conect only, adding config extras for the client
             res['input_drivers'] = self.input_drivers
-            res['input_defaults'] = self.input_defaults
+            res['input_defaults'] = self.input_defaults # pass input mappings & service buttons
             res['ui'] = {
                 'battery_topic': self.get_parameter('ui_battery_topic').get_parameter_value().string_value,
                 'docker_control': self.docker_control_enabled,
                 'docker_monitor_topic': self.get_parameter('docker_monitor_topic').get_parameter_value().string_value,
                 'wifi_monitor_topic': self.get_parameter('ui_wifi_monitor_topic').get_parameter_value().string_value,
                 'enable_wifi_scan': self.get_parameter('ui_enable_wifi_scan').get_parameter_value().bool_value,
+                'enable_wifi_roam': self.get_parameter('ui_enable_wifi_roam').get_parameter_value().bool_value,
+                'collapse_services': self.collapse_services,
+                'collapse_unhandled_services': self.get_parameter('collapse_unhandled_services').get_parameter_value().bool_value
             }
 
         peer.topics_not_discovered = []
