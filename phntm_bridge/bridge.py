@@ -4,6 +4,7 @@ from rclpy.qos import QoSHistoryPolicy, QoSReliabilityPolicy, DurabilityPolicy
 from rclpy.duration import Duration, Infinite
 from rclpy.serialization import deserialize_message
 from rclpy_message_converter import message_converter
+from rcl_interfaces.msg import Parameter, ParameterValue, ParameterType
 
 from .inc.status_led import StatusLED
 from termcolor import colored as c
@@ -1159,10 +1160,30 @@ class BridgeController(Node, BridgeControllerConfig):
 
         req = None
         if payload: 
+            
             try:
+                if 'parameters' in payload.keys() and msg_type in ['rcl_interfaces/srv/SetParameters', 'rcl_interfaces/srv/SetParametersAtomically']:
+                    print(f'oh hi stupid ros message type!')
+                    fixed_params = []
+                    for p in payload['parameters']:
+                        print(f'converting {p["name"]} type = {str(p["value"]["type"])}')
+                        val = None
+                        p['value']['double_value'] = float(p['value']['double_value'])
+                        for dv in p['value']['double_array_value']:
+                            dv = float(dv)
+                        for i in range(len(p['value']['byte_array_value'])):
+                            p['value']['byte_array_value'][i] = bytes([p['value']['byte_array_value'][i]])
+                        val =  ParameterValue(**p['value'])
+                        fixed_params.append(Parameter(name=p['name'], value=val))
+                    payload['parameters'] = fixed_params
+            
+                print(f'setting req payload {str(payload)}')
                 req = message_class.Request(**payload)
+                
             except Exception as e:
                 self.get_logger().error(f'Error making service message for {service}: {e}; payload={str(payload)}')
+                print(str(message_class))
+                print(str(req))
                 return { 'err': 2, 'msg': f'{e}' }
         else:
             req = message_class.Request()
