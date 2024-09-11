@@ -319,7 +319,7 @@ class BridgeController(Node, BridgeControllerConfig):
 
             answer = RTCSessionDescription(sdp=data['sdp'], type='answer')
             self.get_logger().debug(c(f'Setting SDP answer from peer {id_peer}, signalingState={peer.pc.signalingState}', 'cyan'))
-            if self.log_sdp:
+            if self.get_parameter('log_sdp').get_parameter_value().bool_value:
                 self.get_logger().info(c(data['sdp'], 'dark_grey'))
             await peer.pc.setRemoteDescription(answer)
 
@@ -723,7 +723,7 @@ class BridgeController(Node, BridgeControllerConfig):
             peer.processing_subscriptions = False
             return False
 
-        if self.log_sdp:
+        if self.get_parameter('log_sdp').get_parameter_value().bool_value:
             self.get_logger().info(c(peer.pc.localDescription.sdp, 'dark_grey'))
 
         res['offer'] = peer.pc.localDescription.sdp
@@ -1124,7 +1124,7 @@ class BridgeController(Node, BridgeControllerConfig):
         @dc.on('message')
         def on_inbound_channel_message(msg):
             if is_heartbeat:
-                if self.log_heartbeat:
+                if self.get_parameter('log_heartbeat').get_parameter_value().bool_value:
                     print(f'🫀 Got heartbeat from '+peer.id)
                 peer.last_heartbeat = time.time()
             else:

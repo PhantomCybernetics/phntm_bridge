@@ -64,9 +64,6 @@ class BridgeControllerConfig():
         self.declare_parameter('sio_connection_retry_sec', 2.0)
         self.declare_parameter('sio_ssl_verify', True)
 
-        self.declare_parameter('log_message_every_sec', 10.0)
-        self.log_message_every_sec = self.get_parameter('log_message_every_sec').get_parameter_value().double_value
-
         self.declare_parameter('topic_overrides', [ '' ])
         self.topic_overrides = self.get_parameter('topic_overrides').get_parameter_value().string_array_value
         for topic_override in self.topic_overrides:
@@ -115,10 +112,9 @@ class BridgeControllerConfig():
         logger.info(f'Blacklisted message types: {str(self.blacklist_msg_types)}')
         
         self.declare_parameter('log_sdp', False)
-        self.log_sdp = self.get_parameter('log_sdp').get_parameter_value().bool_value
-
         self.declare_parameter('log_heartbeat', False)
-        self.log_heartbeat = self.get_parameter('log_heartbeat').get_parameter_value().bool_value
+        self.declare_parameter('log_message_every_sec', 10.0)
+        self.log_message_every_sec = self.get_parameter('log_message_every_sec').get_parameter_value().double_value
 
         self.sio_address = self.get_parameter('sio_address').get_parameter_value().string_value
         self.sio_port = self.get_parameter('sio_port').get_parameter_value().integer_value
