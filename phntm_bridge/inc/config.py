@@ -2,31 +2,47 @@ from rclpy.node import Node, Parameter, QoSProfile, Publisher
 from .status_led import StatusLED
 from rclpy.callback_groups import CallbackGroup, MutuallyExclusiveCallbackGroup
 from rclpy.impl.rcutils_logger import RcutilsLogger
+from rcl_interfaces.msg import ParameterDescriptor, ParameterType, FloatingPointRange, IntegerRange
 import json
 
 class BridgeControllerConfig():
 
     def load_config(self, logger:RcutilsLogger):
+    
         # ID ROBOT
-        self.declare_parameter('id_robot', '')
-        self.declare_parameter('name', 'Unnamed Robot')
-        self.declare_parameter('key', '')
+        self.declare_parameter('id_robot', '', descriptor=ParameterDescriptor(
+            type=ParameterType.PARAMETER_STRING,
+            description='Robot ID on Phntm Cloud Brudge',
+            read_only=True
+        ))
+        self.declare_parameter('key', '', descriptor=ParameterDescriptor(
+            type=ParameterType.PARAMETER_STRING,
+            description='Robot auth key on Phntm Cloud Brudge',
+        ))
         self.id_robot = self.get_parameter('id_robot').get_parameter_value().string_value
-        self.robot_name = self.get_parameter('name').get_parameter_value().string_value
         self.auth_key = self.get_parameter('key').get_parameter_value().string_value
+        
         if (self.id_robot == None or self.id_robot == ''):
             self.get_logger().error(f'Param id_robot not provided!')
             exit(1)
         if (self.auth_key == None or self.auth_key == ''):
             logger.error(f'Param key not provided!')
             exit(1)
+            
+        self.declare_parameter('name', 'Unnamed Robot', descriptor=ParameterDescriptor(
+            type=ParameterType.PARAMETER_STRING,
+            description='Robot name'
+        ))
 
         # will check these packages on 1st (container) start
-        self.declare_parameter('extra_packages', [  ''  ])
+        self.declare_parameter('extra_packages', [  ''  ], descriptor=ParameterDescriptor(
+            type=ParameterType.PARAMETER_STRING_ARRAY,
+            description='ROS packages to check for on first Bridge run',
+            additional_constraints='Folder path or ROS package name'
+        ))
         self.extra_packages = self.get_parameter('extra_packages').get_parameter_value().string_array_value
         if len(self.extra_packages) == 1 and self.extra_packages[0] == '':
             self.extra_packages = []
-        self.declare_parameter('collapse_unhandled_services', True)
         
         #webrtc
         self.declare_parameter('ice_servers', [  'turn:turn.phntm.io:3478', 'turn:turn.phntm.io:3479'  ])
@@ -35,6 +51,11 @@ class BridgeControllerConfig():
         self.ice_servers = self.get_parameter('ice_servers').get_parameter_value().string_array_value
         self.ice_username = self.get_parameter('ice_username').get_parameter_value().string_value
         self.ice_credential = self.get_parameter('ice_credential').get_parameter_value().string_value
+        
+        key_censored = Parameter('key', Parameter.Type.STRING, value='*************')
+        ice_username_censored = Parameter('ice_username', Parameter.Type.STRING, value='*************')
+        ice_pass_censored = Parameter('ice_credential', Parameter.Type.STRING, value='*************')
+        self.set_parameters([ key_censored, ice_username_censored, ice_pass_censored]) # prevent reading sensitive stuffs
         
         # SOCKET.IO
         self.declare_parameter('sio_address', 'https://api.phntm.io')
@@ -52,30 +73,24 @@ class BridgeControllerConfig():
             if topic_override == '':
                 continue
             # ROS stuffs
-            self.declare_parameter(f'{topic_override}.name', '')
+            # self.declare_parameter(f'{topic_override}.name', '')
             self.declare_parameter(f'{topic_override}.reliability', 0) # 0 = best effort, 1 = reliable
             self.declare_parameter(f'{topic_override}.durability', 0) # 0 system default, 1 = transient local, 2 = volatile
             self.declare_parameter(f'{topic_override}.lifespan_sec', -1) # num sec as int, -1 infinity
-            self.declare_parameter(f'{topic_override}.raw', True)
-            # NN stuffs
-            self.declare_parameter(f'{topic_override}.nn_input_cropped_square', True) # nn input is usually a square
-            self.declare_parameter(f'{topic_override}.nn_input_w', 416)
-            self.declare_parameter(f'{topic_override}.nn_input_h', 416)
-            self.declare_parameter(f'{topic_override}.nn_detection_labels', [ '' ]) # nn class labels
-            # Depth processing
-            self.declare_parameter(f'{topic_override}.depth_colormap', 13) # cv2.COLORMAP_MAGMA
-            self.declare_parameter(f'{topic_override}.depth_range_max', 2.0) # 2m (units depend on sensor)
-            # Battery
-            self.declare_parameter(f'{topic_override}.min_voltage', 0.0)
-            self.declare_parameter(f'{topic_override}.max_voltage', 10.0)
+            self.declare_parameter(f'{topic_override}.raw', True) 
         logger.info(f'Loaded config topic_overrides: {str(self.topic_overrides)}')
         
-        # TODO:
         # services collapsed in the ui menu (still operational, parameneter services by default; msg type or full service id)
-        self.declare_parameter('collapse_services', [ 'rcl_interfaces/srv/DescribeParameters', 'rcl_interfaces/srv/GetParameterTypes', 'rcl_interfaces/srv/GetParameters', 'rcl_interfaces/srv/ListParameters', 'rcl_interfaces/srv/SetParameters', 'rcl_interfaces/srv/SetParametersAtomically' ])
-        self.collapse_services = self.get_parameter('collapse_services').get_parameter_value().string_array_value
-        if len(self.collapse_services) == 1 and self.collapse_services[0] == '':
-            self.collapse_services = []
+        self.declare_parameter('collapse_services', [ 'rcl_interfaces/srv/DescribeParameters', 'rcl_interfaces/srv/GetParameterTypes', 'rcl_interfaces/srv/GetParameters', 'rcl_interfaces/srv/ListParameters', 'rcl_interfaces/srv/SetParameters', 'rcl_interfaces/srv/SetParametersAtomically' ], descriptor=ParameterDescriptor(
+            type=ParameterType.PARAMETER_STRING_ARRAY,
+            description='The UI will collapse these services',
+            additional_constraints='Service id or type '
+        ))
+    
+        self.declare_parameter('collapse_unhandled_services', True, descriptor=ParameterDescriptor(
+            type=ParameterType.PARAMETER_BOOL,
+            description='The UI will collapse services with unsupported message types'
+        ))
         
         # blacklist topics from discovery (msg type or full topic id)
         self.declare_parameter('blacklist_topics', [ '' ])
@@ -167,4 +182,56 @@ class BridgeControllerConfig():
             except FileNotFoundError:
                 logger.error(f'input_defaults file not found: {input_defaults_file}')
                 pass
+    
+    
+    def _make_test_params(self):
+        self.declare_parameter('test_bool', False, descriptor=ParameterDescriptor(
+            type=ParameterType.PARAMETER_BOOL,
+            description='This is a description of my bool parameter',
+            additional_constraints='Keep it cool',
+            read_only=True
+        ))
+        self.declare_parameter('test_bool_array', [ False ], descriptor=ParameterDescriptor(
+            type=ParameterType.PARAMETER_BOOL_ARRAY,
+            description='Bool array ftw',
+            additional_constraints='true or false, it\'s simple'
+        ))
+        self.declare_parameter('test_byte_array', [], descriptor=ParameterDescriptor(
+            type=ParameterType.PARAMETER_BYTE_ARRAY,
+            description='Byte array this is'
+        ))
+        self.declare_parameter('test_double', 0.0, descriptor=ParameterDescriptor(
+            type=ParameterType.PARAMETER_DOUBLE,
+            floating_point_range=[ FloatingPointRange(
+                from_value=-10.0,
+                to_value=100.0
+            ) ]
+        ))
+        self.declare_parameter('test_double_array', [ 0.0 ], descriptor=ParameterDescriptor(
+            type=ParameterType.PARAMETER_DOUBLE_ARRAY,
+            description='Array of floaring points aka doubles',
+            additional_constraints='Keep it between +/- 100',
+        ))
+        self.declare_parameter('test_integer', 0, descriptor=ParameterDescriptor(
+            type=ParameterType.PARAMETER_INTEGER,
+            integer_range=[ IntegerRange(
+                from_value=-11,
+                to_value=111
+            ) ]
+        ))
+        self.declare_parameter('test_integer_array', [ 1 ], descriptor=ParameterDescriptor(
+            type=ParameterType.PARAMETER_INTEGER_ARRAY,
+            description='Int array',
+            additional_constraints='Yo'
+        ))
+        self.declare_parameter('test_string', '', descriptor=ParameterDescriptor(
+            type=ParameterType.PARAMETER_STRING,
+            read_only=True
+        ))
+        self.declare_parameter('test_string_array', [ '' ], descriptor=ParameterDescriptor(
+            type=ParameterType.PARAMETER_STRING_ARRAY,
+            description='Insert your strings here',
+            additional_constraints='For realz',
+            read_only=False
+        ))
         

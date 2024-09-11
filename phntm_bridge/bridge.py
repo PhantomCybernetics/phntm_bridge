@@ -5,6 +5,7 @@ from rclpy.duration import Duration, Infinite
 from rclpy.serialization import deserialize_message
 from rclpy_message_converter import message_converter
 from rcl_interfaces.msg import Parameter, ParameterValue, ParameterType
+from rcl_interfaces.msg import ParameterDescriptor, ParameterType, FloatingPointRange, IntegerRange
 
 from .inc.status_led import StatusLED
 from termcolor import colored as c
@@ -473,7 +474,7 @@ class BridgeController(Node, BridgeControllerConfig):
                 auth_data = {
                     'id_robot': self.id_robot,
                     'key': self.auth_key,
-                    'name': self.robot_name,
+                    'name': self.get_parameter('name').get_parameter_value().string_value,
                     'ros_distro': self.ros_distro
                 }
                 await self.sio.connect(url=f'{self.sio_address}:{self.sio_port}', socketio_path=self.sio_path, auth=auth_data)
@@ -549,6 +550,11 @@ class BridgeController(Node, BridgeControllerConfig):
         }
         
         if ui_config: # = on conect only, adding config extras for the client
+            
+            collapse_services = self.get_parameter('collapse_services').get_parameter_value().string_array_value
+            if len(collapse_services) == 1 and collapse_services[0] == '':
+                collapse_services = []
+            
             res['input_drivers'] = self.input_drivers
             res['input_defaults'] = self.input_defaults # pass input mappings & service buttons
             res['ui'] = {
@@ -558,7 +564,7 @@ class BridgeController(Node, BridgeControllerConfig):
                 'wifi_monitor_topic': self.get_parameter('ui_wifi_monitor_topic').get_parameter_value().string_value,
                 'enable_wifi_scan': self.get_parameter('ui_enable_wifi_scan').get_parameter_value().bool_value,
                 'enable_wifi_roam': self.get_parameter('ui_enable_wifi_roam').get_parameter_value().bool_value,
-                'collapse_services': self.collapse_services,
+                'collapse_services': collapse_services,
                 'collapse_unhandled_services': self.get_parameter('collapse_unhandled_services').get_parameter_value().bool_value
             }
 
@@ -590,17 +596,49 @@ class BridgeController(Node, BridgeControllerConfig):
                 if not is_image:
                     id_dc = await self.subscribe_data_topic(sub, reliability, durability, lifespan, peer)
                     topic_conf = {} # passing config extras to the UI
-                    match msg_type:
-                        case 'vision_msgs/msg/Detection2DArray':
-                            topic_conf['nn_input_cropped_square'] = self.get_parameter(f'{sub}.nn_input_cropped_square').get_parameter_value().bool_value
-                            topic_conf['nn_input_w'] = self.get_parameter(f'{sub}.nn_input_w').get_parameter_value().integer_value
-                            topic_conf['nn_input_h'] = self.get_parameter(f'{sub}.nn_input_h').get_parameter_value().integer_value
-                            topic_conf['nn_detection_labels'] = self.get_parameter(f'{sub}.nn_detection_labels').get_parameter_value().string_array_value
-                        case 'sensor_msgs/msg/BatteryState':
-                            topic_conf['min_voltage'] = self.get_parameter(f'{sub}.min_voltage').get_parameter_value().double_value
-                            topic_conf['max_voltage'] = self.get_parameter(f'{sub}.max_voltage').get_parameter_value().double_value
+                    if sub in self.topic_overrides:
+                        match msg_type:
+                            case 'vision_msgs/msg/Detection2DArray':
+                                # NN stuffs
+                                try: 
+                                    self.declare_parameter(f'{sub}.nn_input_cropped_square', True) # nn input is usually a square
+                                    self.declare_parameter(f'{sub}.nn_input_w', 416)
+                                    self.declare_parameter(f'{sub}.nn_input_h', 416)
+                                    self.declare_parameter(f'{sub}.nn_detection_labels', [ '' ]) # nn class labels
+                                except rclpy.exceptions.ParameterAlreadyDeclaredException:
+                                    pass
+                                topic_conf['nn_input_cropped_square'] = self.get_parameter(f'{sub}.nn_input_cropped_square').get_parameter_value().bool_value
+                                topic_conf['nn_input_w'] = self.get_parameter(f'{sub}.nn_input_w').get_parameter_value().integer_value
+                                topic_conf['nn_input_h'] = self.get_parameter(f'{sub}.nn_input_h').get_parameter_value().integer_value
+                                topic_conf['nn_detection_labels'] = self.get_parameter(f'{sub}.nn_detection_labels').get_parameter_value().string_array_value
+                            case 'sensor_msgs/msg/BatteryState':
+                                # Battery
+                                try:
+                                    self.declare_parameter(f'{sub}.min_voltage', 0.0)
+                                    self.declare_parameter(f'{sub}.max_voltage', 10.0)
+                                except rclpy.exceptions.ParameterAlreadyDeclaredException:
+                                    pass
+                                topic_conf['min_voltage'] = self.get_parameter(f'{sub}.min_voltage').get_parameter_value().double_value
+                                topic_conf['max_voltage'] = self.get_parameter(f'{sub}.max_voltage').get_parameter_value().double_value
                     res['read_data_channels'].append([sub, id_dc, msg_type, reliability == QoSReliabilityPolicy.RELIABLE, topic_conf])
                 elif is_image:
+                    # Depth processing config for image topics only
+                    try:
+                        if sub in self.topic_overrides:
+                            self.declare_parameter(f'{sub}.depth_colormap', 13, descriptor=ParameterDescriptor(
+                                type=ParameterType.PARAMETER_INTEGER,
+                                description='(Depth only) cv2.COLORMAP for  colorization',
+                                integer_range=[ IntegerRange(
+                                    from_value=0,
+                                    to_value=21
+                                ) ]
+                            )) 
+                            self.declare_parameter(f'{sub}.depth_range_max', 2.0, descriptor=ParameterDescriptor(
+                                type=ParameterType.PARAMETER_DOUBLE,
+                                description='(Depth only) Maximum sensor distance [m]'
+                            )) # 2m (units depend on sensor)
+                    except rclpy.exceptions.ParameterAlreadyDeclaredException:
+                        pass
                     id_track = await self.subscribe_image_topic(sub, reliability, durability, lifespan, peer)
                     res['read_video_streams'].append([ sub, id_track ])
 
@@ -1162,8 +1200,9 @@ class BridgeController(Node, BridgeControllerConfig):
         if payload: 
             
             try:
+                
+                # special handling of ros parameter services becase they require instances of ParameterValue and Parameter
                 if 'parameters' in payload.keys() and msg_type in ['rcl_interfaces/srv/SetParameters', 'rcl_interfaces/srv/SetParametersAtomically']:
-                    print(f'oh hi stupid ros message type!')
                     fixed_params = []
                     for p in payload['parameters']:
                         print(f'converting {p["name"]} type = {str(p["value"]["type"])}')
