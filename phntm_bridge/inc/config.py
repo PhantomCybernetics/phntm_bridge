@@ -5,10 +5,18 @@ from rclpy.impl.rcutils_logger import RcutilsLogger
 from rcl_interfaces.msg import ParameterDescriptor, ParameterType, FloatingPointRange, IntegerRange
 import json
 
+# tests
+from nav_msgs.srv import GetPlan
+from nav_msgs.msg import Path
+from lifecycle_msgs.srv import ChangeState
+
 class BridgeControllerConfig():
 
     def load_config(self, logger:RcutilsLogger):
     
+        # self._make_test_srvs()
+        # self._make_test_params()
+        
         # ID ROBOT
         self.declare_parameter('id_robot', '', descriptor=ParameterDescriptor(
             type=ParameterType.PARAMETER_STRING,
@@ -179,6 +187,19 @@ class BridgeControllerConfig():
                 logger.error(f'input_defaults file not found: {input_defaults_file}')
                 pass
     
+    def _make_test_srvs(self):
+        self.test_srv_1 = self.create_service(GetPlan, f'/{self.get_name()}/test_srv_1', self.test_srv_1_cb)
+        self.test_srv_2 = self.create_service(ChangeState, f'/{self.get_name()}/test_srv_2', self.test_srv_2_cb)
+        
+    def test_srv_1_cb(self, request, response):
+        print(f'test_srv_1_cb called w request: {str(request)}')
+        response.plan = Path()
+        return response
+    
+    def test_srv_2_cb(self, request, response):
+        print(f'test_srv_2_cb called w request: {str(request)}')
+        response.success = True
+        return response
     
     def _make_test_params(self):
         self.declare_parameter('test_bool', False, descriptor=ParameterDescriptor(
