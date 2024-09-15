@@ -10,6 +10,7 @@ from rosidl_runtime_py.utilities import get_message, get_interface
 from rclpy.callback_groups import CallbackGroup
 from rclpy.constants import S_TO_NS
 from rclpy.qos import QoSHistoryPolicy, QoSReliabilityPolicy, DurabilityPolicy
+from rcl_interfaces.msg import ParameterDescriptor, ParameterType, FloatingPointRange, IntegerRange
 
 from termcolor import colored as c
 
@@ -41,16 +42,21 @@ from av.frame import Frame
 from av.packet import Packet
 from av.video.frame import VideoFrame
 import fractions
+import yaml
 
 encoder_h264:H264Encoder = None
 
 # runs as a separate process for bette isolation and lower ctrl/cam latency
-def TopicReadWorker(running_shared:mp.Value, reader_label:str, ctrl_queue:mp.Queue, 
-                        conf:any, log_message_every_sec:float=5.0):
+def TopicProcessorWorker(running_shared:mp.Value, reader_label:str, ctrl_queue:mp.Queue):
 
     print(f'Topic Reader {reader_label}: starting')
     
     # rclpy.init()
+    yaml_fname = '/ros2_ws/phntm_bridge_params.yaml'
+    with open(yaml_fname, 'r') as file:
+        yaml_config = yaml.safe_load(file)
+
+    print(f'Worker {reader_label} loaded config from {str(yaml_fname)}')
 
     rcl_ctx = Context()
     rcl_ctx.init() # This must be done before any ROS nodes can be created.
@@ -70,7 +76,7 @@ def TopicReadWorker(running_shared:mp.Value, reader_label:str, ctrl_queue:mp.Que
 
     # reader_node.load_config(self.get_logger())
 
-    w = Worker(reader_node, reader_label, rcl_executor, running_shared, ctrl_queue)
+    w = Worker(reader_node, reader_label, rcl_executor, running_shared, ctrl_queue, yaml_config)
     try:
         asyncio.run(w.worker_loop())
     except (asyncio.CancelledError, KeyboardInterrupt):
@@ -87,7 +93,7 @@ def TopicReadWorker(running_shared:mp.Value, reader_label:str, ctrl_queue:mp.Que
 
 class Worker:
     
-    def __init__(self, reader_node, reader_label, rcl_executor, running_shared, ctrl_queue) -> None:
+    def __init__(self, reader_node, reader_label, rcl_executor, running_shared, ctrl_queue, yaml_config) -> None:
         self.reader_node = reader_node
         self.reader_label = reader_label
         self.rcl_executor = rcl_executor
@@ -96,7 +102,7 @@ class Worker:
         self.logger = self.reader_node.get_logger()
         self.active_subs:dict[str:dict] = {}
         self.newest_messages_by_topic:dict[str:list] = {}
-
+        self.yaml_config = yaml_config['/**']['ros__parameters']
 
     async def spin_node_loop(self):
 
@@ -183,16 +189,14 @@ class Worker:
 
         if ctrl_cmd['action'] == 'subscribe':
             msg_type = ctrl_cmd['msg_type']
-            reliability = QoSReliabilityPolicy(ctrl_cmd['reliability'])
-            durability = DurabilityPolicy(ctrl_cmd['durability'])
-            # reader_node.get_logger().error(f'Topic Reader: {topic} raw lifespan={ctrl_cmd["lifespan"]}')
-            lifespan_hr = ''
-            if not 'lifespan' in ctrl_cmd or ctrl_cmd['lifespan'] < 0:
-                lifespan = Infinite
-                lifespan_hr = 'Infinite'
-            else:
-                lifespan = Duration(seconds=ctrl_cmd['lifespan'])
-                lifespan_hr = f'{lifespan.nanoseconds/S_TO_NS}s'
+
+            qosProfile = QoSProfile(
+                history=ctrl_cmd['qos']['history'],
+                depth=ctrl_cmd['qos']['depth'],
+                reliability=ctrl_cmd['qos']['reliability'],
+                durability=ctrl_cmd['qos']['durability'],
+                lifespan=Infinite if ctrl_cmd['qos']['lifespan'] < 0 else Duration(seconds=ctrl_cmd['qos']['lifespan'])
+            )
 
             pipe = ctrl_cmd['pipe'] if 'pipe' in ctrl_cmd.keys() else None
 
@@ -206,15 +210,8 @@ class Worker:
                 return
 
             try:
-                qosProfile = QoSProfile(
-                                history=QoSHistoryPolicy.KEEP_LAST,
-                                depth=1,
-                                reliability=reliability,
-                                durability=durability,
-                                lifespan=lifespan
-                                )
-                self.logger.warn(c(f'Subscribing to topic {topic} {msg_type} qosProfile={qosProfile} lifespan={lifespan_hr}', 'cyan'))
-                no_skip:bool = ctrl_cmd['no_skip'] if 'no_skip' in ctrl_cmd.keys() else False
+                self.logger.warn(c(f'Subscribing to topic {topic} {msg_type} qosProfile={qosProfile}', 'cyan'))
+                # no_skip:bool = ctrl_cmd['no_skip'] if 'no_skip' in ctrl_cmd.keys() else False
                 
                 cb = None
                 if msg_type == ImageTopicReadSubscription.MSG_TYPE:
@@ -336,6 +333,29 @@ class Worker:
         if size == 0:
             return
 
+        max_sensor_value = 255.0
+        cv_colormap = 0
+        if im.encoding == '16UC1' or im.encoding == 'mono16' or im.encoding == '32FC1':
+            try:
+                colormap = self.yaml_config[topic][f'{im.encoding}_colormap'] if topic in self.yaml_config.keys() and f'{im.encoding}_colormap' in self.yaml_config[topic].keys() else cv2.COLORMAP_MAGMA
+                self.reader_node.declare_parameter(f'{topic}.{im.encoding}_colormap', colormap, descriptor=ParameterDescriptor(
+                    type=ParameterType.PARAMETER_INTEGER,
+                    description='(Depth only) cv2.COLORMAP for colorization',
+                    integer_range=[ IntegerRange(
+                        from_value=0,
+                        to_value=21
+                    ) ]
+                ))
+                max_sensor_value = self.yaml_config[topic][f'{im.encoding}_max_sensor_value'] if topic in self.yaml_config.keys() and f'{im.encoding}_max_sensor_value' in self.yaml_config[topic].keys() else 255.0
+                self.reader_node.declare_parameter(f'{topic}.{im.encoding}_max_sensor_value', max_sensor_value, descriptor=ParameterDescriptor(
+                    type=ParameterType.PARAMETER_DOUBLE,
+                    description='(Depth only) The maximum sensor value (max distance or brightness)'
+                )) # 2m (units depend on sensor)
+            except rclpy.exceptions.ParameterAlreadyDeclaredException:
+                pass
+            max_sensor_value =  self.reader_node.get_parameter(f'{topic}.{im.encoding}_max_sensor_value').get_parameter_value().double_value
+            cv_colormap =  self.reader_node.get_parameter(f'{topic}.{im.encoding}_colormap').get_parameter_value().integer_value
+
         if im.encoding == 'rgb8':
             channels = 3  # 3 for RGB format
             np_array = np.frombuffer(im.data, dtype=np.uint8) # Convert the image data to a NumPy array
@@ -347,14 +367,14 @@ class Worker:
             np_array = cv2.merge([r,g,b])
             np_array = np_array.reshape(im.height, im.width, channels) # Reshape the array based on the image dimensions
         elif im.encoding == '16UC1' or im.encoding == 'mono16': # channels = 1  # 3 for RGB format
-            np_array = np.frombuffer(im.data, dtype=np.uint16) * float(255.0/4000.0)
+            np_array = np.frombuffer(im.data, dtype=np.uint16) * float(255.0 / max_sensor_value)
             np_array = np.uint8 (np_array)
-            np_array = cv2.applyColorMap(np_array, cv2.COLORMAP_MAGMA)
+            np_array = cv2.applyColorMap(np_array, cv_colormap)
             np_array = np_array.reshape(im.height, im.width, 3)
         elif im.encoding == '32FC1': # channels = 1  # 3 for RGB format
-            np_array = np.frombuffer(im.data, dtype=np.float32) * (255.0 * (1.0 / 2.0)) #;).astype(np.uint16)
+            np_array = np.frombuffer(im.data, dtype=np.float32) * (255.0 / max_sensor_value) #;).astype(np.uint16)
             np_array = np.uint8 (np_array)
-            np_array = cv2.applyColorMap(np_array, cv2.COLORMAP_PLASMA)
+            np_array = cv2.applyColorMap(np_array, cv_colormap)
             np_array = np_array.reshape(im.height, im.width, 3)
         else:
             print(c(f'Received unsupported frame encoding for {topic}:  enc="{im.encoding}" is_bigendian={im.is_bigendian} {im.width}x{im.height} data={len(im.data)}B step={im.step}, not processing', 'red'))

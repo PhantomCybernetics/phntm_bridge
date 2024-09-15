@@ -67,7 +67,7 @@ import os
 import platform
 
 from .inc.topic_reader import TopicReadSubscription
-from .inc.topic_read_worker import TopicReadWorker
+from .inc.topic_processor_worker import TopicProcessorWorker
 from .inc.topic_writer import TopicWritePublisher
 from .inc.peer import WRTCPeer
 
@@ -585,62 +585,54 @@ class BridgeController(Node, BridgeControllerConfig):
                 msg_type = self.introspection.discovered_topics[sub]['msg_type']
                 is_image = IsImageType(msg_type)
                 
-                if sub in self.topic_overrides:
-                    reliability = self.get_parameter(f'{sub}.reliability').get_parameter_value().integer_value
-                    durability = self.get_parameter(f'{sub}.durability').get_parameter_value().integer_value
-                    lifespan = self.get_parameter(f'{sub}.lifespan_sec').get_parameter_value().integer_value
-                else: #default for all topics without overrides in config 
-                    reliability = 0 # best effort
-                    durability = 0 # system default
-                    lifespan = -1 # infinite
+                try: 
+                    self.declare_parameter(f'{sub}.reliability', 0) # 0 = best effort, 1 = reliable
+                    self.declare_parameter(f'{sub}.durability', 0) # 0 system default, 1 = transient local, 2 = volatile
+                    self.declare_parameter(f'{sub}.lifespan_sec', -1) # num sec as int, -1 infinity
+                except rclpy.exceptions.ParameterAlreadyDeclaredException:
+                    pass
+                reliability = self.get_parameter(f'{sub}.reliability').get_parameter_value().integer_value
+                durability = self.get_parameter(f'{sub}.durability').get_parameter_value().integer_value
+                lifespan = self.get_parameter(f'{sub}.lifespan_sec').get_parameter_value().integer_value
+            
+                qosProfile = QoSProfile(
+                    history=QoSHistoryPolicy.KEEP_LAST,
+                    depth=1,
+                    reliability=reliability,
+                    durability=durability,
+                    lifespan=Infinite if lifespan < 0 else Duration(seconds=lifespan)
+                )
                     
                 if not is_image:
-                    id_dc = await self.subscribe_data_topic(sub, reliability, durability, lifespan, peer)
+                    id_dc = await self.subscribe_data_topic(sub, qos=qosProfile, peer=peer)
                     topic_conf = {} # passing config extras to the UI
-                    if sub in self.topic_overrides:
-                        match msg_type:
-                            case 'vision_msgs/msg/Detection2DArray':
-                                # NN stuffs
-                                try: 
-                                    self.declare_parameter(f'{sub}.nn_input_cropped_square', True) # nn input is usually a square
-                                    self.declare_parameter(f'{sub}.nn_input_w', 416)
-                                    self.declare_parameter(f'{sub}.nn_input_h', 416)
-                                    self.declare_parameter(f'{sub}.nn_detection_labels', [ '' ]) # nn class labels
-                                except rclpy.exceptions.ParameterAlreadyDeclaredException:
-                                    pass
-                                topic_conf['nn_input_cropped_square'] = self.get_parameter(f'{sub}.nn_input_cropped_square').get_parameter_value().bool_value
-                                topic_conf['nn_input_w'] = self.get_parameter(f'{sub}.nn_input_w').get_parameter_value().integer_value
-                                topic_conf['nn_input_h'] = self.get_parameter(f'{sub}.nn_input_h').get_parameter_value().integer_value
-                                topic_conf['nn_detection_labels'] = self.get_parameter(f'{sub}.nn_detection_labels').get_parameter_value().string_array_value
-                            case 'sensor_msgs/msg/BatteryState':
-                                # Battery
-                                try:
-                                    self.declare_parameter(f'{sub}.min_voltage', 0.0)
-                                    self.declare_parameter(f'{sub}.max_voltage', 10.0)
-                                except rclpy.exceptions.ParameterAlreadyDeclaredException:
-                                    pass
-                                topic_conf['min_voltage'] = self.get_parameter(f'{sub}.min_voltage').get_parameter_value().double_value
-                                topic_conf['max_voltage'] = self.get_parameter(f'{sub}.max_voltage').get_parameter_value().double_value
+                    # if sub in self.topic_overrides:
+                    match msg_type:
+                        case 'vision_msgs/msg/Detection2DArray':
+                            # NN stuffs
+                            try: 
+                                self.declare_parameter(f'{sub}.nn_input_cropped_square', True) # nn input is usually a square
+                                self.declare_parameter(f'{sub}.nn_input_w', 416)
+                                self.declare_parameter(f'{sub}.nn_input_h', 416)
+                                self.declare_parameter(f'{sub}.nn_detection_labels', [ '' ]) # nn class labels
+                            except rclpy.exceptions.ParameterAlreadyDeclaredException:
+                                pass
+                            topic_conf['nn_input_cropped_square'] = self.get_parameter(f'{sub}.nn_input_cropped_square').get_parameter_value().bool_value
+                            topic_conf['nn_input_w'] = self.get_parameter(f'{sub}.nn_input_w').get_parameter_value().integer_value
+                            topic_conf['nn_input_h'] = self.get_parameter(f'{sub}.nn_input_h').get_parameter_value().integer_value
+                            topic_conf['nn_detection_labels'] = self.get_parameter(f'{sub}.nn_detection_labels').get_parameter_value().string_array_value
+                        case 'sensor_msgs/msg/BatteryState':
+                            # Battery
+                            try:
+                                self.declare_parameter(f'{sub}.min_voltage', 0.0)
+                                self.declare_parameter(f'{sub}.max_voltage', 10.0)
+                            except rclpy.exceptions.ParameterAlreadyDeclaredException:
+                                pass
+                            topic_conf['min_voltage'] = self.get_parameter(f'{sub}.min_voltage').get_parameter_value().double_value
+                            topic_conf['max_voltage'] = self.get_parameter(f'{sub}.max_voltage').get_parameter_value().double_value
                     res['read_data_channels'].append([sub, id_dc, msg_type, reliability == QoSReliabilityPolicy.RELIABLE, topic_conf])
                 elif is_image:
-                    # Depth processing config for image topics only
-                    try:
-                        if sub in self.topic_overrides:
-                            self.declare_parameter(f'{sub}.depth_colormap', 13, descriptor=ParameterDescriptor(
-                                type=ParameterType.PARAMETER_INTEGER,
-                                description='(Depth only) cv2.COLORMAP for  colorization',
-                                integer_range=[ IntegerRange(
-                                    from_value=0,
-                                    to_value=21
-                                ) ]
-                            )) 
-                            self.declare_parameter(f'{sub}.depth_range_max', 2.0, descriptor=ParameterDescriptor(
-                                type=ParameterType.PARAMETER_DOUBLE,
-                                description='(Depth only) Maximum sensor distance [m]'
-                            )) # 2m (units depend on sensor)
-                    except rclpy.exceptions.ParameterAlreadyDeclaredException:
-                        pass
-                    id_track = await self.subscribe_image_topic(sub, reliability, durability, lifespan, peer)
+                    id_track = await self.subscribe_image_topic(sub, qos=qosProfile, peer=peer)
                     res['read_video_streams'].append([ sub, id_track ])
 
             else: #topic not discovered yet
@@ -855,7 +847,7 @@ class BridgeController(Node, BridgeControllerConfig):
 
 
     # SUBSCRIBE data topic
-    async def subscribe_data_topic(self, topic:str, reliability:int, durability:int, lifespan:int, peer:WRTCPeer=None, msg_callback=None) -> str:
+    async def subscribe_data_topic(self, topic:str, qos:QoSProfile, peer:WRTCPeer=None, msg_callback=None) -> str:
 
         if not topic in self.introspection.discovered_topics.keys():
             return None
@@ -865,16 +857,14 @@ class BridgeController(Node, BridgeControllerConfig):
             return None
 
         if not topic in self.topic_read_subscriptions.keys():
-    
             self.topic_read_subscriptions[topic] = TopicReadSubscription(ctrl_node=self,
                                                                             worker_ctrl_queue=self.data_worker_ctrl_queue,
                                                                             topic=topic,
                                                                             protocol=msg_type,
-                                                                            reliability=reliability,
-                                                                            durability=durability,
-                                                                            lifespan_sec=lifespan,
+                                                                            qos=qos,
                                                                             event_loop=asyncio.get_event_loop(),
-                                                                            log_message_every_sec=self.log_message_every_sec)
+                                                                            log_message_every_sec=self.log_message_every_sec
+                                                                            )
             asyncio.get_event_loop().create_task(self.introspection.start())
             self.topic_read_subscriptions[topic].on_msg_cb = self.on_msg_blink # blinker
 
@@ -882,7 +872,7 @@ class BridgeController(Node, BridgeControllerConfig):
         if peer:
             if not topic in peer.outbound_data_channels.keys():
                 peer.wrtc_nextChannelId += 1
-                is_reliable = reliability == QoSReliabilityPolicy.RELIABLE
+                is_reliable = qos.reliability == QoSReliabilityPolicy.RELIABLE
                 dc:RTCDataChannel = peer.pc.createDataChannel(topic,
                                                                 id=peer.wrtc_nextChannelId,
                                                                 protocol=msg_type,
@@ -922,7 +912,7 @@ class BridgeController(Node, BridgeControllerConfig):
 
 
     # SUBSCRIBE image topic
-    async def subscribe_image_topic(self, topic:str, reliability:int, durability:int, lifespan:int, peer:WRTCPeer) -> str:
+    async def subscribe_image_topic(self, topic:str, qos:QoSProfile, peer:WRTCPeer) -> str:
 
         if not topic in self.introspection.discovered_topics.keys():
             return None
@@ -936,13 +926,11 @@ class BridgeController(Node, BridgeControllerConfig):
                                                                                     worker_ctrl_queue=self.image_worker_ctrl_queue, # if msg_type != ImageTopicReadSubscription.STREAM_MSG_TYPE else None),
                                                                                     topic=topic,
                                                                                     msg_type=msg_type,
-                                                                                    reliability=reliability,
-                                                                                    durability=durability,
-                                                                                    lifespan_sec=lifespan,
-                                                                                    log_message_every_sec=self.log_message_every_sec,
-                                                                                    clock_rate=1000000000,
-                                                                                    time_base=1,
-                                                                                    bridge_time_started_ns=self.time_started_ns
+                                                                                    qos=qos,
+                                                                                    log_message_every_sec=self.log_message_every_sec
+                                                                                    # clock_rate=1000000000,
+                                                                                    # time_base=1,
+                                                                                    # bridge_time_started_ns=self.time_started_ns
                                                                                     )
             asyncio.get_event_loop().create_task(self.introspection.start())
             self.image_topic_read_subscriptions[topic].on_msg_cb = self.on_msg_blink # blinker
@@ -1260,20 +1248,17 @@ async def main_async():
     
     # reader_out_image_queue = mp.Queue()
     data_worker_ctrl_queue = mp.Queue()
-    data_topic_read_worker = mp.Process(target=TopicReadWorker,
+    data_topic_read_worker = mp.Process(target=TopicProcessorWorker,
                                       args=(workers_enabled,
                                             'data',
-                                            data_worker_ctrl_queue,
-                                            None))
+                                            data_worker_ctrl_queue))
     data_topic_read_worker.start()
     
     image_worker_ctrl_queue = mp.Queue()
-    image_topic_read_worker = mp.Process(target=TopicReadWorker,
+    image_topic_read_worker = mp.Process(target=TopicProcessorWorker,
                                       args=(workers_enabled,
                                             'img',
-                                            image_worker_ctrl_queue,
-                                            None, #writes into pipes (??)
-                                            None))
+                                            image_worker_ctrl_queue))
     image_topic_read_worker.start()
 
     rclpy.init()

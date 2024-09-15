@@ -12,6 +12,9 @@ import os
 import subprocess
 from rclpy.qos import QoSHistoryPolicy, QoSReliabilityPolicy, DurabilityPolicy
 
+from rclpy.qos import QoSHistoryPolicy, QoSReliabilityPolicy, DurabilityPolicy
+from rclpy.duration import Duration, Infinite
+
 try:
     from .camera import get_camera_info
 except ModuleNotFoundError:
@@ -169,10 +172,16 @@ class Introspection (AsyncIOEventEmitter):
 
     async def start_docker_subscription(self, topic:str):
         
+        qosProfile = QoSProfile(
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=QoSReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.SYSTEM_DEFAULT,
+            lifespan=Infinite
+        )
+        
         await self.ctrl_node.subscribe_data_topic(topic,
-                                                  reliability=QoSReliabilityPolicy.BEST_EFFORT,
-                                                  durability=DurabilityPolicy.SYSTEM_DEFAULT,
-                                                  lifespan=-1, #infinity
+                                                  qos=qosProfile,
                                                   peer=None,
                                                   msg_callback=self._on_docker_message)
     

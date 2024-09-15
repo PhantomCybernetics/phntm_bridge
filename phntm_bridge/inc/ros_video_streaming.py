@@ -36,6 +36,8 @@ from rclpy.serialization import deserialize_message
 from sensor_msgs.msg import Image
 from rosidl_runtime_py.utilities import get_message
 # from aiortc.rtcrtpsender import RTCEncodedFrame
+from rclpy.node import Node, Parameter, QoSProfile, Publisher
+from rclpy.qos import QoSHistoryPolicy, QoSReliabilityPolicy, DurabilityPolicy
 
 encoder_h264:H264Encoder = None
 
@@ -78,7 +80,7 @@ class ImageTopicReadSubscription:
     STREAM_MSG_TYPE:str = 'ffmpeg_image_transport_msgs/msg/FFMPEGPacket'
     
     # def __init__(self, sub:Subscription, peers:list[str], frame_processor, processed_frames_h264:mp.Queue, processed_frames_v8:mp.Queue, make_keyframe_shared:mp.Value, make_h264_shared:mp.Value, make_v8_shared:mp.Value):
-    def __init__(self, ctrl_node:Node, bridge_time_started_ns:int, msg_type:str, worker_ctrl_queue:mp.Queue, topic:str, reliability:QoSReliabilityPolicy, durability:DurabilityPolicy, lifespan_sec:int, log_message_every_sec:float=5.0, hflip:bool=False, vflip:bool=False, bitrate:int=5000000, framerate:int = 30, process_depth:bool=True, clock_rate:int=1000000000, time_base:int=1):
+    def __init__(self, ctrl_node:Node, msg_type:str, worker_ctrl_queue:mp.Queue, topic:str, qos:QoSProfile, log_message_every_sec:float=5.0):
 
         self.sub:Subscription|bool = None
         self.ctrl_node:Node = ctrl_node
@@ -90,37 +92,38 @@ class ImageTopicReadSubscription:
         self.peers:dict = {} #target outbound dcs
         self.topic:str = topic
         self.msg_type:str = msg_type
-    
+        self.qos = qos
+        
         self.num_received:int = 0
         self.last_msg:any = None
         self.last_msg_time:float = -1.0
         self.last_log:float = -1.0
         self.log_message_every_sec:float = log_message_every_sec
-
+        
         self.logged = False
         self.ignore = False
         self.first_frame_time_ns = -1
 
-        self.reliability:QoSReliabilityPolicy = reliability
-        self.durability:DurabilityPolicy = durability
-        self.lifespan_sec:int = lifespan_sec
+        # self.reliability:QoSReliabilityPolicy = reliability
+        # self.durability:DurabilityPolicy = durability
+        # self.lifespan_sec:int = lifespan_sec
         
         self.on_msg_cb:Callable = None
         self.event_loop = asyncio.get_event_loop() #safe current
         self.last_send_future:asyncio.Future = None
 
-        self.hflip = hflip
-        self.vflip = vflip
-        self.bitrate = bitrate
-        self.framerate = framerate
-        self.process_depth = process_depth
-        self.clock_rate = clock_rate
-        self.time_base = time_base
-        self.time_base_fraction = fractions.Fraction(time_base, clock_rate)
+        # self.hflip = hflip
+        # self.vflip = vflip
+        # self.bitrate = bitrate
+        # self.framerate = framerate
+        # self.process_depth = process_depth
+        # self.clock_rate = clock_rate
+        # self.time_base = time_base
+        # self.time_base_fraction = fractions.Fraction(time_base, clock_rate)
 
         self.last_frame_tasks:dict[str:asyncio.Task] = {}
         
-        self.bridge_time_started_ns:int = bridge_time_started_ns
+        # self.bridge_time_started_ns:int = bridge_time_started_ns
         
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=3, thread_name_prefix=f'{topic}_read')
 
@@ -141,54 +144,58 @@ class ImageTopicReadSubscription:
 
             self.pipe_out, self.pipe_worker = mp.Pipe()
 
-            self.worker_ctrl_queue.put_nowait({'action': 'subscribe',
-                                               'pipe': self.pipe_worker,
-                                               'topic': self.topic,
-                                               'msg_type': self.msg_type,
-                                               'reliability': self.reliability,
-                                               'durability': self.durability,
-                                               'lifespan': self.lifespan_sec,
-                                               'hflip': self.hflip,
-                                               'vflip': self.vflip,
-                                               'bitrate': self.bitrate,
-                                               'framerate': self.framerate,
-                                               'process_depth': self.process_depth,
-                                               'clock_rate': self.clock_rate,
-                                               'time_base': self.time_base
+            self.worker_ctrl_queue.put_nowait({
+                                                'action': 'subscribe',
+                                                'pipe': self.pipe_worker,
+                                                'topic': self.topic,
+                                                'qos': {
+                                                    'history': self.qos.history,
+                                                    'depth': self.qos.depth,
+                                                    'reliability':self.qos.reliability,
+                                                    'durability':self.qos.durability,
+                                                    'lifespan': -1 if self.qos.lifespan == Infinite else self.qos.lifespan.total_seconds()
+                                                },
+                                                'msg_type': self.msg_type,
+                                            #    'hflip': self.hflip,
+                                            #    'vflip': self.vflip,
+                                            #    'bitrate': self.bitrate,
+                                            #    'framerate': self.framerate,
+                                            #    'clock_rate': self.clock_rate,
+                                            #    'time_base': self.time_base,
                                                })
             self.sub = True
 
             self.read_task = self.event_loop.create_task(self.read_piped_images())
 
-        else: #subscribe here on ctrl node's process
-            #print(f'TopicReadSubscription:start() {threading.get_ident()}')
+        # else: #subscribe here on ctrl node's process
+        #     #print(f'TopicReadSubscription:start() {threading.get_ident()}')
 
-            message_class = None
-            try:
-                message_class = get_message(self.msg_type)
-            except:
-                pass
-            if message_class == None:
-                self.ctrl_node.get_logger().error(f'NOT subscribing to topic {self.topic}, msg class {self.msg_type} not loaded')
-                return False
+        #     message_class = None
+        #     try:
+        #         message_class = get_message(self.msg_type)
+        #     except:
+        #         pass
+        #     if message_class == None:
+        #         self.ctrl_node.get_logger().error(f'NOT subscribing to topic {self.topic}, msg class {self.msg_type} not loaded')
+        #         return False
 
-            qosProfile = QoSProfile(history=QoSHistoryPolicy.KEEP_LAST, \
-                                    depth=1, \
-                                    reliability=self.reliability, \
-                                    durability=self.durability, \
-                                    lifespan=Infinite \
-                                    )
-            self.ctrl_node.get_logger().warn(f'Subscribing to topic {self.topic} {self.msg_type}')
-            self.sub = self.ctrl_node.create_subscription(
-                    msg_type=message_class,
-                    topic=self.topic,
-                    callback=self.on_raw_msg,
-                    qos_profile=qosProfile,
-                    raw=True,
-                )
-            if self.sub == None:
-                self.ctrl_node.get_logger().error(f'Failed subscribing to topic {self.topic}, msg class={self.msg_type}, peer={id_peer}')
-                return False
+        #     qosProfile = QoSProfile(history=QoSHistoryPolicy.KEEP_LAST, \
+        #                             depth=1, \
+        #                             reliability=self.reliability, \
+        #                             durability=self.durability, \
+        #                             lifespan=Infinite \
+        #                             )
+        #     self.ctrl_node.get_logger().warn(f'Subscribing to topic {self.topic} {self.msg_type}')
+        #     self.sub = self.ctrl_node.create_subscription(
+        #             msg_type=message_class,
+        #             topic=self.topic,
+        #             callback=self.on_raw_msg,
+        #             qos_profile=qosProfile,
+        #             raw=True,
+        #         )
+        #     if self.sub == None:
+        #         self.ctrl_node.get_logger().error(f'Failed subscribing to topic {self.topic}, msg class={self.msg_type}, peer={id_peer}')
+        #         return False
 
         self.peers[id_peer] = sender
 

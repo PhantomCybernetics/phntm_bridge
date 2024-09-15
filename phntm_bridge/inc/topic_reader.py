@@ -30,7 +30,7 @@ from queue import Empty, Full
 class TopicReadSubscription:
 
     # def __init__(self, sub:Subscription, peers:list[str], frame_processor, processed_frames_h264:mp.Queue, processed_frames_v8:mp.Queue, make_keyframe_shared:mp.Value, make_h264_shared:mp.Value, make_v8_shared:mp.Value):
-    def __init__(self, ctrl_node:Node, worker_ctrl_queue:mp.Queue, topic:str, protocol:str, reliability:QoSReliabilityPolicy, durability:DurabilityPolicy, lifespan_sec:int, event_loop:object, log_message_every_sec:float):
+    def __init__(self, ctrl_node:Node, worker_ctrl_queue:mp.Queue, topic:str, protocol:str, event_loop:object, log_message_every_sec:float, qos:QoSProfile):
 
         self.sub:Subscription|bool = None
         self.ctrl_node:Node = ctrl_node
@@ -44,12 +44,10 @@ class TopicReadSubscription:
         self.last_msg:any = None
         self.last_msg_time:float = -1.0
         self.last_log:float = -1.0
+        
         self.log_message_every_sec:float = log_message_every_sec
-
-        self.reliability:QoSReliabilityPolicy = reliability
-        self.durability:DurabilityPolicy = durability
-        self.lifespan_sec:int = lifespan_sec
-
+        self.qos = qos
+        
         self.on_msg_cb:Callable = None
         self.event_loop = event_loop
         self.last_send_future:asyncio.Future = None
@@ -73,51 +71,22 @@ class TopicReadSubscription:
         if self.worker_ctrl_queue: # subscribe on processor's process
 
             self.pipe_out, self.pipe_worker = mp.Pipe()
-            no_skip:bool = self.reliability == QoSReliabilityPolicy.RELIABLE
+            # no_skip:bool = self.reliability == QoSReliabilityPolicy.RELIABLE
             self.worker_ctrl_queue.put_nowait({'action': 'subscribe',
                                                'pipe': self.pipe_worker,
                                                'topic': self.topic,
-                                               'msg_type': self.protocol,
-                                               'reliability': self.reliability,
-                                               'durability': self.durability,
-                                               'lifespan': self.lifespan_sec,
-                                               'no_skip': no_skip
+                                               'qos': {
+                                                    'history': self.qos.history,
+                                                    'depth': self.qos.depth,
+                                                    'reliability':self.qos.reliability,
+                                                    'durability':self.qos.durability,
+                                                    'lifespan': -1 if self.qos.lifespan == Infinite else self.qos.lifespan.total_seconds()
+                                               },
+                                               'msg_type': self.protocol                                            #    'no_skip': no_skip
                                                })
             self.sub = True
             
             self.read_task = self.event_loop.create_task(self.read_piped_data(), name="pipe_reader")
-
-        else: #subscribe here on ctrl node's process
-            #print(f'TopicReadSubscription:start() {threading.get_ident()}')
-
-            message_class = None
-            try:
-                message_class = get_message(self.protocol)
-            except:
-                pass
-            if message_class == None:
-                self.ctrl_node.get_logger().error(f'NOT subscribing to topic {self.topic}, msg class {self.protocol} not loaded')
-                return False
-
-            qosProfile = QoSProfile(history=QoSHistoryPolicy.KEEP_LAST, \
-                                    depth=1, \
-                                    reliability=self.reliability, \
-                                    durability=self.durability, \
-                                    lifespan=self.lifespan_sec \
-                                    )
-            self.ctrl_node.get_logger().warn(f'Subscribing to topic {self.topic} {self.protocol}')
-            no_skip:bool = self.protocol in [ 'std_msgs/msg/String', 'rcl_interfaces/msg/Log' ]
-            self.sub = self.ctrl_node.create_subscription(
-                    msg_type=message_class,
-                    topic=self.topic,
-                    callback=self.on_msg,
-                    qos_profile=qosProfile,
-                    raw=True,
-                    no_skip=no_skip
-                )
-            if self.sub == None:
-                self.ctrl_node.get_logger().error(f'Failed subscribing to topic {self.topic}, msg class={self.protocol}, peer={id_peer}')
-                return False
 
         if peer:
             self.peers[peer.id] = peer.outbound_data_channels[self.topic] # add peer's dc
@@ -173,21 +142,10 @@ class TopicReadSubscription:
             if peer_dc.readyState == 'open':
                 if log_msg:
                     self.ctrl_node.get_logger().info(f'⚡️ Sending {len(self.last_msg)}B into {self.topic} for id_peer={id_peer} / dc= {str(id(peer_dc))}, total received: {self.num_received}')
-                # print(f' hello! {self.topic}')
+    
                 try:
-                    # await self.event_loop.create_task(dc.send(msg)) #always raw bytes bcs fast
-                    # self.event_loop.call_soon_threadsafe(dc.send, msg)
-                    # def send_this(what):
-                        # self.event_loop.run_in_executor(self.executor, dc.send, what)
-                    # self.event_loop.call_soon_threadsafe(send_this, msg)
-                    # dc.send(msg)
-                    # self.event_loop.call_soon_threadsafe(dc.send, msg)
-                    # self.event_loop.call_soon_threadsafe(dc.send, msg)
-
-                    # last_unfinished = self.last_send_future is not None and not self.last_send_future.done()
                     peer_dc.send(self.last_msg)
 
-                    # await dc.send(msg) #always raw bytes bcs fast
                 except Exception as e:
                     print(f'⚡️ Exception in on_msg: {e}')
                     traceback.print_exception(e)
@@ -255,21 +213,6 @@ class TopicReadSubscription:
             self.ctrl_node.get_logger().info(f'Destroying local subscriber for {self.topic}')
             self.ctrl_node.destroy_subscription(self.sub)
         
-        # if self.read_task and not self.read_task.cancelled():
-        #     self.ctrl_node.get_logger().info(f'Cancelling read task for subscriber of {self.topic}')
-        #     self.read_task.cancel()
-        
-        # try:
-        #     while self.pipe_out.poll():
-        #         self.ctrl_node.get_logger().info(f'Cleaning pipe for {self.topic}')
-        #         self.pipe_out.get_nowait() # blocks
-        # except Exception as e:
-        #     self.ctrl_node.get_logger().info(f'Error cleaning pipe for {self.topic}')
-        #     pass
-        # self.pipe_out.close()
-        # self.pipe_out.join_thread()
-        
         self.sub = None
-        # self.topic = None
 
         return True #destroyed
