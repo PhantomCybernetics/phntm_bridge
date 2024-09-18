@@ -608,7 +608,7 @@ class BridgeController(Node, BridgeControllerConfig):
                     topic_conf = {} # passing config extras to the UI
                     # if sub in self.topic_overrides:
                     match msg_type:
-                        case 'vision_msgs/msg/Detection2DArray':
+                        case 'vision_msgs/msg/Detection2DArray' | 'vision_msgs/msg/Detection3DArray':
                             # NN stuffs
                             try: 
                                 self.declare_parameter(f'{sub}.nn_input_cropped_square', True) # nn input is usually a square

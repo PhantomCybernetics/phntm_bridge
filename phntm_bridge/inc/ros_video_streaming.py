@@ -109,7 +109,7 @@ class ImageTopicReadSubscription:
         # self.lifespan_sec:int = lifespan_sec
         
         self.on_msg_cb:Callable = None
-        self.event_loop = asyncio.get_event_loop() #safe current
+        self.event_loop = asyncio.get_event_loop() # save current
         self.last_send_future:asyncio.Future = None
 
         # self.hflip = hflip
@@ -297,10 +297,10 @@ class ImageTopicReadSubscription:
     
         for id_peer in dict.fromkeys(self.peers.keys(),[]):
             
-            if id_peer in self.last_frame_tasks.keys() \
-            and not self.last_frame_tasks[id_peer].done():
-                # and not keyframe:
-                continue
+            # if id_peer in self.last_frame_tasks.keys() \
+            # and not self.last_frame_tasks[id_peer].done():
+            #     # and not keyframe:
+            #     continue
             
             if not self.peers[id_peer].pc or self.peers[id_peer].pc.connectionState == 'failed' \
             or self.peers[id_peer].transport.state == "closed":

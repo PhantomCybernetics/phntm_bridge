@@ -452,11 +452,6 @@ class Worker:
         frame:FFMPEGPacket = deserialize_message(msg, FFMPEGPacket)
         size = len(frame.data)
         
-        if frame.encoding != 'h.264':
-            print(c(f'Received unsupported stream frame data for {topic}, format={frame.encoding} size={len(frame.data)}B; not processing', 'red'))
-            sub['ignore'] = True
-            return
-        
         if not sub['logged']:
             sub['logged'] = True
             print(c(f'Processing stream frame data for {topic}, encoding={frame.encoding} size={size}B; ', 'cyan'))
@@ -464,18 +459,24 @@ class Worker:
         if size == 0:
             return
         
+        is_keyframe = frame.flags == 1
+        if sub['push_task'] and not sub['push_task'].done(): # skipping non-key frames here
+            print(c(f'Dropping frames for {topic}', 'red'))
+            sub['push_task'].cancel()
+            return
+        
         if not 'first_frame_time_ns' in sub.keys():
             sub['first_frame_time_ns'] = frame.pts
-            sub['last_frame_time_ns'] = frame.pts
         
         sub['last_frame_time_ns'] = frame.pts
         
         stamp_ns = frame.pts - sub['first_frame_time_ns']
+        NS_TO_SEC = 1000000000
         
         # we expect fully encoded frames here and only need to packetize them for transport
         p = Packet(frame.data)
         p.pts = stamp_ns
-        p.time_base = fractions.Fraction(1, 90000)
+        p.time_base = fractions.Fraction(1, NS_TO_SEC)
         
         global encoder_h264
         if encoder_h264 == None:
@@ -483,13 +484,13 @@ class Worker:
             
         packets, ts =  encoder_h264.pack(p)
         
-        t = asyncio.get_event_loop().run_in_executor(sub['executor'], sub['pipe'].send, {
+        sub['push_task'] = asyncio.get_event_loop().run_in_executor(sub['executor'], sub['pipe'].send, {
             'topic': topic,
             'frame_packets': packets,
-            'timestamp': ts,
-            'keyframe': frame.flags == 1, # don't skip keyframes
+            'timestamp': stamp_ns,
+            'keyframe': is_keyframe, # don't skip keyframes
         })
-        t.add_done_callback(lambda f: self.pipe_error_catcher(f, topic))
+        sub['push_task'].add_done_callback(lambda f: self.pipe_error_catcher(f, topic))
 
 
     def on_compressed_image_data(self, topic:str, msg:any):
