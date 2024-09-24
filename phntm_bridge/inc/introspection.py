@@ -7,6 +7,7 @@ from rclpy.node import Node, Parameter, QoSProfile, Publisher
 from rosidl_runtime_py.utilities import get_message, get_interface
 from rosidl_runtime_py import get_interface_path
 from rclpy_message_converter import message_converter
+
 import rclpy
 import os
 import subprocess
@@ -14,6 +15,8 @@ from rclpy.qos import QoSHistoryPolicy, QoSReliabilityPolicy, DurabilityPolicy
 
 from rclpy.qos import QoSHistoryPolicy, QoSReliabilityPolicy, DurabilityPolicy
 from rclpy.duration import Duration, Infinite
+from pprint import pprint
+from .lib import qos_equal
 
 try:
     from .camera import get_camera_info
@@ -50,8 +53,8 @@ class Introspection (AsyncIOEventEmitter):
         self.discovered_docker_containers:dict[str: DockerStatus] = {} # last received docker status message by host
         self.discovered_nodes:dict[str: dict[
             'namespace':str,
-            'publishers':dict[str:list[str]],
-            'subscribers':dict[str:list[str]],
+            'publishers':dict[str:dict['msg_type':str,'qos':QoSProfile]],
+            'subscribers':dict[str:dict['msg_type':str,'qos':QoSProfile]],
             'services':dict[str:list[str]]
         ]] =  {}
 
@@ -260,6 +263,10 @@ class Introspection (AsyncIOEventEmitter):
                 for cam in peer.cameras_not_discovered:
                     wating_for.add(cam)
 
+            pub_info_by_topic:dict[str:list[dict]] = {}
+            sub_info_by_topic:dict[str:list[dict]] = {}
+            
+            # discover nodes
             self.logger.info(c(f'Introspecting... ({len(self.waiting_peers)} peers waiting{(" for " + ", ".join(set(wating_for))) if len(wating_for) > 0 else ""})', 'dark_grey')) 
             new_nodes = await asyncio.get_event_loop().run_in_executor(None, self.ctrl_node.get_node_names_and_namespaces)
             
@@ -272,7 +279,6 @@ class Introspection (AsyncIOEventEmitter):
                 if not old_node_found: # old node disappeared, trigger change
                     nodes_changed = True
                     del self.discovered_nodes[old_node]
-            
             for node_info in new_nodes:
                 node = node_info[0]
                 namespace = node_info[1]
@@ -286,74 +292,106 @@ class Introspection (AsyncIOEventEmitter):
                     }
                     nodes_changed = True
 
+                # node publishers
                 try:
-                    new_publishers = await asyncio.get_event_loop().run_in_executor(None, self.ctrl_node.get_publisher_names_and_types_by_node, node, namespace)
+                    node_publishers = await asyncio.get_event_loop().run_in_executor(None, self.ctrl_node.get_publisher_names_and_types_by_node, node, namespace)
                 except Exception:
-                    new_publishers = []
-
+                    node_publishers = []
                 for old_pub_topic in self.discovered_nodes[node]['publishers'].copy().keys():
                     pub_found = False
-                    for pub_info in new_publishers:
+                    for pub_info in node_publishers:
                         if pub_info[0] == old_pub_topic:
                             pub_found = True
                             break
                     if not pub_found:
                         nodes_changed = True
                         del self.discovered_nodes[node]['publishers'][old_pub_topic]
-                    
-                for pub_info in new_publishers:
+                for pub_info in node_publishers:
                     topic = pub_info[0]
                     msg_type = pub_info[1][0]
                     if topic in self.ctrl_node.blacklist_topics or msg_type in self.ctrl_node.blacklist_topics:
                         continue
+                    
+                    # fetch and cache topic pubs details
+                    if not topic in pub_info_by_topic.keys():
+                        try:
+                            pub_info_by_topic[topic] = await asyncio.get_event_loop().run_in_executor(None, self.ctrl_node.get_publishers_info_by_topic, topic)
+                        except Exception:
+                            pub_info_by_topic[topic] = []
+                    pub_qos = None
+                    for pti in pub_info_by_topic[topic]:
+                        if pti.node_name == node and pti.node_namespace == namespace:
+                            pub_qos = pti.qos_profile
+                            
                     if not topic in self.discovered_nodes[node]['publishers'].keys() \
-                    or self.discovered_nodes[node]['publishers'][topic] != msg_type:
-                        self.discovered_nodes[node]['publishers'][topic] = msg_type
+                        or self.discovered_nodes[node]['publishers'][topic]['msg_type'] != msg_type \
+                        or not qos_equal(pub_qos, self.discovered_nodes[node]['publishers'][topic]['qos']):
+                        self.discovered_nodes[node]['publishers'][topic] = {
+                            'msg_type': msg_type,
+                            'qos': pub_qos
+                        }
                         self.logger.info(c(f'{node} > {topic} [{msg_type}]', 'light_green'))
+                        # self.logger.info(c(f'{str(pub_qos)}', 'light_green'))
                         nodes_changed = True
-            
+
+                # node subscribers
                 try:
-                    new_subscribers = await asyncio.get_event_loop().run_in_executor(None, self.ctrl_node.get_subscriber_names_and_types_by_node, node, namespace)
+                    node_subscribers = await asyncio.get_event_loop().run_in_executor(None, self.ctrl_node.get_subscriber_names_and_types_by_node, node, namespace)
                 except Exception:
-                    new_subscribers = []
-                
+                    node_subscribers = []
                 for old_sub_topic in self.discovered_nodes[node]['subscribers'].copy().keys():
                     sub_found = False
-                    for sub_info in new_subscribers:
+                    for sub_info in node_subscribers:
                         if sub_info[0] == old_sub_topic:
                             sub_found = True
                             break
                     if not sub_found:
                         nodes_changed = True
                         del self.discovered_nodes[node]['subscribers'][old_sub_topic]
-                
-                for sub_info in new_subscribers:
+                for sub_info in node_subscribers:
                     topic = sub_info[0]
                     msg_type = sub_info[1][0]
                     if topic in self.ctrl_node.blacklist_topics or msg_type in self.ctrl_node.blacklist_topics:
                         continue
+                    
+                    # fetch and cache topic subs details
+                    if not topic in sub_info_by_topic.keys():
+                        try:
+                            sub_info_by_topic[topic] = await asyncio.get_event_loop().run_in_executor(None, self.ctrl_node.get_subscriptions_info_by_topic, topic)
+                        except Exception:
+                            sub_info_by_topic[topic] = []
+                    sub_qos = None
+                    for sti in sub_info_by_topic[topic]:
+                        if sti.node_name == node and sti.node_namespace == namespace:
+                            sub_qos = sti.qos_profile
+                    
                     if not topic in self.discovered_nodes[node]['subscribers'].keys() \
-                    or self.discovered_nodes[node]['subscribers'][topic] != msg_type:
-                        self.discovered_nodes[node]['subscribers'][topic] = msg_type
+                        or self.discovered_nodes[node]['subscribers'][topic]['msg_type'] != msg_type \
+                        or not qos_equal(sub_qos, self.discovered_nodes[node]['subscribers'][topic]['qos']):
+                            
+                        self.discovered_nodes[node]['subscribers'][topic] = {
+                            'msg_type': msg_type,
+                            'qos': sub_qos
+                        }
                         self.logger.info(c(f'{node} < {topic} {msg_type}', 'light_green'))
+                        # self.logger.info(c(f'{str(sub_qos)}', 'light_green'))
                         nodes_changed = True
 
+                # node services
                 try:
-                    new_node_services = await asyncio.get_event_loop().run_in_executor(None, self.ctrl_node.get_service_names_and_types_by_node, node, namespace)
+                    node_services = await asyncio.get_event_loop().run_in_executor(None, self.ctrl_node.get_service_names_and_types_by_node, node, namespace)
                 except Exception:
-                    new_node_services = []
-                
+                    node_services = []
                 for old_serv in self.discovered_nodes[node]['services'].copy().keys():
                     serv_found = False
-                    for serv_info in new_node_services:
+                    for serv_info in node_services:
                         if serv_info[0] == old_serv:
                             serv_found = True
                             break
                     if not serv_found:
                         nodes_changed = True
                         del self.discovered_nodes[node]['services'][old_serv]
-                
-                for serv_info in new_node_services:
+                for serv_info in node_services:
                     id_service = serv_info[0]
                     msg_type = serv_info[1][0]
                     if id_service in self.ctrl_node.blacklist_services or msg_type in self.ctrl_node.blacklist_services:
@@ -368,8 +406,8 @@ class Introspection (AsyncIOEventEmitter):
                         nodes_changed = True
             
             # flat topics + extract message type idls
-            new_topics =  await asyncio.get_event_loop().run_in_executor(None, self.ctrl_node.get_topic_names_and_types)
-            for topic_info in new_topics:
+            flat_topics =  await asyncio.get_event_loop().run_in_executor(None, self.ctrl_node.get_topic_names_and_types)
+            for topic_info in flat_topics:
                 topic = topic_info[0]
                 if topic in self.ctrl_node.blacklist_topics:
                     continue
@@ -386,8 +424,8 @@ class Introspection (AsyncIOEventEmitter):
                         await self.start_docker_subscription(topic)
                     
             # flat services + extract message type idls
-            new_services =  await asyncio.get_event_loop().run_in_executor(None, self.ctrl_node.get_service_names_and_types)
-            for service_info in new_services:
+            flat_services =  await asyncio.get_event_loop().run_in_executor(None, self.ctrl_node.get_service_names_and_types)
+            for service_info in flat_services:
                 service = service_info[0]
                 if service in self.ctrl_node.blacklist_services:
                     continue
@@ -400,7 +438,31 @@ class Introspection (AsyncIOEventEmitter):
                     self.logger.info(c(f'Discovered service {service} [{msg_type}]', 'magenta'))
                     idls_changed = await self.collect_idls(msg_type) or idls_changed
             
-            if not 'std_msgs/msg/Byte' in self.discovered_idls: # force add byte as we use on the client to send heartbeat (but not producing into a topic => no auto type discovery)
+            # check subscribers qos for incompatibility
+            if nodes_changed:
+                for n in self.discovered_nodes.keys():
+                    for topic in self.discovered_nodes[n]['subscribers'].keys():
+                        for nn in self.discovered_nodes.keys():
+                            if topic in self.discovered_nodes[nn]['publishers']:
+                                qos_compat = rclpy.qos.qos_check_compatible(self.discovered_nodes[nn]['publishers'][topic]['qos'], self.discovered_nodes[n]['subscribers'][topic]['qos'])
+                                try:
+                                    err_index = qos_compat.index(rclpy.qos.QoSCompatibility.ERROR)
+                                    msg = qos_compat[err_index+1]
+                                    self.logger.error(f'Detected QOS error node {n} {topic}: {msg}')
+                                    self.discovered_nodes[n]['subscribers'][topic]['qos_error'] = msg
+                                except ValueError as e:
+                                    pass
+                                try:
+                                    err_index = qos_compat.index(rclpy.qos.QoSCompatibility.WARNING)
+                                    msg = qos_compat[err_index+1]
+                                    self.logger.error(f'Detected QOS warning in node {n} {topic}: {msg}')
+                                    self.discovered_nodes[n]['subscribers'][topic]['qos_warning'] = msg
+                                except ValueError as e:
+                                    pass
+
+            # force add byte to idls as we use it on the client to send heartbeat
+            # (but not producing into a topic so no auto type discovery)
+            if not 'std_msgs/msg/Byte' in self.discovered_idls: 
                 idls_changed = await self.collect_idls('std_msgs/msg/Byte') or idls_changed
             
             if idls_changed:
@@ -435,8 +497,47 @@ class Introspection (AsyncIOEventEmitter):
         return topics_changed or cameras_changed # only topics and cameras keep introspection running
 
 
-    def get_nodes_data(self):
-        return self.discovered_nodes
+    def get_nodes_data(self) -> dict:
+        nodes_data = {}
+        for id_node in self.discovered_nodes.keys():
+            n = self.discovered_nodes[id_node]
+            nodes_data[id_node] = {
+                'namespace': n['namespace'],
+                'publishers': {},
+                'subscribers': {},
+                'services': n['services']
+            }
+        
+            for topic in n['publishers'].keys():
+                nodes_data[id_node]['publishers'][topic] = {
+                    'msg_type': n['publishers'][topic]['msg_type'],
+                    'qos': {
+                        'depth': n['publishers'][topic]['qos'].depth,
+                        'history': n['publishers'][topic]['qos'].history,
+                        'reliability': n['publishers'][topic]['qos'].reliability,
+                        'durability': n['publishers'][topic]['qos'].durability,
+                        'lifespan': (-1 if n['publishers'][topic]['qos'].lifespan == Infinite else n['publishers'][topic]['qos'].lifespan.nanoseconds),
+                        'deadline': (-1 if n['publishers'][topic]['qos'].deadline == Infinite else n['publishers'][topic]['qos'].deadline.nanoseconds)
+                    }
+                }
+            for topic in n['subscribers'].keys():
+                nodes_data[id_node]['subscribers'][topic] = {
+                    'msg_type': n['subscribers'][topic]['msg_type'],
+                    'qos': {
+                        'depth': n['subscribers'][topic]['qos'].depth,
+                        'history': n['subscribers'][topic]['qos'].history,
+                        'reliability': n['subscribers'][topic]['qos'].reliability,
+                        'durability': n['subscribers'][topic]['qos'].durability,
+                        'lifespan': (-1 if n['subscribers'][topic]['qos'].lifespan == Infinite else n['subscribers'][topic]['qos'].lifespan.nanoseconds),
+                        'deadline': (-1 if n['subscribers'][topic]['qos'].deadline == Infinite else n['subscribers'][topic]['qos'].deadline.nanoseconds)
+                    }
+                }
+                if 'qos_error' in n['subscribers'][topic]:
+                    nodes_data[id_node]['subscribers'][topic]['qos_error'] = n['subscribers'][topic]['qos_error']
+                if 'qos_warning' in n['subscribers'][topic]:
+                    nodes_data[id_node]['subscribers'][topic]['qos_warning'] = n['subscribers'][topic]['qos_warning']
+
+        return  nodes_data
 
 
     async def report_nodes(self):
@@ -455,7 +556,9 @@ class Introspection (AsyncIOEventEmitter):
                 data=data,
                 callback=None
                 )
-        except:
+        except Exception as e:
+            self.logger.error(f'Error pushing nodes data: {e}')
+            traceback.print_exc(e)
             pass
 
     def get_idls_data(self):

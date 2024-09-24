@@ -72,19 +72,22 @@ class TopicReadSubscription:
 
             self.pipe_out, self.pipe_worker = mp.Pipe()
             # no_skip:bool = self.reliability == QoSReliabilityPolicy.RELIABLE
-            self.worker_ctrl_queue.put_nowait({'action': 'subscribe',
-                                               'pipe': self.pipe_worker,
-                                               'topic': self.topic,
-                                               'qos': {
-                                                    'history': self.qos.history,
-                                                    'depth': self.qos.depth,
-                                                    'reliability':self.qos.reliability,
-                                                    'durability':self.qos.durability,
-                                                    'lifespan': -1 if self.qos.lifespan == Infinite else self.qos.lifespan.total_seconds()
-                                               },
-                                               'msg_type': self.protocol                                            #    'no_skip': no_skip
-                                               })
-            self.sub = True
+            try:
+                self.worker_ctrl_queue.put_nowait({'action': 'subscribe',
+                                                'pipe': self.pipe_worker,
+                                                'topic': self.topic,
+                                                'qos': {
+                                                        'history': self.qos.history,
+                                                        'depth': self.qos.depth,
+                                                        'reliability':self.qos.reliability,
+                                                        'durability':self.qos.durability,
+                                                        'lifespan': -1 if self.qos.lifespan == Infinite else self.qos.lifespan.nanoseconds
+                                                },
+                                                'msg_type': self.protocol
+                                                })
+                self.sub = True
+            except Exception as e:
+                self.ctrl_node.get_logger().error(f'Error subscribing to {self.topic}: {e}')
             
             self.read_task = self.event_loop.create_task(self.read_piped_data(), name="pipe_reader")
 

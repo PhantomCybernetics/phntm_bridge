@@ -7,6 +7,7 @@ from rclpy_message_converter import message_converter
 from rcl_interfaces.msg import Parameter, ParameterValue, ParameterType
 from rcl_interfaces.msg import ParameterDescriptor, ParameterType, FloatingPointRange, IntegerRange
 from rclpy_message_converter import message_converter
+import concurrent.futures
 
 from .inc.status_led import StatusLED
 from termcolor import colored as c
@@ -44,7 +45,7 @@ try:
 except (ModuleNotFoundError, AttributeError) as e:
     pass
 
-from .inc.ros_video_streaming import ImageTopicReadSubscription, IsImageType
+from .inc.ros_video_streaming import ImageTopicReadSubscription, IsImageType, IsEncodedStreamType
 
 # from rclpy.subscription import TypeVar
 from rosidl_runtime_py.utilities import get_message, get_interface
@@ -92,8 +93,9 @@ class BridgeController(Node, BridgeControllerConfig):
     ##
     # node constructor
     ##
-    def __init__(self, image_worker_ctrl_queue:mp.Queue=None, data_worker_ctrl_queue:mp.Queue=None):
+    def __init__(self, video_worker_ctrl_queue:mp.Queue=None, image_worker_ctrl_queue:mp.Queue=None, data_worker_ctrl_queue:mp.Queue=None):
         super().__init__(node_name='phntm_bridge',
+                         enable_rosout=False,
                          use_global_arguments=True)
 
         self.shutting_down:bool = False
@@ -109,8 +111,9 @@ class BridgeController(Node, BridgeControllerConfig):
         if self.picam_enabled:
             try:
                 self.picam2 = MyPicam2()
-                print (c(f'Picamera2 yo'))
                 print (c(f'Picamera2 global info: ', 'cyan') + str(self.picam2.global_camera_info()))
+            except IndexError:
+                print(c(f'Picamera2 init: no connected device found', 'cyan'))
             except (Exception, AttributeError) as e:
                 print(c(f'Picamera2 init failed: {str(e)}', 'red'))
 
@@ -152,8 +155,11 @@ class BridgeController(Node, BridgeControllerConfig):
             self.data_led = StatusLED('data', node=self, mode=StatusLED.Mode.OFF, topic=self.data_led_topic, qos=QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT))
             #self.data_led.off()
 
+        self.video_worker_ctrl_queue:mp.Queue = video_worker_ctrl_queue
         self.image_worker_ctrl_queue:mp.Queue = image_worker_ctrl_queue
         self.data_worker_ctrl_queue:mp.Queue = data_worker_ctrl_queue
+        
+        self.image_read_executor = concurrent.futures.ThreadPoolExecutor(max_workers=10, thread_name_prefix=f'im_read')
         # self.reader_image_topic_pipes:dict = {}
 
         self.time_started_ns:int = time.time_ns() # used to synchronize all video stream stamps
@@ -253,7 +259,6 @@ class BridgeController(Node, BridgeControllerConfig):
 
             await self.process_peer_subscriptions(peer, send_update=True)
 
-
         # WRITE SUBS
         @self.sio.on('subscribe:write')
         async def on_subscribe_write(data:dict):
@@ -298,7 +303,6 @@ class BridgeController(Node, BridgeControllerConfig):
                     peer.write_subs.remove(sub)
 
             await self.process_peer_subscriptions(peer, send_update=True)
-
 
         @self.sio.on('sdp:answer')
         async def on_sdp_answer(data:dict):
@@ -445,8 +449,7 @@ class BridgeController(Node, BridgeControllerConfig):
                   
                     self.get_logger().info(f' Returning {len(res)} B of tar member {member}')
                     return res
-                    
-                    
+                      
             return None # file not found
 
         @self.sio.on('*')
@@ -923,10 +926,11 @@ class BridgeController(Node, BridgeControllerConfig):
 
         if not topic in self.image_topic_read_subscriptions.keys():
             self.image_topic_read_subscriptions[topic] = ImageTopicReadSubscription(ctrl_node=self,
-                                                                                    worker_ctrl_queue=self.image_worker_ctrl_queue, # if msg_type != ImageTopicReadSubscription.STREAM_MSG_TYPE else None),
+                                                                                    worker_ctrl_queue=self.video_worker_ctrl_queue if IsEncodedStreamType(msg_type) else self.image_worker_ctrl_queue, # if msg_type != ImageTopicReadSubscription.STREAM_MSG_TYPE else None),
                                                                                     topic=topic,
                                                                                     msg_type=msg_type,
                                                                                     qos=qos,
+                                                                                    blocking_reads_executor=self.image_read_executor,
                                                                                     log_message_every_sec=self.log_message_every_sec
                                                                                     # clock_rate=1000000000,
                                                                                     # time_base=1,
@@ -1243,10 +1247,25 @@ class BridgeController(Node, BridgeControllerConfig):
 
 async def main_async():
 
+    if not os.path.exists('/ros2_ws/phntm_devices_initialized'):
+        print(c('First run, initializing udev rules for /dev (bcs Picam)', 'magenta'))
+        process = subprocess.Popen([f'{ROOT}/../scripts/reload-devices.sh'])
+        process.wait()
+        print(c('Udev rules initialized', 'magenta'))
+        await asyncio.sleep(1.0) # needs a bit for the udev rules to take effect and picam init sucessfuly
+
+    rclpy.init()
+    
     # reader runs on a separate process
     workers_enabled = mp.Value('b', 1, lock=False)
     
-    # reader_out_image_queue = mp.Queue()
+    video_worker_ctrl_queue = mp.Queue()
+    video_topic_read_worker = mp.Process(target=TopicProcessorWorker,
+                                      args=(workers_enabled,
+                                            'video',
+                                            video_worker_ctrl_queue))
+    video_topic_read_worker.start()
+    
     data_worker_ctrl_queue = mp.Queue()
     data_topic_read_worker = mp.Process(target=TopicProcessorWorker,
                                       args=(workers_enabled,
@@ -1261,18 +1280,9 @@ async def main_async():
                                             image_worker_ctrl_queue))
     image_topic_read_worker.start()
 
-    rclpy.init()
-
-    if not os.path.exists('/ros2_ws/phntm_devices_initialized'):
-        print(c('First run, initializing udev rules for /dev (bcs Picam)', 'magenta'))
-        process = subprocess.Popen([f'{ROOT}/../scripts/reload-devices.sh'])
-        process.wait()
-        print(c('Udev rules initialized', 'magenta'))
-        await asyncio.sleep(1.0) # needs a bit for the udev rules to take effect and picam init sucessfuly
-
-
     try:
-        bridge_node = BridgeController(image_worker_ctrl_queue=image_worker_ctrl_queue,
+        bridge_node = BridgeController(video_worker_ctrl_queue=video_worker_ctrl_queue,
+                                       image_worker_ctrl_queue=image_worker_ctrl_queue,
                                        data_worker_ctrl_queue=data_worker_ctrl_queue)
         sio_task = asyncio.get_event_loop().create_task(bridge_node.spin_sio_client(), name="sio_task")
         # spin_future = asyncio.get_event_loop().run_in_executor(None, lambda: rclpy.spin(bridge_node))
@@ -1292,8 +1302,13 @@ async def main_async():
     bridge_node.shutting_down = True
 
     image_worker_ctrl_queue.close();
+    data_worker_ctrl_queue.close();
+    video_worker_ctrl_queue.close();
     workers_enabled.value = 0 # stops worker threads
     
+    video_topic_read_worker.join()
+    video_topic_read_worker.terminate()
+        
     image_topic_read_worker.join()
     image_topic_read_worker.terminate()
     

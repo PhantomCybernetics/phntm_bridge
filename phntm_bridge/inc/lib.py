@@ -14,8 +14,24 @@ import time
 
 import threading
 
+def qos_equal(a:QoSProfile, b:QoSProfile) -> bool:
+    if not a and b or not b and a:
+        return False
+    
+    if a.depth != b.depth:
+        return False
+    if a.history != b.history:
+        return False
+    if a.reliability != b.reliability:
+        return False
+    if a.durability != b.durability:
+        return False
+    if a.lifespan != b.lifespan:
+        return False
+    if a.deadline != b.deadline:
+        return False
 
-
+    return True
 
 # def key_in_tuple_list(key:str, search_list:list[tuple]):
 #     for item in search_list:

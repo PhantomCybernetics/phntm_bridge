@@ -13,6 +13,7 @@ import traceback
 import sys
 import concurrent.futures
 
+import pickle
 import numpy as np
 import cv2
 from aiortc.codecs import Vp8Encoder
@@ -73,6 +74,9 @@ def IsImageType(s:str) -> bool:
            s == ImageTopicReadSubscription.COMPRESSED_MSG_TYPE or \
            s == ImageTopicReadSubscription.STREAM_MSG_TYPE
 
+def IsEncodedStreamType(s:str) -> bool:
+    return s == ImageTopicReadSubscription.STREAM_MSG_TYPE
+
 class ImageTopicReadSubscription:
 
     MSG_TYPE:str = 'sensor_msgs/msg/Image'
@@ -80,7 +84,7 @@ class ImageTopicReadSubscription:
     STREAM_MSG_TYPE:str = 'ffmpeg_image_transport_msgs/msg/FFMPEGPacket'
     
     # def __init__(self, sub:Subscription, peers:list[str], frame_processor, processed_frames_h264:mp.Queue, processed_frames_v8:mp.Queue, make_keyframe_shared:mp.Value, make_h264_shared:mp.Value, make_v8_shared:mp.Value):
-    def __init__(self, ctrl_node:Node, msg_type:str, worker_ctrl_queue:mp.Queue, topic:str, qos:QoSProfile, log_message_every_sec:float=5.0):
+    def __init__(self, ctrl_node:Node, msg_type:str, worker_ctrl_queue:mp.Queue, topic:str, qos:QoSProfile, blocking_reads_executor, log_message_every_sec:float=5.0):
 
         self.sub:Subscription|bool = None
         self.ctrl_node:Node = ctrl_node
@@ -89,6 +93,7 @@ class ImageTopicReadSubscription:
         self.pipe_out:Connection = None
         self.pipe_worker:Connection = None
         self.read_task:asyncio.Coroutine = None
+        self.last_read_task:asyncio.Coroutine = None
         self.peers:dict = {} #target outbound dcs
         self.topic:str = topic
         self.msg_type:str = msg_type
@@ -102,7 +107,6 @@ class ImageTopicReadSubscription:
         
         self.logged = False
         self.ignore = False
-        self.first_frame_time_ns = -1
 
         # self.reliability:QoSReliabilityPolicy = reliability
         # self.durability:DurabilityPolicy = durability
@@ -110,7 +114,7 @@ class ImageTopicReadSubscription:
         
         self.on_msg_cb:Callable = None
         self.event_loop = asyncio.get_event_loop() # save current
-        self.last_send_future:asyncio.Future = None
+        # self.last_send_future:asyncio.Future = None
 
         # self.hflip = hflip
         # self.vflip = vflip
@@ -125,7 +129,7 @@ class ImageTopicReadSubscription:
         
         # self.bridge_time_started_ns:int = bridge_time_started_ns
         
-        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=3, thread_name_prefix=f'{topic}_read')
+        self.executor = blocking_reads_executor
 
         #print(f'TopicReadSubscription:__init__() {threading.get_ident()}')
 
@@ -133,39 +137,47 @@ class ImageTopicReadSubscription:
 
         if self.sub != None: #running
             if id_peer in self.peers.keys():
-                self.ctrl_node.get_logger().warn(f'Streamer was already running for {self.topic} with peer {id_peer} subscribed! old track_id was { self.peers[id_peer]._track_id} new track_id is {sender._track_id}')
+                self.ctrl_node.get_logger().warn(f'Streamer was already running for {self.topic} with peer {id_peer} subscribed! old track_id was { self.peers[id_peer]["sender"]._track_id} new track_id is {sender._track_id}')
             else:
                 self.ctrl_node.get_logger().info(f'Streamer was already running for {self.topic}, adding peer {id_peer}, track_id={sender._track_id}')    
-            self.peers[id_peer] = sender            
+            self.peers[id_peer] = {
+                'sender': sender,
+                'last_send_task': None,
+                'first_ts': -1,
+                'last_ts': -1
+            }
             # print(self.peers.keys())
             return True #all done, one sub for all
 
         if self.worker_ctrl_queue: # subscribe on processor's process
 
-            self.pipe_out, self.pipe_worker = mp.Pipe()
+            self.pipe_out, self.pipe_worker = mp.Pipe(duplex=False)
 
-            self.worker_ctrl_queue.put_nowait({
-                                                'action': 'subscribe',
-                                                'pipe': self.pipe_worker,
-                                                'topic': self.topic,
-                                                'qos': {
-                                                    'history': self.qos.history,
-                                                    'depth': self.qos.depth,
-                                                    'reliability':self.qos.reliability,
-                                                    'durability':self.qos.durability,
-                                                    'lifespan': -1 if self.qos.lifespan == Infinite else self.qos.lifespan.total_seconds()
-                                                },
-                                                'msg_type': self.msg_type,
-                                            #    'hflip': self.hflip,
-                                            #    'vflip': self.vflip,
-                                            #    'bitrate': self.bitrate,
-                                            #    'framerate': self.framerate,
-                                            #    'clock_rate': self.clock_rate,
-                                            #    'time_base': self.time_base,
-                                               })
-            self.sub = True
+            try:
+                self.worker_ctrl_queue.put_nowait({
+                                                    'action': 'subscribe',
+                                                    'pipe': self.pipe_worker,
+                                                    'topic': self.topic,
+                                                    'qos': {
+                                                        'history': self.qos.history,
+                                                        'depth': self.qos.depth,
+                                                        'reliability':self.qos.reliability,
+                                                        'durability':self.qos.durability,
+                                                        'lifespan': -1 if self.qos.lifespan == Infinite else self.qos.lifespan.nanoseconds
+                                                    },
+                                                    'msg_type': self.msg_type,
+                                                #    'hflip': self.hflip,
+                                                #    'vflip': self.vflip,
+                                                #    'bitrate': self.bitrate,
+                                                #    'framerate': self.framerate,
+                                                #    'clock_rate': self.clock_rate,
+                                                #    'time_base': self.time_base,
+                                                })
+                self.sub = True
+            except Exception as e:
+                self.ctrl_node.get_logger().error(f'Error subscribing to {self.topic}: {e}')
 
-            self.read_task = self.event_loop.create_task(self.read_piped_images())
+            self.read_task = self.event_loop.create_task(self.read_piped_frames())
 
         # else: #subscribe here on ctrl node's process
         #     #print(f'TopicReadSubscription:start() {threading.get_ident()}')
@@ -197,7 +209,12 @@ class ImageTopicReadSubscription:
         #         self.ctrl_node.get_logger().error(f'Failed subscribing to topic {self.topic}, msg class={self.msg_type}, peer={id_peer}')
         #         return False
 
-        self.peers[id_peer] = sender
+        self.peers[id_peer] = {
+            'sender': sender,
+            'last_send_task': None,
+            'first_ts': -1,
+            'last_ts': -1
+        }
 
         return True
 
@@ -205,72 +222,38 @@ class ImageTopicReadSubscription:
         self.ctrl_node.get_logger().info(f'Image reader for {self.topic} received pipe close')
         self.pipe_out.close()
         self.read_task.cancel()
-        self.executor.shutdown(False, cancel_futures=True) 
+        # self.executor.shutdown(False, cancel_futures=True) 
 
-    async def read_piped_images(self):
+    async def read_piped_frames(self):
         while self.read_task and not self.read_task.cancelled():
             try:
-                res = await self.event_loop.run_in_executor(self.executor, self.pipe_out.recv) #blocks
+                # if self.last_read_task and not self.last_read_task.done():
+                #     continue
+                self.last_read_task = self.event_loop.run_in_executor(self.executor, self.pipe_out.recv) #blocks
+                res = await self.last_read_task
+                # res = await self.last_read_task
                 if 'msg' in res and res['msg'] == None: # closing pipe from the worker
                     self.clear_pipe()
                     return
+                
             except (KeyboardInterrupt, asyncio.CancelledError):
-                print(f'read_piped_images for {self.topic} got err')
+                print(f'read_piped_frames for {self.topic} got err')
                 return
+            except pickle.UnpicklingError as e:
+                self.ctrl_node.get_logger().error(f'Exception while unpickling latest from frame pipe {self.topic}: {str(e)}')
+                await asyncio.sleep(0)
+                continue # try again
+            except EOFError:
+                self.ctrl_node.get_logger().error(f'EOFError while reading latest from frame pipe {self.topic}')
+                await asyncio.sleep(0)
+                continue # try again
             except Exception as e:
-                self.ctrl_node.get_logger().error(f'Exception while reading latest from image pipe {self.topic}: {str(e)}')
+                self.ctrl_node.get_logger().error(f'Exception while reading latest from frame pipe {self.topic}: {str(e)}')
                 self.sub = None
                 return
             
             await self.on_msg(res)
-
-    async def on_raw_msg(self, raw_msg):
-        
-        try:
-        
-            if self.msg_type == ImageTopicReadSubscription.STREAM_MSG_TYPE:
-                
-                frame:FFMPEGPacket = deserialize_message(raw_msg, FFMPEGPacket)
-                size = len(frame.data)
-                
-                if frame.encoding != 'h.264':
-                    print(c(f'Received unsupported stream frame data for {self.topic}, format={frame.encoding} size={len(frame.data)}B; not processing', 'red'))
-                    self.ignore = True
-                    return
-                
-                if not self.logged:
-                    self.logged = True
-                    print(c(f'Processing stream frame data for {self.topic}, encoding={frame.encoding} size={size}B; ', 'cyan'))
-                    
-                if size == 0:
-                    return
-                
-                if self.first_frame_time_ns == -1:
-                    self.first_frame_time_ns = frame.pts
-                
-                stamp_ns = frame.pts - self.first_frame_time_ns
-                
-                # we expect folluu encoded frame and only need to packetize it for transport
-                p = Packet(frame.data)
-                p.pts = stamp_ns
-                p.time_base = fractions.Fraction(1, 1000000000)
-                
-                global encoder_h264
-                if encoder_h264 == None:
-                    encoder_h264 = H264Encoder()
-                
-                packets, ts =  encoder_h264.pack(p)
-                
-                await self.on_msg({
-                        'topic': self.topic,
-                        'frame_packets': packets,
-                        'timestamp': ts,
-                        'keyframe': frame.flags == 1, # don't skip keyframes
-                    })
-        except Exception as e:
-            print(c(f'Exception in on_raw_msg:\n {str(e)}', 'red'))
-            self.ignore = True
-            return
+            await asyncio.sleep(0)
 
 
     # called either by ctrl node's process or when data is received via reader_out_queue (called on ctrl node's process)
@@ -280,55 +263,71 @@ class ImageTopicReadSubscription:
         self.last_msg_time = time.time()
 
         keyframe=reader_res['keyframe']
-        timestamp=reader_res['timestamp']
+        # timestamp=reader_res['timestamp']
         frame_packets=reader_res['frame_packets']
         # video_time_base=reader_res['time_base']
 
         #print(f'TopicReadSubscription:on_msg() {threading.get_ident()}')
+        try:
+            log_msg = False
+            if self.num_received == 1: # first data in
+                log_msg = True
+                self.ctrl_node.get_logger().debug(f'👁️  Receiving {len(frame_packets)} frame packets from {self.topic}')
 
-        log_msg = False
-        if self.num_received == 1: # first data in
-            log_msg = True
-            self.ctrl_node.get_logger().debug(f'👁️  Receiving {len(frame_packets)} frame packets from {self.topic}')
+            if self.last_log < 0 or self.last_msg_time-self.last_log > self.log_message_every_sec:
+                log_msg = True
+                self.last_log = self.last_msg_time #last logged now
 
-        if self.last_log < 0 or self.last_msg_time-self.last_log > self.log_message_every_sec:
-            log_msg = True
-            self.last_log = self.last_msg_time #last logged now
-    
-        for id_peer in dict.fromkeys(self.peers.keys(),[]):
-            
-            # if id_peer in self.last_frame_tasks.keys() \
-            # and not self.last_frame_tasks[id_peer].done():
-            #     # and not keyframe:
-            #     continue
-            
-            if not self.peers[id_peer].pc or self.peers[id_peer].pc.connectionState == 'failed' \
-            or self.peers[id_peer].transport.state == "closed":
-                self.ctrl_node.get_logger().info(f'👁️  Sending {self.topic} to id_peer={id_peer} / id_stream= {str(self.peers[id_peer]._stream_id)} failed; pc={self.peers[id_peer].pc.connectionState}, transport={self.peers[id_peer].transport.state}')
-                if self.peers[id_peer].transport.state != "closed":
-                    self.event_loop.create_task(self.peers[id_peer].transport.stop())
-                del self.peers[id_peer]
-                continue
+            ts_frame = reader_res['sec'] * NS_TO_SEC + reader_res['nsec']
+            for id_peer in dict.fromkeys(self.peers.keys(),[]):
+                
+                if self.peers[id_peer]['last_send_task'] \
+                    and not self.peers[id_peer]['last_send_task'].done():
+                    # and not keyframe:
+                    continue
+                
+                peer_sender = self.peers[id_peer]['sender'];
+                if not peer_sender.pc or peer_sender.pc.connectionState == 'failed' \
+                or peer_sender.transport.state == "closed":
+                    self.ctrl_node.get_logger().info(f'👁️  Sending {self.topic} to id_peer={id_peer} / id_stream= {str(peer_sender._stream_id)} failed; pc={peer_sender.pc.connectionState}, transport={peer_sender.transport.state}')
+                    if peer_sender.transport.state != "closed":
+                        self.event_loop.create_task(peer_sender.transport.stop())
+                    del self.peers[id_peer]
+                    continue
 
-            if self.peers[id_peer].pc.connectionState != 'connected':
-                continue
+                if peer_sender.pc.connectionState != 'connected':
+                    self.peers[id_peer]['first_ts'] = -1
+                    self.peers[id_peer]['last_ts'] = -1
+                    continue
+                
+                if self.peers[id_peer]['first_ts'] < 0:
+                    self.peers[id_peer]['first_ts'] = ts_frame
+                peer_pts = ts_frame - self.peers[id_peer]['first_ts']
 
-            if log_msg:
-                self.ctrl_node.get_logger().info(f'👁️  Sending {len(frame_packets)} pkts of {self.topic} to id_peer={id_peer} / id_stream= {str(self.peers[id_peer]._stream_id)}, total received: {self.num_received}, ts={timestamp}, sender={str(id(self.peers[id_peer]))}, pc={self.peers[id_peer].pc.connectionState} transport={self.peers[id_peer].transport.state}')
-            # if timestamp == 0:
-            #     offset_ns = time.time_ns()-self.bridge_time_started_ns
-            #     self.peers[id_peer].timestamp_origin = convert_timebase(offset_ns, SRC_VIDEO_TIME_BASE, VIDEO_TIME_BASE)
+                if peer_pts <= self.peers[id_peer]['last_ts']:
+                    continue
+                self.peers[id_peer]['last_ts'] = peer_pts
+                
+                if log_msg:
+                    self.ctrl_node.get_logger().info(f'👁️  Sending {len(frame_packets)} pkts of {self.topic} to id_peer={id_peer} / id_stream= {str(peer_sender._stream_id)}, total received: {self.num_received}, peer_pts={peer_pts}, sender={str(id(self.peers[id_peer]))}, pc={peer_sender.pc.connectionState} transport={peer_sender.transport.state}')
+                # if timestamp == 0:
+                #     offset_ns = time.time_ns()-self.bridge_time_started_ns
+                #     self.peers[id_peer].timestamp_origin = convert_timebase(offset_ns, SRC_VIDEO_TIME_BASE, VIDEO_TIME_BASE)
 
-            try:
-                self.last_frame_tasks[id_peer] = self.event_loop.create_task(self.peers[id_peer].send_direct(frame_data=frame_packets, stamp_converted=timestamp, keyframe=keyframe))                
-            except Exception as e:
-                self.logger.error(f'👁️  Exception while sending {self.topic} to id_peer={id_peer} / id_stream= {str(self.peers[id_peer]._stream_id)}, {e}; pc={self.peers[id_peer].pc.connectionState}, transport={self.peers[id_peer].transport.state}')
-                pass
+                try:
+                    self.peers[id_peer]['last_send_task'] = self.event_loop.create_task(peer_sender.send_direct(frame_data=frame_packets, stamp_converted=peer_pts, keyframe=keyframe))                
+                except Exception as e:
+                    self.logger.error(f'👁️  Exception while sending {self.topic} to id_peer={id_peer} / id_stream= {str(peer_sender._stream_id)}, {e}; pc={peer_sender.pc.connectionState}, transport={peer_sender.transport.state}')
+                    pass
 
-        if self.on_msg_cb is not None:
-            self.on_msg_cb()
-        else:
-            self.ctrl_node.get_logger().debug(f'on_msg_cb is {self.on_msg_cb}')
+            if self.on_msg_cb is not None:
+                self.on_msg_cb()
+            else:
+                self.ctrl_node.get_logger().debug(f'on_msg_cb is {self.on_msg_cb}')
+                
+        except Exception as e:
+            self.ctrl_node.get_logger().error(f'Error in frame read handler {e}')
+        
 
     def stop(self, id_peer:str) -> bool:
 
