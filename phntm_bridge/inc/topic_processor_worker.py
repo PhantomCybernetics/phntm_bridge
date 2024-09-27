@@ -11,6 +11,9 @@ from rclpy.callback_groups import CallbackGroup
 from rclpy.constants import S_TO_NS
 from rclpy.qos import QoSHistoryPolicy, QoSReliabilityPolicy, DurabilityPolicy
 from rcl_interfaces.msg import ParameterDescriptor, ParameterType, FloatingPointRange, IntegerRange
+import pickle
+import marshal
+from rclpy.callback_groups import ReentrantCallbackGroup
 
 from termcolor import colored as c
 
@@ -49,23 +52,23 @@ NS_TO_SEC = 1000000000
 encoder_h264:H264Encoder = None
 
 # runs as a separate process for bette isolation and lower ctrl/cam latency
-def TopicProcessorWorker(running_shared:mp.Value, reader_label:str, ctrl_queue:mp.Queue):
+def TopicProcessorWorker(running_shared:mp.Value, reader_label:str, ctrl_queue:mp.Queue, out_queue:mp.Queue):
 
     print(f'Topic Reader {reader_label}: starting')
     
-    # rclpy.init()
     yaml_fname = '/ros2_ws/phntm_bridge_params.yaml'
     with open(yaml_fname, 'r') as file:
         yaml_config = yaml.safe_load(file)
 
     print(f'Worker {reader_label} loaded config from {str(yaml_fname)}')
 
-    rcl_ctx = Context()
-    rcl_ctx.init() # This must be done before any ROS nodes can be created.
+    # rclpy.init()
+    # rcl_ctx = Context()
+    # rcl_ctx.init() # This must be done before any ROS nodes can be created.
     # rcl_cbg = MutuallyExclusiveCallbackGroup()
-    rcl_executor = SingleThreadedExecutor(context=rcl_ctx)
+    # rcl_executor = SingleThreadedExecutor()
     reader_node = Node(node_name=f'phntm_worker_{reader_label}',
-                       context=rcl_ctx,
+                    #    context=rcl_ctx,
                        enable_rosout=False,
                        use_global_arguments=False)
 
@@ -78,7 +81,7 @@ def TopicProcessorWorker(running_shared:mp.Value, reader_label:str, ctrl_queue:m
 
     # reader_node.load_config(self.get_logger())
 
-    w = Worker(reader_node, reader_label, rcl_executor, running_shared, ctrl_queue, yaml_config)
+    w = Worker(reader_node, reader_label, running_shared, ctrl_queue, out_queue, yaml_config)
     try:
         asyncio.run(w.worker_loop())
     except (asyncio.CancelledError, KeyboardInterrupt):
@@ -90,85 +93,62 @@ def TopicProcessorWorker(running_shared:mp.Value, reader_label:str, ctrl_queue:m
     reader_node.get_logger().warn(f'Stopping')
 
     # reader_node.destroy_node()
-    rcl_executor.shutdown()
+    rclpy.shutdown()
     
 
 class Worker:
     
-    def __init__(self, reader_node, reader_label, rcl_executor, running_shared, ctrl_queue, yaml_config) -> None:
+    def __init__(self, reader_node, reader_label, running_shared, ctrl_queue, out_queue, yaml_config) -> None:
         self.reader_node = reader_node
         self.reader_label = reader_label
-        self.rcl_executor = rcl_executor
+        # self.rcl_executor = rcl_executor
         self.running_shared = running_shared
         self.ctrl_queue = ctrl_queue
+        self.out_queue = out_queue
         self.logger = self.reader_node.get_logger()
         self.active_subs:dict[str:dict] = {}
         self.newest_messages_by_topic:dict[str:list] = {}
         self.yaml_config = yaml_config['/**']['ros__parameters']
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
+        self.rcl_cg = ReentrantCallbackGroup()
+        self.time_deserialization = 0.0
+        self.time_packet_init = 0.0
+        self.time_packetization = 0.0
+        self.time_serialization = 0.0
+        self.num_samples = 0  
         
+        self.node_spin_task = None
+    
+    
     async def spin_node_loop(self):
-
         self.logger.info(f'Spining the node...')
         while self.running_shared.value > 0:
-            rclpy.spin_once(self.reader_node,
-                            executor=self.rcl_executor,
-                            timeout_sec=0.1)
-            # rclpy.spin_once(reader_node, executor=rcl_executor, timeout_sec=0.1)
+            rclpy.spin_once(self.reader_node, timeout_sec=0.1)
             await asyncio.sleep(0)
-
         self.logger.info(f'Done spinning node')
 
 
     async def worker_loop(self):
         
-        asyncio.get_event_loop().create_task(self.spin_node_loop())
-        # spin_future = asyncio.Future()
-        # asyncio.get_event_loop().run_in_executor(None, lambda: rclpy.spin_until_future_complete(reader_node, spin_future, executor=rcl_executor, timeout_sec=0.1))
+        try:
+            if not self.node_spin_task:
+                self.reader_node.get_logger().info(f'Spinning the node...')
+                self.node_spin_task = asyncio.get_event_loop().create_task(self.spin_node_loop())
+        except Exception as e:
+            self.reader_node.get_logger().error(f'Exception while spinning reader node: {e}')
 
+        #recieve cmd messages
         while self.running_shared.value > 0:
-            # print(c(f'yellow! {reader_node}', 'yellow'))
-            # rclpy.spin_once(self.reader_node, executor=self.rcl_executor, timeout_sec=0.1)
-
-            #recieve cmd messages
             while True:
                 try:
                     ctrl_cmd = self.ctrl_queue.get(block=False)
-                    self.on_cmd(ctrl_cmd)
+                    await self.on_cmd(ctrl_cmd)
                 except Empty:
-                    break # all messages processed
+                    break # all cmd messages processed
+            await asyncio.sleep(0.1) # cmds can go slower
 
-            #dropping older data here
-            # TODO THIS NEEDS TO MIX TOPICS MORE!
-            # for topic in newest_messages_by_topic.keys():
-            #     if not topic in active_subs.keys():
-            #         continue #old data for unsubscribed
 
-            #     for msg in newest_messages_by_topic[topic]:
-            #         # reader_node.get_logger().info(f'I can has message for {topic}')
-            #         try:
-            #             if active_subs[topic]['args']['msg_type'] == ImageTopicReadSubscription.MSG_TYPE:
-
-            #                 if 'processing_task' in active_subs[topic].keys() and not active_subs[topic]['processing_task'].done():
-            #                     continue #skip this frame as the previous one hasn't been consumed yet
-            #                 # reader_node.get_logger().info(f'Processing {topic}')
-            #                 image_task = asyncio.get_event_loop().create_task(on_image_data(topic=topic, msg=msg, out_pipe=active_subs[topic]['pipe'], subscription=active_subs[topic], image_push_tasks=image_push_tasks))
-            #                 active_subs[topic]['processing_task'] = image_task
-
-            #             else:
-            #                 # reader_node.get_logger().info(f'Pushing {topic}')
-            #                 await on_data(topic=topic, msg=msg, out_pipe=active_subs[topic]['pipe'], subscription=active_subs[topic], data_push_tasks=data_push_tasks)
-            #                 # active_subs[topic]['pipe'].
-            #                 # data_out_queue.put_nowait({
-            #                 #     'topic': topic, 'msg': msg
-            #                 # }) #put in output queue
-            #         except Full:
-            #             reader_node.get_logger().warn(f'Topic Reader: Output queue full, dropping {topic} msg')
-            #             pass
-            # newest_messages_by_topic.clear()
-            await asyncio.sleep(0)
-
-    def on_cmd(self, ctrl_cmd:dict):
+    async def on_cmd(self, ctrl_cmd:dict):
 
         topic = ctrl_cmd['topic']
 
@@ -181,7 +161,7 @@ class Worker:
                 if 'push_task' in self.active_subs[topic].keys() and self.active_subs[topic]['push_task'] and not self.active_subs[topic]['push_task'].done():
                     self.logger.info(f'Cancelling unfinished push task for {topic}')
                     self.active_subs[topic]['push_task'].cancel()
-                if 'pipe' in self.active_subs[topic].keys():
+                if 'pipe' in self.active_subs[topic].keys() and self.active_subs[topic]['pipe']:
                     self.logger.info(f'Closing pipe for {topic}')
                     self.active_subs[topic]['push_task'] = asyncio.get_event_loop().run_in_executor(self.active_subs[topic]['executor'], self.active_subs[topic]['pipe'].send, {
                         'topic': topic,
@@ -201,6 +181,7 @@ class Worker:
             )
 
             pipe = ctrl_cmd['pipe'] if 'pipe' in ctrl_cmd.keys() else None
+            # queue = ctrl_cmd['queue'] if 'queue' in ctrl_cmd.keys() else None
 
             message_class = None
             try:
@@ -214,16 +195,16 @@ class Worker:
             try:
                 self.logger.info(c(f'Subscribing to topic {topic} {msg_type} qosProfile={qosProfile}', 'cyan'))
                 # no_skip:bool = ctrl_cmd['no_skip'] if 'no_skip' in ctrl_cmd.keys() else False
-                
+                loop = asyncio.get_event_loop()
                 cb = None
                 if msg_type == ImageTopicReadSubscription.MSG_TYPE:
                     cb = lambda msg: self.on_raw_image_data(topic, msg)
                 elif msg_type == ImageTopicReadSubscription.COMPRESSED_MSG_TYPE:
                     cb = lambda msg: self.on_compressed_image_data(topic, msg)
                 elif msg_type == ImageTopicReadSubscription.STREAM_MSG_TYPE:
-                    cb = lambda msg: asyncio.get_event_loop().create_task(self.on_stream_image_data(topic, msg))
+                    cb = lambda msg: loop.create_task(self.on_stream_image_data(topic, msg))
                 else:
-                    cb = lambda msg: asyncio.get_event_loop().create_task(self.on_data(topic, msg))
+                    cb = lambda msg: loop.create_task(self.on_data(topic, msg))
                 
                 sub = self.reader_node.create_subscription(
                                 msg_type=message_class,
@@ -237,13 +218,9 @@ class Worker:
                      return
                 
                 args = ctrl_cmd
-                args.pop('action')
-                if 'reliability' in args.keys():
-                    args.pop('reliability')
-                if 'durability' in args.keys():
-                    args.pop('durability')
-                if 'pipe' in args.keys():
-                    args.pop('pipe')
+                for key in [ 'action', 'reliability', 'durability', 'pipe']:
+                    if key in args.keys():
+                        args.pop(key)
 
                 self.active_subs[topic] = {
                     'sub': sub,
@@ -279,7 +256,6 @@ class Worker:
         except Exception as ee:
             self.logger.error(f'Pipe close {topic} exception {topic}: {ee}')
 
-
 # def save_newest_msg(topic:str, msg:any, newest_messages_by_topic:dict[str:list], no_skip:bool, pipe:Connection):
 #     # reader_node.get_logger().info(f' >> {msg_topic}, got {len(msg)} B')
 
@@ -293,9 +269,9 @@ class Worker:
 #     else:
 #         newest_messages_by_topic[topic] = [ msg ]
 
-
     async def on_data(self, topic:str, msg:any):
 
+        print(f'on_data {topic}')
         if not topic in self.active_subs.keys():
             return
         
@@ -464,8 +440,10 @@ class Worker:
         #         return
         
         try:
+            start = time.time()
             frame:FFMPEGPacket = deserialize_message(msg, FFMPEGPacket)
             size = len(frame.data)
+            self.time_deserialization += time.time() - start
         except Exception as e:
             self.logger.error(f'Error deserializing frame of {topic}, msg size={len(msg)}B: {e}')
             return
@@ -476,57 +454,88 @@ class Worker:
             
         if size == 0:
             return
-        
+
         is_keyframe = (frame.flags == 1)
         
-        if sub['push_task'] and not sub['push_task'].done(): # dropping previous frame here
-            # if is_keyframe:
-            #     await sub['push_task']
-            # else:
-            #     return
-            await sub['push_task']
+        # await asyncio.sleep(0)
         
-        if not 'first_frame_time_ns' in sub.keys():
-            sub['first_frame_time_ns'] = frame.pts + 0
-        
-        stamp_ns = frame.pts - sub['first_frame_time_ns']
-        
+        # if not 'first_frame_time_ns' in sub.keys():
+        #     sub['first_frame_time_ns'] = frame.pts + 0 
+        # stamp_ns = frame.pts - sub['first_frame_time_ns']
         # self.logger.info(f'frame.pts was {(frame.pts/1000000000.0)}s, h.sec={frame.header.stamp.sec} h.nsec={frame.header.stamp.nanosec}')
         
         # we expect fully encoded frames here and only need to packetize them for transport
         try:
+            start = time.time()
             p = Packet(frame.data)
+            p.pts = frame.header.stamp.sec * NS_TO_SEC + frame.header.stamp.nanosec
+            p.time_base = fractions.Fraction(1, NS_TO_SEC) # will be converted to 1/9000
+            self.time_packet_init += time.time() - start
         except Exception as e:
             self.logger.error(f'Error casting frame to packet for {topic}, data size size={len(frame.data)}B: {e}')
             return
-        
-        p.pts = stamp_ns
-        p.time_base = fractions.Fraction(1, NS_TO_SEC)
         
         global encoder_h264
         if encoder_h264 == None:
             encoder_h264 = H264Encoder()
 
         try:
+            start = time.time()
             packets, ts = encoder_h264.pack(p)
+            self.time_packetization += time.time() - start
         except Exception as e:
             self.logger.error(f'Error packing frame of {topic}, data size size={len(frame.data)}B: {e}')
             return
+
+        # sizes = []
+        # for p in packets:
+        #     sizes.append(len(p))
+        # self.logger.info(f'Got {size}B frame => {len(packets)} packs {sizes}')
+        
+        # if sub['push_task'] and not sub['push_task'].done(): # dropping previous frame here
+        #     # if is_keyframe:
+        #     #     await sub['push_task']
+        #     # else:
+        #     #     return
+        #     return
+        #     #await sub['push_task']
         
         try:
-            sub['push_task'] = asyncio.get_event_loop().run_in_executor(sub['executor'], sub['pipe'].send, {
+            start = time.time()
+            frame_transport = marshal.dumps({
                 'topic': topic,
                 'frame_packets': packets,
-                'sec': frame.header.stamp.sec,
-                'nsec': frame.header.stamp.nanosec,
+                'ts': ts,
                 'keyframe': is_keyframe, # don't skip keyframes
             })
-            sub['push_task_was_keyframe'] = is_keyframe
-            sub['push_task'].add_done_callback(lambda f: self.pipe_error_catcher(f, topic))
-            await sub['push_task']
+            self.time_serialization += time.time() - start
+            
+            try:
+                self.out_queue.put_nowait(frame_transport)
+            except Exception as e:
+                 self.logger.error(f'Error putting frame of {topic} into queue, data size size={len(frame.data)}B: {e}')
+            # sub['push_task'] = asyncio.get_event_loop().run_in_executor(sub['executor'], sub['pipe'].send_bytes, frame_transport)
+            # sub['push_task_was_keyframe'] = is_keyframe
+            # sub['push_task'].add_done_callback(lambda f: self.pipe_error_catcher(f, topic))
+            # await sub['push_task']
+            
         except Exception as e:
             self.logger.error(f'Error pushing frame of {topic}, data size size={len(frame.data)}B: {e}')
             return
+        
+        self.num_samples += 1
+        
+        if self.num_samples == 1000:
+            self.logger.info(f'Avg deserialization time: {self.time_deserialization:.20f}s')
+            self.logger.info(f'Avg packet init time: {self.time_packet_init:.20f}s')
+            self.logger.info(f'Avg packetization time: {self.time_packetization:.20f}s')
+            self.logger.info(f'Avg serialization time: {self.time_serialization:.20f}s')
+            self.time_deserialization = 0.0
+            self.time_packet_init = 0.0
+            self.time_packetization = 0.0
+            self.time_serialization = 0.0
+            self.num_samples = 0
+            
 
 
     def on_compressed_image_data(self, topic:str, msg:any):

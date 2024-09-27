@@ -93,7 +93,7 @@ class BridgeController(Node, BridgeControllerConfig):
     ##
     # node constructor
     ##
-    def __init__(self, video_worker_ctrl_queue:mp.Queue=None, image_worker_ctrl_queue:mp.Queue=None, data_worker_ctrl_queue:mp.Queue=None):
+    def __init__(self, video_worker_ctrl_queue:mp.Queue=None, video_worker_out_queue:mp.Queue=None, image_worker_ctrl_queue:mp.Queue=None, image_worker_out_queue:mp.Queue=None, data_worker_ctrl_queue:mp.Queue=None):
         super().__init__(node_name='phntm_bridge',
                          enable_rosout=False,
                          use_global_arguments=True)
@@ -156,7 +156,9 @@ class BridgeController(Node, BridgeControllerConfig):
             #self.data_led.off()
 
         self.video_worker_ctrl_queue:mp.Queue = video_worker_ctrl_queue
+        self.video_worker_out_queue:mp.Queue = video_worker_out_queue
         self.image_worker_ctrl_queue:mp.Queue = image_worker_ctrl_queue
+        self.image_worker_out_queue:mp.Queue = image_worker_out_queue
         self.data_worker_ctrl_queue:mp.Queue = data_worker_ctrl_queue
         
         self.image_read_executor = concurrent.futures.ThreadPoolExecutor(max_workers=10, thread_name_prefix=f'im_read')
@@ -924,20 +926,28 @@ class BridgeController(Node, BridgeControllerConfig):
         if not IsImageType(msg_type):
             return None
 
-        if not topic in self.image_topic_read_subscriptions.keys():
-            self.image_topic_read_subscriptions[topic] = ImageTopicReadSubscription(ctrl_node=self,
-                                                                                    worker_ctrl_queue=self.video_worker_ctrl_queue if IsEncodedStreamType(msg_type) else self.image_worker_ctrl_queue, # if msg_type != ImageTopicReadSubscription.STREAM_MSG_TYPE else None),
-                                                                                    topic=topic,
-                                                                                    msg_type=msg_type,
-                                                                                    qos=qos,
-                                                                                    blocking_reads_executor=self.image_read_executor,
-                                                                                    log_message_every_sec=self.log_message_every_sec
-                                                                                    # clock_rate=1000000000,
-                                                                                    # time_base=1,
-                                                                                    # bridge_time_started_ns=self.time_started_ns
-                                                                                    )
+        if IsEncodedStreamType(msg_type):
+            worker_type = 'video'
+            ctrl_queue = self.video_worker_ctrl_queue
+            out_queue = self.video_worker_out_queue
+        else:
+            worker_type = 'image'
+            ctrl_queue = self.image_worker_ctrl_queue
+            out_queue = self.image_worker_out_queue
+        
+        if not worker_type in self.image_topic_read_subscriptions.keys():
+            self.image_topic_read_subscriptions[worker_type] = ImageTopicReadSubscription(ctrl_node=self,
+                                                                                          worker_type=worker_type,
+                                                                                          worker_ctrl_queue=ctrl_queue,
+                                                                                          worker_out_queue=out_queue,
+                                                                                          blocking_reads_executor=self.image_read_executor,
+                                                                                          log_message_every_sec=self.log_message_every_sec,
+                                                                                          on_msg_cb=self.on_msg_blink # blinker
+                                                                                          # clock_rate=1000000000,
+                                                                                          # time_base=1,
+                                                                                          # bridge_time_started_ns=self.time_started_ns
+                                                                                          )
             asyncio.get_event_loop().create_task(self.introspection.start())
-            self.image_topic_read_subscriptions[topic].on_msg_cb = self.on_msg_blink # blinker
 
         if not topic in peer.video_tracks.keys():
             track = CameraVideoStreamTrack()
@@ -950,7 +960,7 @@ class BridgeController(Node, BridgeControllerConfig):
             preferences = list(filter(lambda x: x.mimeType == "video/H264", capabilities.codecs))
             transceiver.setCodecPreferences(preferences)
 
-            self.get_logger().info(f'sender._stream_id {sender._stream_id} >> {sender._track_id}')
+            # self.get_logger().info(f'sender._stream_id {sender._stream_id} >> {sender._track_id}')
             sender._stream_id = sender._track_id
             sender.name = topic
             sender.pc = peer.pc
@@ -964,9 +974,13 @@ class BridgeController(Node, BridgeControllerConfig):
             peer.video_tracks[topic] = sender
             # await sender.track.set_frame(av.VideoFrame(width=640, height=480, format='rgb24'))
 
-        if not self.image_topic_read_subscriptions[topic].start(peer.id, peer.video_tracks[topic]):
-            self.get_logger().error(f'Image topic {topic} failed to subscribe, {peer}')
-            return { 'err': 2, 'msg': f'Image topic {topic} failed to subscribe'}
+        if not self.image_topic_read_subscriptions[worker_type].start(id_peer=peer.id,
+                                                                      msg_type=msg_type,
+                                                                      topic=topic,
+                                                                      qos=qos,
+                                                                      peer_sender=peer.video_tracks[topic]):
+            self.get_logger().error(f'Image topic {worker_type} failed to subscribe {topic} for {peer}')
+            return { 'err': 2, 'msg': f'Image topic {worker_type} failed to subscribe {topic}'}
 
         return [ peer.video_tracks[topic]._track_id, msg_type ]
 
@@ -979,10 +993,13 @@ class BridgeController(Node, BridgeControllerConfig):
             await peer.video_tracks[topic].stop()
             peer.video_tracks.pop(topic)
 
-        if topic in self.image_topic_read_subscriptions.keys():
-            if self.image_topic_read_subscriptions[topic].stop(peer.id): # subscriber destroyed
-                self.get_logger().debug(f'No longer reading {topic}')
-                self.image_topic_read_subscriptions.pop(topic)
+        msg_type:str = self.introspection.discovered_topics[topic]['msg_type']
+        worker_type = 'video' if IsEncodedStreamType(msg_type) else 'image'
+        
+        if worker_type in self.image_topic_read_subscriptions.keys():
+            if self.image_topic_read_subscriptions[worker_type].stop(peer.id, topic): # truw if subscriber empty
+                self.get_logger().debug(f'Removing {worker_type} worker')
+                self.image_topic_read_subscriptions.pop(worker_type)
                 asyncio.get_event_loop().create_task(self.introspection.start())
 
 
@@ -1260,29 +1277,38 @@ async def main_async():
     workers_enabled = mp.Value('b', 1, lock=False)
     
     video_worker_ctrl_queue = mp.Queue()
+    video_worker_out_queue = mp.Queue(20)
     video_topic_read_worker = mp.Process(target=TopicProcessorWorker,
                                       args=(workers_enabled,
                                             'video',
-                                            video_worker_ctrl_queue))
+                                            video_worker_ctrl_queue,
+                                            video_worker_out_queue
+                                            ))
     video_topic_read_worker.start()
     
     data_worker_ctrl_queue = mp.Queue()
     data_topic_read_worker = mp.Process(target=TopicProcessorWorker,
                                       args=(workers_enabled,
                                             'data',
-                                            data_worker_ctrl_queue))
+                                            data_worker_ctrl_queue,
+                                            None))
     data_topic_read_worker.start()
     
     image_worker_ctrl_queue = mp.Queue()
+    image_worker_out_queue = mp.Queue(20)
     image_topic_read_worker = mp.Process(target=TopicProcessorWorker,
                                       args=(workers_enabled,
                                             'img',
-                                            image_worker_ctrl_queue))
+                                            image_worker_ctrl_queue,
+                                            image_worker_out_queue
+                                            ))
     image_topic_read_worker.start()
 
     try:
         bridge_node = BridgeController(video_worker_ctrl_queue=video_worker_ctrl_queue,
+                                       video_worker_out_queue=video_worker_out_queue,
                                        image_worker_ctrl_queue=image_worker_ctrl_queue,
+                                       image_worker_out_queue=image_worker_out_queue,
                                        data_worker_ctrl_queue=data_worker_ctrl_queue)
         sio_task = asyncio.get_event_loop().create_task(bridge_node.spin_sio_client(), name="sio_task")
         # spin_future = asyncio.get_event_loop().run_in_executor(None, lambda: rclpy.spin(bridge_node))

@@ -14,6 +14,8 @@ import sys
 import concurrent.futures
 
 import pickle
+import marshal
+
 import numpy as np
 import cv2
 from aiortc.codecs import Vp8Encoder
@@ -68,7 +70,6 @@ from aiortc.mediastreams import VIDEO_TIME_BASE, convert_timebase
 NS_TO_SEC = 1000000000
 SRC_VIDEO_TIME_BASE = fractions.Fraction(1, NS_TO_SEC)
 
-
 def IsImageType(s:str) -> bool:
     return s == ImageTopicReadSubscription.MSG_TYPE or \
            s == ImageTopicReadSubscription.COMPRESSED_MSG_TYPE or \
@@ -84,20 +85,16 @@ class ImageTopicReadSubscription:
     STREAM_MSG_TYPE:str = 'ffmpeg_image_transport_msgs/msg/FFMPEGPacket'
     
     # def __init__(self, sub:Subscription, peers:list[str], frame_processor, processed_frames_h264:mp.Queue, processed_frames_v8:mp.Queue, make_keyframe_shared:mp.Value, make_h264_shared:mp.Value, make_v8_shared:mp.Value):
-    def __init__(self, ctrl_node:Node, msg_type:str, worker_ctrl_queue:mp.Queue, topic:str, qos:QoSProfile, blocking_reads_executor, log_message_every_sec:float=5.0):
+    def __init__(self, ctrl_node:Node, worker_type:str, worker_ctrl_queue:mp.Queue, worker_out_queue: mp.Queue, blocking_reads_executor, log_message_every_sec:float=5.0, on_msg_cb:Callable=None):
 
-        self.sub:Subscription|bool = None
         self.ctrl_node:Node = ctrl_node
         self.worker_ctrl_queue:mp.Queue = worker_ctrl_queue
-
-        self.pipe_out:Connection = None
-        self.pipe_worker:Connection = None
+        self.worker_type:str = worker_type
+        
+        self.queue:mp.Queue = worker_out_queue
         self.read_task:asyncio.Coroutine = None
         self.last_read_task:asyncio.Coroutine = None
-        self.peers:dict = {} #target outbound dcs
-        self.topic:str = topic
-        self.msg_type:str = msg_type
-        self.qos = qos
+        self.peers:dict[str:dict] = {} # target outbound messages here (dict by topic)
         
         self.num_received:int = 0
         self.last_msg:any = None
@@ -107,130 +104,87 @@ class ImageTopicReadSubscription:
         
         self.logged = False
         self.ignore = False
-
-        # self.reliability:QoSReliabilityPolicy = reliability
-        # self.durability:DurabilityPolicy = durability
-        # self.lifespan_sec:int = lifespan_sec
         
-        self.on_msg_cb:Callable = None
+        self.on_msg_cb:Callable = on_msg_cb
         self.event_loop = asyncio.get_event_loop() # save current
-        # self.last_send_future:asyncio.Future = None
 
-        # self.hflip = hflip
-        # self.vflip = vflip
-        # self.bitrate = bitrate
-        # self.framerate = framerate
-        # self.process_depth = process_depth
-        # self.clock_rate = clock_rate
-        # self.time_base = time_base
-        # self.time_base_fraction = fractions.Fraction(time_base, clock_rate)
-
-        self.last_frame_tasks:dict[str:asyncio.Task] = {}
-        
-        # self.bridge_time_started_ns:int = bridge_time_started_ns
+        # self.last_frame_tasks:dict[str:asyncio.Task] = {}
         
         self.executor = blocking_reads_executor
 
-        #print(f'TopicReadSubscription:__init__() {threading.get_ident()}')
 
-    def start(self, id_peer:str, sender:RTCRtpSender) -> bool:
+    def start(self, id_peer:str, msg_type:str, topic:str, qos:QoSProfile, peer_sender:RTCRtpSender) -> bool:
 
-        if self.sub != None: #running
-            if id_peer in self.peers.keys():
-                self.ctrl_node.get_logger().warn(f'Streamer was already running for {self.topic} with peer {id_peer} subscribed! old track_id was { self.peers[id_peer]["sender"]._track_id} new track_id is {sender._track_id}')
+        if topic in self.peers.keys(): # worker subscribed to his topic already
+            if id_peer in self.peers[topic].keys():
+                self.ctrl_node.get_logger().warn(f'Streamer was already running for {topic} with peer {id_peer} subscribed! old track_id was { self.peers[topic][id_peer]["sender"]._track_id} new track_id is {peer_sender._track_id}')
             else:
-                self.ctrl_node.get_logger().info(f'Streamer was already running for {self.topic}, adding peer {id_peer}, track_id={sender._track_id}')    
-            self.peers[id_peer] = {
-                'sender': sender,
+                self.ctrl_node.get_logger().info(f'Streamer was already running for {topic}, adding peer {id_peer}, track_id={peer_sender._track_id}')    
+            self.peers[topic][id_peer] = {
+                'sender': peer_sender,
                 'last_send_task': None,
                 'first_ts': -1,
                 'last_ts': -1
             }
             # print(self.peers.keys())
             return True #all done, one sub for all
+    
+        try:
+            self.worker_ctrl_queue.put_nowait({
+                                                'action': 'subscribe',
+                                                'pipe': None,
+                                                # 'queue': self.queue,
+                                                'topic': topic,
+                                                'qos': {
+                                                    'history': qos.history,
+                                                    'depth': qos.depth,
+                                                    'reliability': qos.reliability,
+                                                    'durability': qos.durability,
+                                                    'lifespan': -1 if qos.lifespan == Infinite else qos.lifespan.nanoseconds
+                                                },
+                                                'msg_type': msg_type,
+                                            #    'hflip': self.hflip,
+                                            #    'vflip': self.vflip,
+                                            #    'bitrate': self.bitrate,
+                                            #    'framerate': self.framerate,
+                                            #    'clock_rate': self.clock_rate,
+                                            #    'time_base': self.time_base,
+                                            })
+            if not topic in self.peers.keys():
+                self.peers[topic] = {}
+                
+            self.peers[topic][id_peer] = {
+                'sender': peer_sender,
+                'last_send_task': None,
+                'first_ts': -1,
+                'last_ts': -1
+            }
+        except Exception as e:
+            self.ctrl_node.get_logger().error(f'Error subscribing to {topic}: {e}')
 
-        if self.worker_ctrl_queue: # subscribe on processor's process
-
-            self.pipe_out, self.pipe_worker = mp.Pipe(duplex=False)
-
-            try:
-                self.worker_ctrl_queue.put_nowait({
-                                                    'action': 'subscribe',
-                                                    'pipe': self.pipe_worker,
-                                                    'topic': self.topic,
-                                                    'qos': {
-                                                        'history': self.qos.history,
-                                                        'depth': self.qos.depth,
-                                                        'reliability':self.qos.reliability,
-                                                        'durability':self.qos.durability,
-                                                        'lifespan': -1 if self.qos.lifespan == Infinite else self.qos.lifespan.nanoseconds
-                                                    },
-                                                    'msg_type': self.msg_type,
-                                                #    'hflip': self.hflip,
-                                                #    'vflip': self.vflip,
-                                                #    'bitrate': self.bitrate,
-                                                #    'framerate': self.framerate,
-                                                #    'clock_rate': self.clock_rate,
-                                                #    'time_base': self.time_base,
-                                                })
-                self.sub = True
-            except Exception as e:
-                self.ctrl_node.get_logger().error(f'Error subscribing to {self.topic}: {e}')
-
-            self.read_task = self.event_loop.create_task(self.read_piped_frames())
-
-        # else: #subscribe here on ctrl node's process
-        #     #print(f'TopicReadSubscription:start() {threading.get_ident()}')
-
-        #     message_class = None
-        #     try:
-        #         message_class = get_message(self.msg_type)
-        #     except:
-        #         pass
-        #     if message_class == None:
-        #         self.ctrl_node.get_logger().error(f'NOT subscribing to topic {self.topic}, msg class {self.msg_type} not loaded')
-        #         return False
-
-        #     qosProfile = QoSProfile(history=QoSHistoryPolicy.KEEP_LAST, \
-        #                             depth=1, \
-        #                             reliability=self.reliability, \
-        #                             durability=self.durability, \
-        #                             lifespan=Infinite \
-        #                             )
-        #     self.ctrl_node.get_logger().warn(f'Subscribing to topic {self.topic} {self.msg_type}')
-        #     self.sub = self.ctrl_node.create_subscription(
-        #             msg_type=message_class,
-        #             topic=self.topic,
-        #             callback=self.on_raw_msg,
-        #             qos_profile=qosProfile,
-        #             raw=True,
-        #         )
-        #     if self.sub == None:
-        #         self.ctrl_node.get_logger().error(f'Failed subscribing to topic {self.topic}, msg class={self.msg_type}, peer={id_peer}')
-        #         return False
-
-        self.peers[id_peer] = {
-            'sender': sender,
-            'last_send_task': None,
-            'first_ts': -1,
-            'last_ts': -1
-        }
+        if not self.read_task:
+            self.read_task = self.event_loop.create_task(self.read_worker_frames())
 
         return True
 
-    def clear_pipe(self):
-        self.ctrl_node.get_logger().info(f'Image reader for {self.topic} received pipe close')
-        self.pipe_out.close()
-        self.read_task.cancel()
-        # self.executor.shutdown(False, cancel_futures=True) 
+    # def clear_pipe(self):
+    #     self.ctrl_node.get_logger().info(f'Image reader for {self.topic} received pipe close')
+    #     self.pipe_out.close()
+    #     self.read_task.cancel()
+    # # self.executor.shutdown(False, cancel_futures=True) 
 
-    async def read_piped_frames(self):
+    async def read_worker_frames(self):
+        self.time_deserialization = 0.0
+        self.time_sending = 0.0
+        self.num_samples = 0
         while self.read_task and not self.read_task.cancelled():
             try:
-                # if self.last_read_task and not self.last_read_task.done():
-                #     continue
-                self.last_read_task = self.event_loop.run_in_executor(self.executor, self.pipe_out.recv) #blocks
-                res = await self.last_read_task
+                
+                self.last_read_task = self.event_loop.run_in_executor(self.executor, self.queue.get) #blocks
+                res_bytes = await self.last_read_task
+                start = time.time()
+                res = marshal.loads(res_bytes)
+                self.time_deserialization += time.time() - start
                 # res = await self.last_read_task
                 if 'msg' in res and res['msg'] == None: # closing pipe from the worker
                     self.clear_pipe()
@@ -240,23 +194,32 @@ class ImageTopicReadSubscription:
                 print(f'read_piped_frames for {self.topic} got err')
                 return
             except pickle.UnpicklingError as e:
-                self.ctrl_node.get_logger().error(f'Exception while unpickling latest from frame pipe {self.topic}: {str(e)}')
+                self.ctrl_node.get_logger().error(f'Exception while unpickling latest from frame queue: {str(e)}')
                 await asyncio.sleep(0)
                 continue # try again
             except EOFError:
-                self.ctrl_node.get_logger().error(f'EOFError while reading latest from frame pipe {self.topic}')
+                self.ctrl_node.get_logger().error(f'EOFError while reading latest from frame queue')
                 await asyncio.sleep(0)
                 continue # try again
             except Exception as e:
-                self.ctrl_node.get_logger().error(f'Exception while reading latest from frame pipe {self.topic}: {str(e)}')
+                self.ctrl_node.get_logger().error(f'Exception while reading latest from frame queue: {str(e)}')
                 self.sub = None
                 return
             
+            start = time.time()
             await self.on_msg(res)
-            await asyncio.sleep(0)
+            self.time_sending += time.time() - start
+            
+            self.num_samples += 1
+            if self.num_samples == 1000:
+                self.ctrl_node.get_logger().info(f'Avg recv deserialization time: {self.time_deserialization:.20f}s')
+                self.ctrl_node.get_logger().info(f'Avg recv send time: {self.time_sending:.20f}s')
+                self.time_deserialization = 0.0
+                self.time_sending = 0.0
+                self.num_samples = 0
+                
 
-
-    # called either by ctrl node's process or when data is received via reader_out_queue (called on ctrl node's process)
+    # called when data is received via reader_out_queue (called on ctrl node's process)
     async def on_msg(self, reader_res:dict):
         self.num_received += 1
         # self.last_msg = reader_res['frame_bytes']
@@ -265,85 +228,73 @@ class ImageTopicReadSubscription:
         keyframe=reader_res['keyframe']
         # timestamp=reader_res['timestamp']
         frame_packets=reader_res['frame_packets']
+        topic=reader_res['topic'] if 'topic' in reader_res.keys() else None
         # video_time_base=reader_res['time_base']
 
-        #print(f'TopicReadSubscription:on_msg() {threading.get_ident()}')
         try:
+            if not topic in self.peers.keys():
+                return # late data when unsubscribed
+            
             log_msg = False
             if self.num_received == 1: # first data in
                 log_msg = True
-                self.ctrl_node.get_logger().debug(f'👁️  Receiving {len(frame_packets)} frame packets from {self.topic}')
+                self.ctrl_node.get_logger().debug(f'👁️  Receiving {len(frame_packets)} frame packets from {topic}')
 
             if self.last_log < 0 or self.last_msg_time-self.last_log > self.log_message_every_sec:
                 log_msg = True
                 self.last_log = self.last_msg_time #last logged now
 
-            ts_frame = reader_res['sec'] * NS_TO_SEC + reader_res['nsec']
-            for id_peer in dict.fromkeys(self.peers.keys(),[]):
+            ts_frame = reader_res['ts'] # 1/9000
+            for id_peer in dict.fromkeys(self.peers[topic].keys(),[]):
                 
-                if self.peers[id_peer]['last_send_task'] \
-                    and not self.peers[id_peer]['last_send_task'].done():
-                    # and not keyframe:
-                    continue
-                
-                peer_sender = self.peers[id_peer]['sender'];
+                peer_sender = self.peers[topic][id_peer]['sender'];
                 if not peer_sender.pc or peer_sender.pc.connectionState == 'failed' \
                 or peer_sender.transport.state == "closed":
                     self.ctrl_node.get_logger().info(f'👁️  Sending {self.topic} to id_peer={id_peer} / id_stream= {str(peer_sender._stream_id)} failed; pc={peer_sender.pc.connectionState}, transport={peer_sender.transport.state}')
                     if peer_sender.transport.state != "closed":
                         self.event_loop.create_task(peer_sender.transport.stop())
-                    del self.peers[id_peer]
+                    del self.peers[topic][id_peer]
                     continue
 
                 if peer_sender.pc.connectionState != 'connected':
-                    self.peers[id_peer]['first_ts'] = -1
-                    self.peers[id_peer]['last_ts'] = -1
+                    self.peers[topic][id_peer]['first_ts'] = -1
+                    self.peers[topic][id_peer]['last_ts'] = -1
                     continue
                 
-                if self.peers[id_peer]['first_ts'] < 0:
-                    self.peers[id_peer]['first_ts'] = ts_frame
-                peer_pts = ts_frame - self.peers[id_peer]['first_ts']
+                if self.peers[topic][id_peer]['first_ts'] < 0:
+                    self.peers[topic][id_peer]['first_ts'] = ts_frame
+                peer_pts = ts_frame - self.peers[topic][id_peer]['first_ts']
 
-                if peer_pts <= self.peers[id_peer]['last_ts']:
+                if peer_pts <= self.peers[topic][id_peer]['last_ts']:
                     continue
-                self.peers[id_peer]['last_ts'] = peer_pts
+                self.peers[topic][id_peer]['last_ts'] = peer_pts
                 
                 if log_msg:
-                    self.ctrl_node.get_logger().info(f'👁️  Sending {len(frame_packets)} pkts of {self.topic} to id_peer={id_peer} / id_stream= {str(peer_sender._stream_id)}, total received: {self.num_received}, peer_pts={peer_pts}, sender={str(id(self.peers[id_peer]))}, pc={peer_sender.pc.connectionState} transport={peer_sender.transport.state}')
-                # if timestamp == 0:
-                #     offset_ns = time.time_ns()-self.bridge_time_started_ns
-                #     self.peers[id_peer].timestamp_origin = convert_timebase(offset_ns, SRC_VIDEO_TIME_BASE, VIDEO_TIME_BASE)
-
+                    self.ctrl_node.get_logger().info(f'👁️  Sending {len(frame_packets)} pkts of {topic} to id_peer={id_peer} / id_stream= {str(peer_sender._stream_id)}, total received: {self.num_received}, peer_pts={peer_pts}, sender={str(id(self.peers[topic][id_peer]))}, pc={peer_sender.pc.connectionState} transport={peer_sender.transport.state}')
+                    
                 try:
-                    self.peers[id_peer]['last_send_task'] = self.event_loop.create_task(peer_sender.send_direct(frame_data=frame_packets, stamp_converted=peer_pts, keyframe=keyframe))                
+                    self.peers[topic][id_peer]['last_send_task'] = self.event_loop.create_task(peer_sender.send_direct(frame_data=frame_packets, stamp_converted=peer_pts, keyframe=keyframe))                
                 except Exception as e:
-                    self.logger.error(f'👁️  Exception while sending {self.topic} to id_peer={id_peer} / id_stream= {str(peer_sender._stream_id)}, {e}; pc={peer_sender.pc.connectionState}, transport={peer_sender.transport.state}')
+                    self.logger.error(f'👁️  Exception while sending {topic} to id_peer={id_peer} / id_stream= {str(peer_sender._stream_id)}, {e}; pc={peer_sender.pc.connectionState}, transport={peer_sender.transport.state}')
                     pass
 
             if self.on_msg_cb is not None:
                 self.on_msg_cb()
-            else:
-                self.ctrl_node.get_logger().debug(f'on_msg_cb is {self.on_msg_cb}')
                 
         except Exception as e:
-            self.ctrl_node.get_logger().error(f'Error in frame read handler {e}')
+            self.ctrl_node.get_logger().error(f'Error in frame read handler {self.worker_type} {e}')
         
 
-    def stop(self, id_peer:str) -> bool:
+    def stop(self, id_peer:str, topic:str) -> bool:
 
-        if id_peer in self.peers.keys():
-            self.peers.pop(id_peer)
+        if id_peer in self.peers[topic].keys():
+            self.peers[topic].pop(id_peer)
+
+        if len(self.peers[topic].keys()) == 0:
+            self.peers.pop(topic)
+            self.worker_ctrl_queue.put_nowait({'action': 'unsubscribe', 'topic': topic})
 
         if len(self.peers.keys()) > 0:
-            return False
+            return False # still some topics subscribed
 
-        if self.sub == True: #mp
-            self.worker_ctrl_queue.put_nowait({'action': 'unsubscribe', 'topic': self.topic})
-        else:
-            self.ctrl_node.get_logger().info(f'👁️  Destroying local subscriber for {self.topic}')
-            self.ctrl_node.destroy_subscription(self.sub)
-
-        self.sub = None
-        self.topic = None
-
-        return True #destroyed
+        return True # all clear, destroy

@@ -444,21 +444,34 @@ class Introspection (AsyncIOEventEmitter):
                     for topic in self.discovered_nodes[n]['subscribers'].keys():
                         for nn in self.discovered_nodes.keys():
                             if topic in self.discovered_nodes[nn]['publishers']:
-                                qos_compat = rclpy.qos.qos_check_compatible(self.discovered_nodes[nn]['publishers'][topic]['qos'], self.discovered_nodes[n]['subscribers'][topic]['qos'])
-                                try:
-                                    err_index = qos_compat.index(rclpy.qos.QoSCompatibility.ERROR)
-                                    msg = qos_compat[err_index+1]
-                                    self.logger.error(f'Detected QOS error node {n} {topic}: {msg}')
-                                    self.discovered_nodes[n]['subscribers'][topic]['qos_error'] = msg
-                                except ValueError as e:
-                                    pass
-                                try:
-                                    err_index = qos_compat.index(rclpy.qos.QoSCompatibility.WARNING)
-                                    msg = qos_compat[err_index+1]
-                                    self.logger.error(f'Detected QOS warning in node {n} {topic}: {msg}')
-                                    self.discovered_nodes[n]['subscribers'][topic]['qos_warning'] = msg
-                                except ValueError as e:
-                                    pass
+                                pub_qos = self.discovered_nodes[nn]['publishers'][topic]['qos']
+                                sub_qos = self.discovered_nodes[n]['subscribers'][topic]['qos']
+                                if not pub_qos or not sub_qos:
+                                    self.discovered_nodes[n]['subscribers'][topic]['qos_error'] = 'ERROR: Failed to check subscriber QoS compatibility'
+                                    self.logger.error(f'Error while checking QOS compatibility of subscriber node {n} {topic}. Publisher QoS {pub_qos} Subscriber QoS: {sub_qos}')
+                                else:
+                                    try:
+                                        qos_compat = rclpy.qos.qos_check_compatible(pub_qos, sub_qos)
+                                    except Exception as e:
+                                        self.logger.error(f'Error while checking QOS compatibility of subscriber node {n} {topic}: {e}')
+                                        self.logger.error(f'{nn} {topic} publisher QoS: {pub_qos}')
+                                        self.logger.error(f'{n} {topic} subscriber QoS: {sub_qos}')
+                                        self.discovered_nodes[n]['subscribers'][topic]['qos_error'] = 'ERROR: Failed to check subscriber QoS compatibility'
+                                        continue
+                                    try:
+                                        err_index = qos_compat.index(rclpy.qos.QoSCompatibility.ERROR)
+                                        msg = qos_compat[err_index+1]
+                                        self.logger.error(f'Detected QOS error node {n} {topic}: {msg}')
+                                        self.discovered_nodes[n]['subscribers'][topic]['qos_error'] = msg
+                                    except ValueError as e:
+                                        pass
+                                    try:
+                                        err_index = qos_compat.index(rclpy.qos.QoSCompatibility.WARNING)
+                                        msg = qos_compat[err_index+1]
+                                        self.logger.error(f'Detected QOS warning in node {n} {topic}: {msg}')
+                                        self.discovered_nodes[n]['subscribers'][topic]['qos_warning'] = msg
+                                    except ValueError as e:
+                                        pass
 
             # force add byte to idls as we use it on the client to send heartbeat
             # (but not producing into a topic so no auto type discovery)
@@ -496,7 +509,26 @@ class Introspection (AsyncIOEventEmitter):
             
         return topics_changed or cameras_changed # only topics and cameras keep introspection running
 
-
+    def get_qos_data(self, qos:QoSProfile) -> dict:
+        if qos:
+            return {
+                'depth': qos.depth,
+                'history': qos.history,
+                'reliability': qos.reliability,
+                'durability': qos.durability,
+                'lifespan': (-1 if qos.lifespan == Infinite else qos.lifespan.nanoseconds),
+                'deadline': (-1 if qos.deadline == Infinite else qos.deadline.nanoseconds)
+            }
+        else:
+            return {
+                'depth': 0,
+                'history': 3, #unknown
+                'reliability': 3, #unknown
+                'durability': 3, #unknown
+                'lifespan': 0,
+                'deadline': 0
+            }
+    
     def get_nodes_data(self) -> dict:
         nodes_data = {}
         for id_node in self.discovered_nodes.keys():
@@ -511,26 +543,12 @@ class Introspection (AsyncIOEventEmitter):
             for topic in n['publishers'].keys():
                 nodes_data[id_node]['publishers'][topic] = {
                     'msg_type': n['publishers'][topic]['msg_type'],
-                    'qos': {
-                        'depth': n['publishers'][topic]['qos'].depth,
-                        'history': n['publishers'][topic]['qos'].history,
-                        'reliability': n['publishers'][topic]['qos'].reliability,
-                        'durability': n['publishers'][topic]['qos'].durability,
-                        'lifespan': (-1 if n['publishers'][topic]['qos'].lifespan == Infinite else n['publishers'][topic]['qos'].lifespan.nanoseconds),
-                        'deadline': (-1 if n['publishers'][topic]['qos'].deadline == Infinite else n['publishers'][topic]['qos'].deadline.nanoseconds)
-                    }
+                    'qos': self.get_qos_data(n['publishers'][topic]['qos']) if 'qos' in n['publishers'][topic].keys() else self.get_qos_data(None)
                 }
             for topic in n['subscribers'].keys():
                 nodes_data[id_node]['subscribers'][topic] = {
                     'msg_type': n['subscribers'][topic]['msg_type'],
-                    'qos': {
-                        'depth': n['subscribers'][topic]['qos'].depth,
-                        'history': n['subscribers'][topic]['qos'].history,
-                        'reliability': n['subscribers'][topic]['qos'].reliability,
-                        'durability': n['subscribers'][topic]['qos'].durability,
-                        'lifespan': (-1 if n['subscribers'][topic]['qos'].lifespan == Infinite else n['subscribers'][topic]['qos'].lifespan.nanoseconds),
-                        'deadline': (-1 if n['subscribers'][topic]['qos'].deadline == Infinite else n['subscribers'][topic]['qos'].deadline.nanoseconds)
-                    }
+                    'qos': self.get_qos_data(n['subscribers'][topic]['qos']) if 'qos' in n['subscribers'][topic].keys() else self.get_qos_data(None)
                 }
                 if 'qos_error' in n['subscribers'][topic]:
                     nodes_data[id_node]['subscribers'][topic]['qos_error'] = n['subscribers'][topic]['qos_error']
