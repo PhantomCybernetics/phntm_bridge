@@ -96,44 +96,39 @@ class ImageTopicReadSubscription:
         self.last_read_task:asyncio.Coroutine = None
         self.peers:dict[str:dict] = {} # target outbound messages here (dict by topic)
         
-        self.num_received:int = 0
-        self.last_msg:any = None
-        self.last_msg_time:float = -1.0
-        self.last_log:float = -1.0
+        self.num_received:dict[str:int] = {}
+        self.last_msg:dict[str:any] = {}
+        self.last_msg_time:dict[str:float] = {}
+        self.last_log:dict[str:float] = {}
         self.log_message_every_sec:float = log_message_every_sec
-        
-        self.logged = False
-        self.ignore = False
         
         self.on_msg_cb:Callable = on_msg_cb
         self.event_loop = asyncio.get_event_loop() # save current
-
-        # self.last_frame_tasks:dict[str:asyncio.Task] = {}
-        
         self.executor = blocking_reads_executor
 
 
     def start(self, id_peer:str, msg_type:str, topic:str, qos:QoSProfile, peer_sender:RTCRtpSender) -> bool:
 
-        if topic in self.peers.keys(): # worker subscribed to his topic already
+        if topic in self.peers.keys(): # worker subscribed to this topic already
             if id_peer in self.peers[topic].keys():
-                self.ctrl_node.get_logger().warn(f'Streamer was already running for {topic} with peer {id_peer} subscribed! old track_id was { self.peers[topic][id_peer]["sender"]._track_id} new track_id is {peer_sender._track_id}')
+                self.ctrl_node.get_logger().info(f'Streamer was already running for {topic} with peer {id_peer} subscribed! old track_id was { self.peers[topic][id_peer]["sender"]._track_id} new track_id is {peer_sender._track_id}')
+                if peer_sender == self.peers[topic][id_peer]["sender"]:
+                    return True # all good, do not reset anything
             else:
                 self.ctrl_node.get_logger().info(f'Streamer was already running for {topic}, adding peer {id_peer}, track_id={peer_sender._track_id}')    
             self.peers[topic][id_peer] = {
                 'sender': peer_sender,
                 'last_send_task': None,
                 'first_ts': -1,
-                'last_ts': -1
+                'last_ts': -1,
+                'num_older_ts': 0
             }
-            # print(self.peers.keys())
             return True #all done, one sub for all
     
         try:
             self.worker_ctrl_queue.put_nowait({
                                                 'action': 'subscribe',
                                                 'pipe': None,
-                                                # 'queue': self.queue,
                                                 'topic': topic,
                                                 'qos': {
                                                     'history': qos.history,
@@ -142,13 +137,7 @@ class ImageTopicReadSubscription:
                                                     'durability': qos.durability,
                                                     'lifespan': -1 if qos.lifespan == Infinite else qos.lifespan.nanoseconds
                                                 },
-                                                'msg_type': msg_type,
-                                            #    'hflip': self.hflip,
-                                            #    'vflip': self.vflip,
-                                            #    'bitrate': self.bitrate,
-                                            #    'framerate': self.framerate,
-                                            #    'clock_rate': self.clock_rate,
-                                            #    'time_base': self.time_base,
+                                                'msg_type': msg_type
                                             })
             if not topic in self.peers.keys():
                 self.peers[topic] = {}
@@ -166,32 +155,21 @@ class ImageTopicReadSubscription:
             self.read_task = self.event_loop.create_task(self.read_worker_frames())
 
         return True
-
-    # def clear_pipe(self):
-    #     self.ctrl_node.get_logger().info(f'Image reader for {self.topic} received pipe close')
-    #     self.pipe_out.close()
-    #     self.read_task.cancel()
-    # # self.executor.shutdown(False, cancel_futures=True) 
+    
 
     async def read_worker_frames(self):
-        self.time_deserialization = 0.0
-        self.time_sending = 0.0
-        self.num_samples = 0
         while self.read_task and not self.read_task.cancelled():
             try:
                 
                 self.last_read_task = self.event_loop.run_in_executor(self.executor, self.queue.get) #blocks
                 res_bytes = await self.last_read_task
-                start = time.time()
                 res = marshal.loads(res_bytes)
-                self.time_deserialization += time.time() - start
-                # res = await self.last_read_task
+
                 if 'msg' in res and res['msg'] == None: # closing pipe from the worker
                     self.clear_pipe()
                     return
                 
             except (KeyboardInterrupt, asyncio.CancelledError):
-                print(f'read_piped_frames for {self.topic} got err')
                 return
             except pickle.UnpicklingError as e:
                 self.ctrl_node.get_logger().error(f'Exception while unpickling latest from frame queue: {str(e)}')
@@ -203,98 +181,123 @@ class ImageTopicReadSubscription:
                 continue # try again
             except Exception as e:
                 self.ctrl_node.get_logger().error(f'Exception while reading latest from frame queue: {str(e)}')
-                self.sub = None
                 return
             
-            start = time.time()
+            # self.event_loop.create_task(self.on_msg(res))
             await self.on_msg(res)
-            self.time_sending += time.time() - start
-            
-            self.num_samples += 1
-            if self.num_samples == 1000:
-                self.ctrl_node.get_logger().info(f'Avg recv deserialization time: {self.time_deserialization:.20f}s')
-                self.ctrl_node.get_logger().info(f'Avg recv send time: {self.time_sending:.20f}s')
-                self.time_deserialization = 0.0
-                self.time_sending = 0.0
-                self.num_samples = 0
-                
+
 
     # called when data is received via reader_out_queue (called on ctrl node's process)
     async def on_msg(self, reader_res:dict):
-        self.num_received += 1
-        # self.last_msg = reader_res['frame_bytes']
-        self.last_msg_time = time.time()
+        
+        topic=reader_res['topic']
+        
+        if not topic in self.peers.keys():
+            return # late data after unsubscribed
+        
+        if not topic in self.num_received.keys():
+            self.num_received[topic] = 0
+        else:
+            self.num_received[topic] += 1
+        
+        self.last_msg_time[topic] = time.time()    
+        if not topic in self.last_log.keys():
+            self.last_log[topic] = -1
 
         keyframe=reader_res['keyframe']
-        # timestamp=reader_res['timestamp']
         frame_packets=reader_res['frame_packets']
-        topic=reader_res['topic'] if 'topic' in reader_res.keys() else None
-        # video_time_base=reader_res['time_base']
 
         try:
-            if not topic in self.peers.keys():
-                return # late data when unsubscribed
-            
             log_msg = False
-            if self.num_received == 1: # first data in
+            if self.num_received[topic] == 0: # first data in
                 log_msg = True
                 self.ctrl_node.get_logger().debug(f'👁️  Receiving {len(frame_packets)} frame packets from {topic}')
 
-            if self.last_log < 0 or self.last_msg_time-self.last_log > self.log_message_every_sec:
+            if self.last_log[topic] < 0 or self.last_msg_time[topic]-self.last_log[topic] > self.log_message_every_sec:
                 log_msg = True
-                self.last_log = self.last_msg_time #last logged now
+                self.last_log[topic] = self.last_msg_time[topic] #last logged now
 
-            ts_frame = reader_res['ts'] # 1/9000
+            ts_frame = reader_res['ts'] # 1/90000
             for id_peer in dict.fromkeys(self.peers[topic].keys(),[]):
                 
                 peer_sender = self.peers[topic][id_peer]['sender'];
-                if not peer_sender.pc or peer_sender.pc.connectionState == 'failed' \
-                or peer_sender.transport.state == "closed":
-                    self.ctrl_node.get_logger().info(f'👁️  Sending {self.topic} to id_peer={id_peer} / id_stream= {str(peer_sender._stream_id)} failed; pc={peer_sender.pc.connectionState}, transport={peer_sender.transport.state}')
+                if not peer_sender.pc or peer_sender.pc.connectionState == 'failed' or peer_sender.transport.state == "closed":
+                    self.ctrl_node.get_logger().info(f'👁️  Sending {topic} to id_peer={id_peer} / id_stream= {str(peer_sender._stream_id)} failed; pc={peer_sender.pc.connectionState}, transport={peer_sender.transport.state}')
                     if peer_sender.transport.state != "closed":
                         self.event_loop.create_task(peer_sender.transport.stop())
                     del self.peers[topic][id_peer]
                     continue
 
-                if peer_sender.pc.connectionState != 'connected':
+                if peer_sender.transport.state != 'connected':
+                    print(c(f'Peer {id_peer} {topic} sender not connected resetting ts, state={peer_sender.transport.state}', 'dark_grey'))
                     self.peers[topic][id_peer]['first_ts'] = -1
                     self.peers[topic][id_peer]['last_ts'] = -1
                     continue
                 
+                log_first = False
                 if self.peers[topic][id_peer]['first_ts'] < 0:
+                    if not keyframe:
+                        print(c(f'Dropping initial non-kf of {topic} for peer={id_peer}; ts={ts_frame}', 'dark_grey'))
+                        continue
                     self.peers[topic][id_peer]['first_ts'] = ts_frame
+                    self.ctrl_node.get_logger().info(f'👁️  FIRST KF TS {ts_frame}')
+                    log_first = True
+                    
                 peer_pts = ts_frame - self.peers[topic][id_peer]['first_ts']
 
-                if peer_pts <= self.peers[topic][id_peer]['last_ts']:
-                    continue
+                if peer_pts <= self.peers[topic][id_peer]['last_ts'] and peer_pts != 0:
+                    self.peers[topic][id_peer]['num_older_ts'] += 1
+                    if self.peers[topic][id_peer]['num_older_ts'] > 10: # reset on too many older
+                        pass
+                    else:
+                        print(c(f'Dropping older frame of {topic} for peer={id_peer}; pt={peer_pts}', 'dark_grey'))
+                        continue
                 self.peers[topic][id_peer]['last_ts'] = peer_pts
+                self.peers[topic][id_peer]['num_older_ts'] = 0
                 
-                if log_msg:
-                    self.ctrl_node.get_logger().info(f'👁️  Sending {len(frame_packets)} pkts of {topic} to id_peer={id_peer} / id_stream= {str(peer_sender._stream_id)}, total received: {self.num_received}, peer_pts={peer_pts}, sender={str(id(self.peers[topic][id_peer]))}, pc={peer_sender.pc.connectionState} transport={peer_sender.transport.state}')
+                if log_msg or log_first:
+                    self.ctrl_node.get_logger().info(f'👁️  Sending {len(frame_packets)} pkts of {topic} > peer={id_peer} peer_pts={peer_pts} / id_stream= {str(peer_sender._stream_id)}, rcvd={self.num_received[topic]}, sender={str(id(self.peers[topic][id_peer]))}, pc={peer_sender.pc.connectionState} transport={peer_sender.transport.state}')
                     
                 try:
+                    # self.peers[topic][id_peer]['last_send_task'] = self.event_loop.create_task(peer_sender.send_direct(frame_data=frame_packets, stamp_converted=peer_pts, keyframe=keyframe))                
                     self.peers[topic][id_peer]['last_send_task'] = self.event_loop.create_task(peer_sender.send_direct(frame_data=frame_packets, stamp_converted=peer_pts, keyframe=keyframe))                
                 except Exception as e:
-                    self.logger.error(f'👁️  Exception while sending {topic} to id_peer={id_peer} / id_stream= {str(peer_sender._stream_id)}, {e}; pc={peer_sender.pc.connectionState}, transport={peer_sender.transport.state}')
-                    pass
+                    self.ctrl_node.get_logger().error(f'👁️  Exception while sending {topic} to id_peer={id_peer} / id_stream= {str(peer_sender._stream_id)}, {e}; pc={peer_sender.pc.connectionState}, transport={peer_sender.transport.state}')
 
             if self.on_msg_cb is not None:
                 self.on_msg_cb()
                 
         except Exception as e:
             self.ctrl_node.get_logger().error(f'Error in frame read handler {self.worker_type} {e}')
-        
+            self.ctrl_node.get_logger().error(traceback.format_exception(e))
+    
 
     def stop(self, id_peer:str, topic:str) -> bool:
 
-        if id_peer in self.peers[topic].keys():
+        if topic in self.peers.keys() \
+        and id_peer in self.peers[topic].keys():
             self.peers[topic].pop(id_peer)
 
         if len(self.peers[topic].keys()) == 0:
             self.peers.pop(topic)
+            if topic in self.num_received.keys():
+                self.num_received.pop(topic)
+            if topic in self.last_msg_time.keys():
+                self.last_msg_time.pop(topic)
+            if topic in self.last_log.keys():
+                self.last_log.pop(topic)
             self.worker_ctrl_queue.put_nowait({'action': 'unsubscribe', 'topic': topic})
 
         if len(self.peers.keys()) > 0:
             return False # still some topics subscribed
 
-        return True # all clear, destroy
+        # else clear
+        if self.read_task and not self.read_task.cancelled():
+            self.read_task.cancel()
+            self.read_task = None
+        
+        if self.last_read_task and not self.last_read_task.cancelled():
+            self.last_read_task.cancel()
+            self.last_read_task = None
+        
+        return True # all cleared

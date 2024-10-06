@@ -49,8 +49,6 @@ import yaml
 
 NS_TO_SEC = 1000000000
 
-encoder_h264:H264Encoder = None
-
 # runs as a separate process for bette isolation and lower ctrl/cam latency
 def TopicProcessorWorker(running_shared:mp.Value, reader_label:str, ctrl_queue:mp.Queue, out_queue:mp.Queue):
 
@@ -62,26 +60,14 @@ def TopicProcessorWorker(running_shared:mp.Value, reader_label:str, ctrl_queue:m
 
     print(f'Worker {reader_label} loaded config from {str(yaml_fname)}')
 
-    # rclpy.init()
-    # rcl_ctx = Context()
-    # rcl_ctx.init() # This must be done before any ROS nodes can be created.
-    # rcl_cbg = MutuallyExclusiveCallbackGroup()
-    # rcl_executor = SingleThreadedExecutor()
+    rclpy_executor = SingleThreadedExecutor()
     reader_node = Node(node_name=f'phntm_worker_{reader_label}',
-                    #    context=rcl_ctx,
                        enable_rosout=False,
                        use_global_arguments=False)
-
-    # rcl_executor.add_node(reader_node)
-    # rcl_cbg.add_entity(reader_node)
-    # rcl_cbg.add_entity(rcl_ctx)
-    # rcl_cbg.add_entity(rcl_executor)
-
+    rclpy_executor.add_node(reader_node);
     reader_node.get_logger().set_level(rclpy.logging.LoggingSeverity.DEBUG)
 
-    # reader_node.load_config(self.get_logger())
-
-    w = Worker(reader_node, reader_label, running_shared, ctrl_queue, out_queue, yaml_config)
+    w = Worker(reader_node, rclpy_executor, reader_label, running_shared, ctrl_queue, out_queue, yaml_config)
     try:
         asyncio.run(w.worker_loop())
     except (asyncio.CancelledError, KeyboardInterrupt):
@@ -92,16 +78,15 @@ def TopicProcessorWorker(running_shared:mp.Value, reader_label:str, ctrl_queue:m
 
     reader_node.get_logger().warn(f'Stopping')
 
-    # reader_node.destroy_node()
     rclpy.shutdown()
     
 
 class Worker:
     
-    def __init__(self, reader_node, reader_label, running_shared, ctrl_queue, out_queue, yaml_config) -> None:
+    def __init__(self, reader_node, rclpy_executor, reader_label, running_shared, ctrl_queue, out_queue, yaml_config) -> None:
         self.reader_node = reader_node
+        self.rclpy_executor = rclpy_executor
         self.reader_label = reader_label
-        # self.rcl_executor = rcl_executor
         self.running_shared = running_shared
         self.ctrl_queue = ctrl_queue
         self.out_queue = out_queue
@@ -118,12 +103,19 @@ class Worker:
         self.num_samples = 0  
         
         self.node_spin_task = None
-    
+        
+        self.encoder_lock = threading.Lock()
+        self.out_queue_lock = threading.Lock()
+        try:
+            self.encoder_h264 = H264Encoder()
+        except Exception as e:
+            self.logger.error(f'Error getting h264 encoder : {e}')
+            return
     
     async def spin_node_loop(self):
         self.logger.info(f'Spining the node...')
         while self.running_shared.value > 0:
-            rclpy.spin_once(self.reader_node, timeout_sec=0.1)
+            rclpy.spin_once(self.reader_node, executor=self.rclpy_executor, timeout_sec=0.1)
             await asyncio.sleep(0)
         self.logger.info(f'Done spinning node')
 
@@ -136,7 +128,7 @@ class Worker:
                 self.node_spin_task = asyncio.get_event_loop().create_task(self.spin_node_loop())
         except Exception as e:
             self.reader_node.get_logger().error(f'Exception while spinning reader node: {e}')
-
+        
         #recieve cmd messages
         while self.running_shared.value > 0:
             while True:
@@ -152,10 +144,11 @@ class Worker:
 
         topic = ctrl_cmd['topic']
 
-        # unsubscribe or clear before subscribing again
-        if ctrl_cmd['action'] == 'unsubscribe' or topic in self.active_subs.keys():
-            self.logger.info(f'Removing local subscriber for {topic}')
-            if topic in self.active_subs.keys():
+        # unsubscribe
+        if ctrl_cmd['action'] == 'unsubscribe' and topic in self.active_subs.keys():
+            try:
+                self.logger.info(f'Removing local subscriber for {topic}')
+            
                 self.active_subs[topic]['ignore'] = True # ignore any new data
                 self.reader_node.destroy_subscription(self.active_subs[topic]['sub'])
                 if 'push_task' in self.active_subs[topic].keys() and self.active_subs[topic]['push_task'] and not self.active_subs[topic]['push_task'].done():
@@ -168,8 +161,16 @@ class Worker:
                         'msg': None # = closing
                     }) # blocks until read
                     self.active_subs[topic]['push_task'].add_done_callback(lambda f: self.pipe_close(f, topic))
+                self.active_subs[topic]['loop'].stop()
+                self.active_subs[topic]['thread'].join()
+                if 'lock' in self.active_subs[topic].keys() and self.active_subs[topic]['lock']:
+                    self.active_subs[topic]['lock'].release();
+                del self.active_subs[topic]
+            except Exception as e:
+                self.logger.error(f'Failed unsubscribing from topic {topic}: {e}')
 
-        if ctrl_cmd['action'] == 'subscribe':
+        # subscribe 
+        if ctrl_cmd['action'] == 'subscribe' and not topic in self.active_subs.keys():
             msg_type = ctrl_cmd['msg_type']
 
             qosProfile = QoSProfile(
@@ -195,16 +196,21 @@ class Worker:
             try:
                 self.logger.info(c(f'Subscribing to topic {topic} {msg_type} qosProfile={qosProfile}', 'cyan'))
                 # no_skip:bool = ctrl_cmd['no_skip'] if 'no_skip' in ctrl_cmd.keys() else False
-                loop = asyncio.get_event_loop()
+                # loop = asyncio.get_event_loop()
+                
+                topic_loop = asyncio.new_event_loop()
+                topic_thread = threading.Thread(target=self.run_topic_loop, name=f'loop_{topic}', args=(topic,topic_loop))
+                topic_thread.start()
+                
                 cb = None
-                if msg_type == ImageTopicReadSubscription.MSG_TYPE:
-                    cb = lambda msg: self.on_raw_image_data(topic, msg)
+                if msg_type == ImageTopicReadSubscription.STREAM_MSG_TYPE:
+                    cb = lambda msg: asyncio.run_coroutine_threadsafe(self.on_stream_image_data(topic, msg), topic_loop)
+                elif msg_type == ImageTopicReadSubscription.MSG_TYPE:
+                    cb = lambda msg: asyncio.run_coroutine_threadsafe(self.on_raw_image_data(topic, msg), topic_loop)
                 elif msg_type == ImageTopicReadSubscription.COMPRESSED_MSG_TYPE:
-                    cb = lambda msg: self.on_compressed_image_data(topic, msg)
-                elif msg_type == ImageTopicReadSubscription.STREAM_MSG_TYPE:
-                    cb = lambda msg: loop.create_task(self.on_stream_image_data(topic, msg))
-                else:
-                    cb = lambda msg: loop.create_task(self.on_data(topic, msg))
+                    cb = lambda msg: asyncio.run_coroutine_threadsafe(self.on_compressed_image_data(topic, msg), topic_loop)
+                else: # data
+                    cb = lambda msg: asyncio.run_coroutine_threadsafe(self.on_data(topic, msg), topic_loop)
                 
                 sub = self.reader_node.create_subscription(
                                 msg_type=message_class,
@@ -225,16 +231,45 @@ class Worker:
                 self.active_subs[topic] = {
                     'sub': sub,
                     'args': args,
-                    'pipe': pipe,
+                    'pipe': pipe, # data only
                     'push_task': None,
                     'logged': False,
-                    'executor': self.executor
+                    'executor': self.executor,
+                    'loop': topic_loop,
+                    'thread': topic_thread
                 }
-                
             except Exception as e:
                 self.logger.error(f'Failed subscribing to topic {topic}, msg class={msg_type}: {e}')
 
 
+    # trhead for each individual topic
+    def run_topic_loop(self, topic, loop):
+        self.logger.info(f'Running loop thread for {topic}')
+        asyncio.set_event_loop(loop) # set default loop for the trhead
+        loop.run_forever()
+    
+    
+    async def on_data(self, topic:str, msg:any):
+
+        if not topic in self.active_subs.keys():
+            return
+        
+        sub = self.active_subs[topic]
+        
+        if 'ignore' in sub:
+            return
+        
+        # if sub['push_task'] and not sub['push_task'].done():
+        #     return # dropping data here
+        
+        sub['push_task'] = asyncio.get_event_loop().run_in_executor(sub['executor'], sub['pipe'].send, {
+            'topic': topic,
+            'msg': msg
+        }) # blocks until read, no more frames of this topic are processed until then
+        sub['push_task'].add_done_callback(lambda f: self.pipe_error_catcher(f, topic))
+        await sub['push_task']
+        
+    
     def pipe_error_catcher(self, f, topic):
         try:
             ee = f.exception()
@@ -246,6 +281,7 @@ class Worker:
             self.logger.error(f'Pipe output err while carching errors {topic}: {e}')
             pass
     
+    
     def pipe_close(self, f, topic):
         try:
             e = f.exception()
@@ -256,22 +292,10 @@ class Worker:
         except Exception as ee:
             self.logger.error(f'Pipe close {topic} exception {topic}: {ee}')
 
-# def save_newest_msg(topic:str, msg:any, newest_messages_by_topic:dict[str:list], no_skip:bool, pipe:Connection):
-#     # reader_node.get_logger().info(f' >> {msg_topic}, got {len(msg)} B')
 
-#     # print (f'{topic} has data, no_skip={no_skip}')
-
-#     if topic not in newest_messages_by_topic.keys():
-#         newest_messages_by_topic[topic] = []
-
-#     if no_skip:
-#         newest_messages_by_topic[topic].append(msg)
-#     else:
-#         newest_messages_by_topic[topic] = [ msg ]
-
-    async def on_data(self, topic:str, msg:any):
-
-        print(f'on_data {topic}')
+    # hw (or elsewhere) encoded frames
+    async def on_stream_image_data(self, topic:str, msg:any):
+        
         if not topic in self.active_subs.keys():
             return
         
@@ -280,18 +304,65 @@ class Worker:
         if 'ignore' in sub:
             return
         
-        if sub['push_task'] and not sub['push_task'].done():
-            # print(f'Processsor skipping frame of {topic}, last not yet consumed yet')
+        try:
+            frame:FFMPEGPacket = deserialize_message(msg, FFMPEGPacket)
+            size = len(frame.data)
+        except Exception as e:
+            self.logger.error(f'Error deserializing frame of {topic}, msg size={len(msg)}B: {e}')
             return
         
-        sub['push_task'] = asyncio.get_event_loop().run_in_executor(sub['executor'], sub['pipe'].send, {
-            'topic': topic,
-            'msg': msg
-        }) # blocks until read, no more frames of this topic are processed until then
-        sub['push_task'].add_done_callback(lambda f: self.pipe_error_catcher(f, topic))
+        if not sub['logged']:
+            sub['logged'] = True
+            self.logger.info(f'Processing stream frame data for {topic}, encoding={frame.encoding} size={size}B')
+            
+        if size == 0:
+            return
+
+        is_keyframe = (frame.flags == 1)
+        stamp_ns_raw = int(frame.header.stamp.sec * NS_TO_SEC) + int(frame.header.stamp.nanosec)
+    
+        # expecting fully encoded frames here and only need to packetize them for transport
+        try:
+            p = Packet(frame.data)
+            p.pts = stamp_ns_raw
+            p.time_base = fractions.Fraction(1, NS_TO_SEC) # will be converted to 1/90000
+        except Exception as e:
+            self.logger.error(f'Error casting frame to packet for {topic}, data size size={len(frame.data)}B: {e}')
+            return
+
+        try:
+            self.encoder_lock.acquire()
+            sub['lock'] = self.encoder_lock
+            packets, ts = self.encoder_h264.pack(p)
+            self.encoder_lock.release()
+            sub['lock'] = None
+        except Exception as e:
+            self.logger.error(f'Error packing frame of {topic}, data size size={len(frame.data)}B: {e}')
+            return
+
+        try:
+            frame_transport = marshal.dumps({
+                'topic': topic,
+                'frame_packets': packets,
+                'ts': ts,
+                'keyframe': is_keyframe,
+            })
+        except Exception as e:
+            self.logger.error(f'Error pushing frame of {topic}, data size size={len(frame.data)}B: {e}')
+            return
+        
+        try:
+            self.out_queue_lock.acquire()
+            sub['lock'] = self.out_queue_lock
+            self.out_queue.put_nowait(frame_transport)
+            self.out_queue_lock.release()
+            sub['lock'] = None
+        except Exception as e:
+            self.logger.error(f'Error putting frame of {topic} into queue, data size size={len(frame.data)}B: {e}')
 
 
-    def on_raw_image_data(self, topic:str, msg:any):
+    # software encoded frames
+    async def on_raw_image_data(self, topic:str, msg:any):
 
         if not topic in self.active_subs.keys():
             return
@@ -300,16 +371,13 @@ class Worker:
         
         if 'ignore' in sub:
             return
-        
-        if sub['push_task'] and not sub['push_task'].done(): # dropping previous frame here
-            # if not sub['push_task_was_keyframe']:
-            #     self.logger.warn(f'Dropping frame for {topic}')
-            #     sub['push_task'].cancel()
-            # else:
-            return
 
-        im:Image = deserialize_message(msg, Image)
-        size = len(im.data)
+        try:
+            im:Image = deserialize_message(msg, Image)
+            size = len(im.data)
+        except Exception as e:
+            self.logger.error(f'Error deserializing frame of {topic}, msg size={len(msg)}B: {e}')
+            return
         
         if not sub['logged']:
             sub['logged'] = True
@@ -367,178 +435,51 @@ class Worker:
             return
         
         # software encode h264
+        
+        stamp_ns_raw = (im.header.stamp.sec * NS_TO_SEC) + im.header.stamp.nanosec
+        
         frame = VideoFrame.from_ndarray(np_array, format="rgb24")
+        frame.pts = stamp_ns_raw
+        frame.time_base = fractions.Fraction(1, NS_TO_SEC) # will be converted to 1/90000
 
-        stamp_ns_now = int(im.header.stamp.sec * NS_TO_SEC) + int(im.header.stamp.nanosec)
-
-        if not 'first_frame_time_ns' in sub.keys():
-            sub['first_frame_time_ns'] = stamp_ns_now
-        # sub['last_frame_time_ns'] = stamp_ns_now
-
-        stamp_ns = stamp_ns_now - sub['first_frame_time_ns']
-
-        frame.pts = stamp_ns
-        frame.time_base = fractions.Fraction(1, NS_TO_SEC)
-
-        # at around 5 FPS sw encoding is so slow it's actually better to send every frame as a keyframe
-        is_keyframe = False
         is_keyframe = 'last_keyframe_stamp_ns' not in sub.keys() \
-            or stamp_ns - sub['last_keyframe_stamp_ns'] >= NS_TO_SEC # make first keyframe, then every second
-       
-        global encoder_h264
-        if encoder_h264 == None:
-            encoder_h264 = H264Encoder()
-
-        packets, ts = encoder_h264.encode(frame=frame, force_keyframe=is_keyframe) # convert to 1/90000
-
-        # print(f'Processor {topic} stamp_ns={stamp_ns} raw={stamp_ns_raw} [{im.header.stamp.sec}:{im.header.stamp.nanosec}] dF={since_last_frame} f0={sub["first_frame_time_ns"]} 1/90000={timestamp} KF={force_keyframe}')
-
-        # # _fp_4 = time.time()
-        # # _log_processed += 1
-        # # _log_cum_time += time.time() - debug_fp_start
-
-        # # if keyframe or _last_log_time < 0 or time.time()-_last_log_time > log_message_every_sec:
-        # #     _last_log_time = time.time() #last logged now
-        # #     # debug_times = f'Total: {"{:.5f}".format(_fp_4-_fp_start)}s\nIM: {"{:.5f}".format(_fp_1-_fp_start)}s\nConv: {"{:.5f}".format(_fp_2-_fp_1)}s\nVideoFrame {"{:.5f}".format(_fp_3-_fp_2)}s\nH264: {"{:.5f}".format(_fp_4-_fp_3)}s'
-        # #     debug_times = f'{_log_processed} in avg {"{:.5f}".format(_log_cum_time/_log_processed)}s'
-        # #     logger.info(f'[FP {topic}] {im.encoding}>H264 {im.width}x{im.height} {len(fbytes)}B > {len(packet)} pkts ' + (colored(' [KF]', 'magenta') if keyframe else '') + ' '+c(debug_times, 'yellow'))
-        # #     _log_processed = 0;
-        # #     _log_cum_time = 0.0
-
-        # # debug_times = f'{_log_processed} in avg {"{:.5f}".format(_log_cum_time/_log_processed)}s'
-
-        # # print(f'Topic Reader: processed frame of {topic} {im.encoding}>H264 {im.width}x{im.height} {len(msg)}B > {len(packets)} pkts' + (c(' [KF]', 'magenta') if keyframe else f' {ns_since_last_keyframe} ns since KF') + ' in '+c(time.time()-debug_fp_start, 'yellow'))
-
-        sub['push_task'] = asyncio.get_event_loop().run_in_executor(sub['executor'], sub['pipe'].send, {
-            'topic': topic,
-            'frame_packets': packets,
-            'timestamp': ts,
-            'keyframe': is_keyframe, # don't skip keyframes
-        }) # blocks  until read, no more frames of this topic are processed until then
-        sub['push_task_was_keyframe'] = is_keyframe
-        if is_keyframe:
-            sub['last_keyframe_stamp_ns'] = stamp_ns
-        sub['push_task'].add_done_callback(lambda f: self.pipe_error_catcher(f, topic))
-
-
-    async def on_stream_image_data(self, topic:str, msg:any):
-        
-        if not topic in self.active_subs.keys():
-            return
-        
-        sub = self.active_subs[topic]
-        
-        if 'ignore' in sub:
-            return
-        
-        # if sub['push_task'] and not sub['push_task'].done(): # dropping previous frame here
-        #     if not sub['push_task_was_keyframe']:
-        #         # self.logger.warn(c(f'Dropping old frame for {topic}', 'dark_grey'))
-        #         sub['push_task'].cancel()
-        #     else:
-        #         # self.logger.warn(c(f'Dropping new frame for {topic}', 'dark_grey'))
-        #         return
-        
-        try:
-            start = time.time()
-            frame:FFMPEGPacket = deserialize_message(msg, FFMPEGPacket)
-            size = len(frame.data)
-            self.time_deserialization += time.time() - start
-        except Exception as e:
-            self.logger.error(f'Error deserializing frame of {topic}, msg size={len(msg)}B: {e}')
-            return
-        
-        if not sub['logged']:
-            sub['logged'] = True
-            self.logger.info(f'Processing stream frame data for {topic}, encoding={frame.encoding} size={size}B')
-            
-        if size == 0:
-            return
-
-        is_keyframe = (frame.flags == 1)
-        
-        # await asyncio.sleep(0)
-        
-        # if not 'first_frame_time_ns' in sub.keys():
-        #     sub['first_frame_time_ns'] = frame.pts + 0 
-        # stamp_ns = frame.pts - sub['first_frame_time_ns']
-        # self.logger.info(f'frame.pts was {(frame.pts/1000000000.0)}s, h.sec={frame.header.stamp.sec} h.nsec={frame.header.stamp.nanosec}')
-        
-        # we expect fully encoded frames here and only need to packetize them for transport
-        try:
-            start = time.time()
-            p = Packet(frame.data)
-            p.pts = frame.header.stamp.sec * NS_TO_SEC + frame.header.stamp.nanosec
-            p.time_base = fractions.Fraction(1, NS_TO_SEC) # will be converted to 1/9000
-            self.time_packet_init += time.time() - start
-        except Exception as e:
-            self.logger.error(f'Error casting frame to packet for {topic}, data size size={len(frame.data)}B: {e}')
-            return
-        
-        global encoder_h264
-        if encoder_h264 == None:
-            encoder_h264 = H264Encoder()
+            or stamp_ns_raw - sub['last_keyframe_stamp_ns'] >= NS_TO_SEC # make first keyframe, then every second
 
         try:
-            start = time.time()
-            packets, ts = encoder_h264.pack(p)
-            self.time_packetization += time.time() - start
+            self.encoder_lock.acquire()
+            sub['lock'] = self.encoder_lock
+            packets, ts = self.encoder_h264.encode(frame=frame, force_keyframe=is_keyframe) # convert to 1/900000
+            self.encoder_lock.release()
+            sub['lock'] = None
         except Exception as e:
             self.logger.error(f'Error packing frame of {topic}, data size size={len(frame.data)}B: {e}')
             return
 
-        # sizes = []
-        # for p in packets:
-        #     sizes.append(len(p))
-        # self.logger.info(f'Got {size}B frame => {len(packets)} packs {sizes}')
-        
-        # if sub['push_task'] and not sub['push_task'].done(): # dropping previous frame here
-        #     # if is_keyframe:
-        #     #     await sub['push_task']
-        #     # else:
-        #     #     return
-        #     return
-        #     #await sub['push_task']
-        
+        if is_keyframe:
+            sub['last_keyframe_stamp_ns'] = stamp_ns_raw
         try:
-            start = time.time()
             frame_transport = marshal.dumps({
                 'topic': topic,
                 'frame_packets': packets,
                 'ts': ts,
-                'keyframe': is_keyframe, # don't skip keyframes
+                'keyframe': is_keyframe,
             })
-            self.time_serialization += time.time() - start
-            
-            try:
-                self.out_queue.put_nowait(frame_transport)
-            except Exception as e:
-                 self.logger.error(f'Error putting frame of {topic} into queue, data size size={len(frame.data)}B: {e}')
-            # sub['push_task'] = asyncio.get_event_loop().run_in_executor(sub['executor'], sub['pipe'].send_bytes, frame_transport)
-            # sub['push_task_was_keyframe'] = is_keyframe
-            # sub['push_task'].add_done_callback(lambda f: self.pipe_error_catcher(f, topic))
-            # await sub['push_task']
-            
         except Exception as e:
-            self.logger.error(f'Error pushing frame of {topic}, data size size={len(frame.data)}B: {e}')
+            self.logger.error(f'Error packing frame of {topic}, data size size={len(frame.data)}B: {e}')
             return
         
-        self.num_samples += 1
-        
-        if self.num_samples == 1000:
-            self.logger.info(f'Avg deserialization time: {self.time_deserialization:.20f}s')
-            self.logger.info(f'Avg packet init time: {self.time_packet_init:.20f}s')
-            self.logger.info(f'Avg packetization time: {self.time_packetization:.20f}s')
-            self.logger.info(f'Avg serialization time: {self.time_serialization:.20f}s')
-            self.time_deserialization = 0.0
-            self.time_packet_init = 0.0
-            self.time_packetization = 0.0
-            self.time_serialization = 0.0
-            self.num_samples = 0
-            
+        try:
+            self.out_queue_lock.acquire()
+            sub['lock'] = self.out_queue_lock
+            self.out_queue.put_nowait(frame_transport)
+            self.out_queue_lock.release()
+            sub['lock'] = None
+        except Exception as e:
+            self.logger.error(f'Error putting frame of {topic} into queue, data size size={len(frame.data)}B: {e}')
 
 
-    def on_compressed_image_data(self, topic:str, msg:any):
+    # software encoded compressed frames
+    async def on_compressed_image_data(self, topic:str, msg:any):
 
         if not topic in self.active_subs.keys():
             return
@@ -547,12 +488,13 @@ class Worker:
         
         if 'ignore' in sub:
             return
-        
-        if sub['push_task'] and not sub['push_task'].done(): # skipping frames here
+    
+        try:
+            im:CompressedImage = deserialize_message(msg, CompressedImage)
+            size = len(im.data)
+        except Exception as e:
+            self.logger.error(f'Error deserializing compressed frame of {topic}, msg size={len(msg)}B: {e}')
             return
-
-        im:CompressedImage = deserialize_message(msg, CompressedImage)
-        size = len(im.data)
 
         if not sub['logged']:
             sub['logged'] = True
@@ -561,10 +503,6 @@ class Worker:
         if size == 0:
             return
             
-        # if im.encoding == 'rgb8':
-        #     channels = 3  # 3 for RGB format
-        #     np_array = np.frombuffer(im.data, dtype=np.uint8) # Convert the image data to a NumPy array
-        #     np_array = np_array.reshape(im.height, im.width, channels) # Reshape the array based on the image dimensions
         if im.format == 'bgr8; jpeg compressed bgr8' or \
         im.format == 'rgb8; jpeg compressed bgr8':
 
@@ -580,47 +518,52 @@ class Worker:
         #     h, w = decoded.shape[0:2]
         #     decoded = cv2.applyColorMap(decoded, cv2.COLORMAP_MAGMA)
         #     np_array = np_array.reshape(h, w, channels)
+        
         else:
             self.logger.error(f'Received unsupported compressed frame data for {topic}, format="{im.format}" size={len(im.data)}B; not processing')
             sub['ignore'] = True
             return
 
         # software encode h264
-        frame = VideoFrame.from_ndarray(np_array, format="rgb24")
-
-        stamp_ns_now = int(im.header.stamp.sec * NS_TO_SEC) + int(im.header.stamp.nanosec)
-
-        if not 'first_frame_time_ns' in sub.keys():
-            sub['first_frame_time_ns'] = stamp_ns_now
-            # sub['last_frame_time_ns'] = stamp_ns_raw
-
-        # since_last_frame = stamp_ns_raw - sub['last_frame_time_ns']
-        # sub['last_frame_time_ns'] = stamp_ns_raw
-
-        stamp_ns = stamp_ns_raw - sub['first_frame_time_ns']
-
-        frame.pts = stamp_ns
-        frame.time_base = fractions.Fraction(1, NS_TO_SEC)
-
-        # at around 5 FPS sw encoding is so slow it's actually better to send every frame as a keyframe
-        force_keyframe = False
-        force_keyframe = 'last_keyframe_stamp_ns' not in sub.keys() \
-            or stamp_ns - sub['last_keyframe_stamp_ns'] >= NS_TO_SEC #keyframe every second
-        if force_keyframe:
-            sub['last_keyframe_stamp_ns'] = stamp_ns
-
-        global encoder_h264
-        if encoder_h264 == None:
-            encoder_h264 = H264Encoder()
-
-        packets, timestamp = encoder_h264.encode(frame=frame, force_keyframe=force_keyframe) # convert to 1/90000
         
-        # print(f'Processor pushing image for {topic}')
-        sub['push_task'] = asyncio.get_event_loop().run_in_executor(sub['executor'], sub['pipe'].send, {
-            'topic': topic,
-            'frame_packets': packets,
-            'timestamp': timestamp,
-            'keyframe': force_keyframe, # don't skip keyframes
-        }) # blocks until read, no more frames of this topic are processed until then
-        sub['push_task'].add_done_callback(lambda f: self.pipe_error_catcher(f, topic))
+        stamp_ns_raw = (im.header.stamp.sec * NS_TO_SEC) + (im.header.stamp.nanosec)
+                
+        frame = VideoFrame.from_ndarray(np_array, format="rgb24")
+        frame.pts = stamp_ns_raw
+        frame.time_base = fractions.Fraction(1, NS_TO_SEC) # will be converted to 1/90000
 
+        is_keyframe = 'last_keyframe_stamp_ns' not in sub.keys() \
+            or stamp_ns_raw - sub['last_keyframe_stamp_ns'] >= NS_TO_SEC # make first keyframe, then every second
+
+        try:
+            self.encoder_lock.acquire()
+            sub['lock'] = self.encoder_lock
+            packets, ts = self.encoder_h264.encode(frame=frame, force_keyframe=is_keyframe) # convert to 1/900000
+            self.encoder_lock.release()
+            sub['lock'] = None
+        except Exception as e:
+            self.logger.error(f'Error packing compressed frame of {topic}, data size size={len(frame.data)}B: {e}')
+            return
+        
+        if is_keyframe:
+            sub['last_keyframe_stamp_ns'] = stamp_ns_raw
+        
+        try:
+            frame_transport = marshal.dumps({
+                'topic': topic,
+                'frame_packets': packets,
+                'ts': ts,
+                'keyframe': is_keyframe,
+            })
+        except Exception as e:
+            self.logger.error(f'Error packing compressed frame of {topic}, data size size={len(frame.data)}B: {e}')
+            return
+        
+        try:
+            self.out_queue_lock.acquire()
+            sub['lock'] = self.out_queue_lock
+            self.out_queue.put_nowait(frame_transport)
+            self.out_queue_lock.release()
+            sub['lock'] = None
+        except Exception as e:
+            self.logger.error(f'Error putting compressed frame of {topic} into queue, data size size={len(frame.data)}B: {e}')
