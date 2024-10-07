@@ -147,7 +147,7 @@ class Worker:
         # unsubscribe
         if ctrl_cmd['action'] == 'unsubscribe' and topic in self.active_subs.keys():
             try:
-                self.logger.info(f'Removing local subscriber for {topic}')
+                self.logger.warn(f'Removing local subscriber for {topic}')
             
                 self.active_subs[topic]['ignore'] = True # ignore any new data
                 self.reader_node.destroy_subscription(self.active_subs[topic]['sub'])
@@ -161,10 +161,10 @@ class Worker:
                         'msg': None # = closing
                     }) # blocks until read
                     self.active_subs[topic]['push_task'].add_done_callback(lambda f: self.pipe_close(f, topic))
-                self.active_subs[topic]['loop'].stop()
+                self.active_subs[topic]['loop'].call_soon_threadsafe(self.active_subs[topic]['loop'].stop)
+                # if 'lock' in self.active_subs[topic].keys() and self.active_subs[topic]['lock']:
+                #     self.active_subs[topic]['lock'].release();
                 self.active_subs[topic]['thread'].join()
-                if 'lock' in self.active_subs[topic].keys() and self.active_subs[topic]['lock']:
-                    self.active_subs[topic]['lock'].release();
                 del self.active_subs[topic]
             except Exception as e:
                 self.logger.error(f'Failed unsubscribing from topic {topic}: {e}')
@@ -193,10 +193,18 @@ class Worker:
                 self.logger.error(f'NOT subscribing to topic {topic}, msg class {msg_type} not loaded')
                 return
 
+            def handler_error_catcher(f):
+                try:
+                    ee = f.exception()
+                    if ee:
+                        self.logger.error(f'Msg handler err {topic}: {ee}\n{traceback.format_exception(ee)}')
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    self.logger.error(f'Handler output err while catching errors {topic}: {e}')
+            
             try:
                 self.logger.info(c(f'Subscribing to topic {topic} {msg_type} qosProfile={qosProfile}', 'cyan'))
-                # no_skip:bool = ctrl_cmd['no_skip'] if 'no_skip' in ctrl_cmd.keys() else False
-                # loop = asyncio.get_event_loop()
                 
                 topic_loop = asyncio.new_event_loop()
                 topic_thread = threading.Thread(target=self.run_topic_loop, name=f'loop_{topic}', args=(topic,topic_loop))
@@ -204,13 +212,37 @@ class Worker:
                 
                 cb = None
                 if msg_type == ImageTopicReadSubscription.STREAM_MSG_TYPE:
-                    cb = lambda msg: asyncio.run_coroutine_threadsafe(self.on_stream_image_data(topic, msg), topic_loop)
+                    def on_msg_cb(msg:any):
+                        try:
+                            f = asyncio.run_coroutine_threadsafe(self.on_stream_image_data(topic, msg), topic_loop)
+                            f.add_done_callback(handler_error_catcher)
+                        except Exception as e:
+                            self.logger.error(f'Error handlind data of {topic}: {e}')
+                    cb = on_msg_cb
                 elif msg_type == ImageTopicReadSubscription.MSG_TYPE:
-                    cb = lambda msg: asyncio.run_coroutine_threadsafe(self.on_raw_image_data(topic, msg), topic_loop)
+                    def on_msg_cb(msg:any):
+                        try:
+                            f = asyncio.run_coroutine_threadsafe(self.on_raw_image_data(topic, msg), topic_loop)
+                            f.add_done_callback(handler_error_catcher)
+                        except Exception as e:
+                            self.logger.error(f'Error handlind data of {topic}: {e}')
+                    cb = on_msg_cb
                 elif msg_type == ImageTopicReadSubscription.COMPRESSED_MSG_TYPE:
-                    cb = lambda msg: asyncio.run_coroutine_threadsafe(self.on_compressed_image_data(topic, msg), topic_loop)
+                    def on_msg_cb(msg:any):
+                        try:
+                            f = asyncio.run_coroutine_threadsafe(self.on_compressed_image_data(topic, msg), topic_loop)
+                            f.add_done_callback(handler_error_catcher)
+                        except Exception as e:
+                            self.logger.error(f'Error handlind data of {topic}: {e}')
+                    cb = on_msg_cb
                 else: # data
-                    cb = lambda msg: asyncio.run_coroutine_threadsafe(self.on_data(topic, msg), topic_loop)
+                    def on_msg_cb(msg:any):
+                        try:
+                            f = asyncio.run_coroutine_threadsafe(self.on_data(topic, msg), topic_loop)
+                            f.add_done_callback(handler_error_catcher)
+                        except Exception as e:
+                            self.logger.error(f'Error handlind data of {topic}: {e}')
+                    cb = on_msg_cb
                 
                 sub = self.reader_node.create_subscription(
                                 msg_type=message_class,
@@ -238,8 +270,8 @@ class Worker:
                     'loop': topic_loop,
                     'thread': topic_thread
                 }
-            except Exception as e:
-                self.logger.error(f'Failed subscribing to topic {topic}, msg class={msg_type}: {e}')
+            except Exception as ee:
+                self.logger.error(f'Failed subscribing to topic {topic}, msg class={msg_type}: {ee}')
 
 
     # trhead for each individual topic
@@ -247,6 +279,7 @@ class Worker:
         self.logger.info(f'Running loop thread for {topic}')
         asyncio.set_event_loop(loop) # set default loop for the trhead
         loop.run_forever()
+        self.logger.info(f'Stopped loop thread for {topic}')
     
     
     async def on_data(self, topic:str, msg:any):
@@ -262,25 +295,23 @@ class Worker:
         # if sub['push_task'] and not sub['push_task'].done():
         #     return # dropping data here
         
+        def pipe_error_catcher(f):
+            try:
+                ee = f.exception()
+                if ee:
+                    self.logger.error(f'Pipe output err {topic}: {ee}')
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                self.logger.error(f'Pipe output err while catching errors {topic}: {e}')
+        
         sub['push_task'] = asyncio.get_event_loop().run_in_executor(sub['executor'], sub['pipe'].send, {
             'topic': topic,
             'msg': msg
         }) # blocks until read, no more frames of this topic are processed until then
-        sub['push_task'].add_done_callback(lambda f: self.pipe_error_catcher(f, topic))
+        sub['push_task'].add_done_callback(pipe_error_catcher)
         await sub['push_task']
         
-    
-    def pipe_error_catcher(self, f, topic):
-        try:
-            ee = f.exception()
-            if ee:
-                self.logger.error(f'Pipe output err {topic}: {ee}')
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            self.logger.error(f'Pipe output err while carching errors {topic}: {e}')
-            pass
-    
     
     def pipe_close(self, f, topic):
         try:
@@ -330,15 +361,14 @@ class Worker:
             self.logger.error(f'Error casting frame to packet for {topic}, data size size={len(frame.data)}B: {e}')
             return
 
+        self.encoder_lock.acquire()
         try:
-            self.encoder_lock.acquire()
-            sub['lock'] = self.encoder_lock
             packets, ts = self.encoder_h264.pack(p)
-            self.encoder_lock.release()
-            sub['lock'] = None
         except Exception as e:
             self.logger.error(f'Error packing frame of {topic}, data size size={len(frame.data)}B: {e}')
+            self.encoder_lock.release()
             return
+        self.encoder_lock.release()
 
         try:
             frame_transport = marshal.dumps({
@@ -351,14 +381,12 @@ class Worker:
             self.logger.error(f'Error pushing frame of {topic}, data size size={len(frame.data)}B: {e}')
             return
         
+        self.out_queue_lock.acquire()
         try:
-            self.out_queue_lock.acquire()
-            sub['lock'] = self.out_queue_lock
             self.out_queue.put_nowait(frame_transport)
-            self.out_queue_lock.release()
-            sub['lock'] = None
         except Exception as e:
             self.logger.error(f'Error putting frame of {topic} into queue, data size size={len(frame.data)}B: {e}')
+        self.out_queue_lock.release()
 
 
     # software encoded frames
@@ -445,16 +473,15 @@ class Worker:
         is_keyframe = 'last_keyframe_stamp_ns' not in sub.keys() \
             or stamp_ns_raw - sub['last_keyframe_stamp_ns'] >= NS_TO_SEC # make first keyframe, then every second
 
+        self.encoder_lock.acquire()
         try:
-            self.encoder_lock.acquire()
-            sub['lock'] = self.encoder_lock
             packets, ts = self.encoder_h264.encode(frame=frame, force_keyframe=is_keyframe) # convert to 1/900000
-            self.encoder_lock.release()
-            sub['lock'] = None
         except Exception as e:
-            self.logger.error(f'Error packing frame of {topic}, data size size={len(frame.data)}B: {e}')
+            self.logger.error(f'Error packing frame of {topic}, data size size={len(im.data)}B: {e}')
+            self.encoder_lock.release()
             return
-
+        self.encoder_lock.release()
+        
         if is_keyframe:
             sub['last_keyframe_stamp_ns'] = stamp_ns_raw
         try:
@@ -468,14 +495,12 @@ class Worker:
             self.logger.error(f'Error packing frame of {topic}, data size size={len(frame.data)}B: {e}')
             return
         
+        self.out_queue_lock.acquire()
         try:
-            self.out_queue_lock.acquire()
-            sub['lock'] = self.out_queue_lock
             self.out_queue.put_nowait(frame_transport)
-            self.out_queue_lock.release()
-            sub['lock'] = None
         except Exception as e:
             self.logger.error(f'Error putting frame of {topic} into queue, data size size={len(frame.data)}B: {e}')
+        self.out_queue_lock.release()
 
 
     # software encoded compressed frames
@@ -535,15 +560,14 @@ class Worker:
         is_keyframe = 'last_keyframe_stamp_ns' not in sub.keys() \
             or stamp_ns_raw - sub['last_keyframe_stamp_ns'] >= NS_TO_SEC # make first keyframe, then every second
 
+        self.encoder_lock.acquire()
         try:
-            self.encoder_lock.acquire()
-            sub['lock'] = self.encoder_lock
             packets, ts = self.encoder_h264.encode(frame=frame, force_keyframe=is_keyframe) # convert to 1/900000
-            self.encoder_lock.release()
-            sub['lock'] = None
         except Exception as e:
             self.logger.error(f'Error packing compressed frame of {topic}, data size size={len(frame.data)}B: {e}')
+            self.encoder_lock.release()
             return
+        self.encoder_lock.release()
         
         if is_keyframe:
             sub['last_keyframe_stamp_ns'] = stamp_ns_raw
@@ -559,11 +583,9 @@ class Worker:
             self.logger.error(f'Error packing compressed frame of {topic}, data size size={len(frame.data)}B: {e}')
             return
         
+        self.out_queue_lock.acquire()
         try:
-            self.out_queue_lock.acquire()
-            sub['lock'] = self.out_queue_lock
             self.out_queue.put_nowait(frame_transport)
-            self.out_queue_lock.release()
-            sub['lock'] = None
         except Exception as e:
             self.logger.error(f'Error putting compressed frame of {topic} into queue, data size size={len(frame.data)}B: {e}')
+        self.out_queue_lock.release()
