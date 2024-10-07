@@ -227,20 +227,24 @@ class ImageTopicReadSubscription:
                         self.event_loop.create_task(peer_sender.transport.stop())
                     del self.peers[topic][id_peer]
                     continue
-
-                if peer_sender.transport.state != 'connected':
-                    print(c(f'Peer {id_peer} {topic} sender not connected resetting ts, state={peer_sender.transport.state}', 'dark_grey'))
-                    self.peers[topic][id_peer]['first_ts'] = -1
-                    self.peers[topic][id_peer]['last_ts'] = -1
-                    continue
                 
                 log_first = False
+                
+                if peer_sender.transport.state != 'connected':
+                    if not 'logged_dropping_not_connected' in self.peers[topic][id_peer].keys():
+                        self.peers[topic][id_peer]['logged_dropping_not_connected'] = True
+                        self.ctrl_node.get_logger().info(c(f'Peer {id_peer} {topic} sender not connected resetting ts, state={peer_sender.transport.state}', 'dark_grey'))
+                    self.peers[topic][id_peer]['first_ts'] = -1
+                    self.peers[topic][id_peer]['last_ts'] = -1
+                    continue   
+                
                 if self.peers[topic][id_peer]['first_ts'] < 0:
                     if not keyframe:
-                        print(c(f'Dropping initial non-kf of {topic} for peer={id_peer}; ts={ts_frame}', 'dark_grey'))
+                        if not 'logged_dropping_initial_non_kf' in self.peers[topic][id_peer].keys():
+                            self.peers[topic][id_peer]['logged_dropping_initial_non_kf'] = True
+                            self.ctrl_node.get_logger().info(c(f'Dropping initial non-kf of {topic} for peer={id_peer}; ts={ts_frame}', 'dark_grey'))
                         continue
                     self.peers[topic][id_peer]['first_ts'] = ts_frame
-                    self.ctrl_node.get_logger().info(f'👁️  FIRST KF TS {ts_frame}')
                     log_first = True
                     
                 peer_pts = ts_frame - self.peers[topic][id_peer]['first_ts']
@@ -250,12 +254,16 @@ class ImageTopicReadSubscription:
                     if self.peers[topic][id_peer]['num_older_ts'] > 10: # reset on too many older
                         pass
                     else:
-                        print(c(f'Dropping older frame of {topic} for peer={id_peer}; pt={peer_pts}', 'dark_grey'))
+                        self.ctrl_node.get_logger().info(c(f'Dropping older frame of {topic} for peer={id_peer}; pt={peer_pts}', 'dark_grey'))
                         continue
                 self.peers[topic][id_peer]['last_ts'] = peer_pts
                 self.peers[topic][id_peer]['num_older_ts'] = 0
                 
                 if log_msg or log_first:
+                    if 'logged_dropping_initial_non_kf' in self.peers[topic][id_peer].keys():
+                        del self.peers[topic][id_peer]['logged_dropping_initial_non_kf'] # reset
+                    if 'logged_dropping_not_connected' in self.peers[topic][id_peer].keys():
+                        del self.peers[topic][id_peer]['logged_dropping_not_connected'] # reset
                     self.ctrl_node.get_logger().info(f'👁️  Sending {len(frame_packets)} pkts of {topic} > peer={id_peer} peer_pts={peer_pts} / id_stream= {str(peer_sender._stream_id)}, rcvd={self.num_received[topic]}, sender={str(id(self.peers[topic][id_peer]))}, pc={peer_sender.pc.connectionState} transport={peer_sender.transport.state}')
                     
                 try:

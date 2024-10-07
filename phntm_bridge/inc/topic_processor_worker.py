@@ -158,12 +158,10 @@ class Worker:
                     self.logger.info(f'Closing pipe for {topic}')
                     self.active_subs[topic]['push_task'] = asyncio.get_event_loop().run_in_executor(self.active_subs[topic]['executor'], self.active_subs[topic]['pipe'].send, {
                         'topic': topic,
-                        'msg': None # = closing
+                        'msg': None # = closing pipe
                     }) # blocks until read
                     self.active_subs[topic]['push_task'].add_done_callback(lambda f: self.pipe_close(f, topic))
                 self.active_subs[topic]['loop'].call_soon_threadsafe(self.active_subs[topic]['loop'].stop)
-                # if 'lock' in self.active_subs[topic].keys() and self.active_subs[topic]['lock']:
-                #     self.active_subs[topic]['lock'].release();
                 self.active_subs[topic]['thread'].join()
                 del self.active_subs[topic]
             except Exception as e:
