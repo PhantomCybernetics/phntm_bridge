@@ -115,9 +115,9 @@ class TopicWritePublisher:
         if time.time()-self.last_time_logged > self.log_message_every_sec:
             self.last_time_logged = time.time() #logged now
             if type(msg) is bytes:
-                self.node.get_logger().info(f' 🐵 ▼ {self.topic} got message: {len(msg)}B from id_peer={id_peer}, total rcvd: {self.num_received}, written={self.num_written}')
+                self.node.get_logger().info(f'🐵 {self.topic} got message: {len(msg)}B from id_peer={id_peer}, total rcvd: {self.num_received}, written={self.num_written}')
             else:
-                self.node.get_logger().info(f' 🐵 ▼ {self.topic} got message: {len(msg)}, from id_peer={id_peer}, total rcvd: {self.num_received}, written={self.num_written}')
+                self.node.get_logger().info(f'🐵 {self.topic} got message: {len(msg)}, from id_peer={id_peer}, total rcvd: {self.num_received}, written={self.num_written}')
 
         self.num_written += 1
         self.pub.publish(self.last_msg)

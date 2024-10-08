@@ -267,7 +267,6 @@ class ImageTopicReadSubscription:
                     self.ctrl_node.get_logger().info(f'👁️  Sending {len(frame_packets)} pkts of {topic} > peer={id_peer} peer_pts={peer_pts} / id_stream= {str(peer_sender._stream_id)}, rcvd={self.num_received[topic]}, sender={str(id(self.peers[topic][id_peer]))}, pc={peer_sender.pc.connectionState} transport={peer_sender.transport.state}')
                     
                 try:
-                    # self.peers[topic][id_peer]['last_send_task'] = self.event_loop.create_task(peer_sender.send_direct(frame_data=frame_packets, stamp_converted=peer_pts, keyframe=keyframe))                
                     self.peers[topic][id_peer]['last_send_task'] = self.event_loop.create_task(peer_sender.send_direct(frame_data=frame_packets, stamp_converted=peer_pts, keyframe=keyframe))                
                 except Exception as e:
                     self.ctrl_node.get_logger().error(f'👁️  Exception while sending {topic} to id_peer={id_peer} / id_stream= {str(peer_sender._stream_id)}, {e}; pc={peer_sender.pc.connectionState}, transport={peer_sender.transport.state}')
