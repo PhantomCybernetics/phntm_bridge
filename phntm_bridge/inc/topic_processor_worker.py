@@ -490,14 +490,14 @@ class Worker:
                 'keyframe': is_keyframe,
             })
         except Exception as e:
-            self.logger.error(f'Error packing frame of {topic}, data size size={len(frame.data)}B: {e}')
+            self.logger.error(f'Error packing frame of {topic}, data size size={len(im.data)}B: {e}')
             return
         
         self.out_queue_lock.acquire()
         try:
             self.out_queue.put_nowait(frame_transport)
         except Exception as e:
-            self.logger.error(f'Error putting frame of {topic} into queue, data size size={len(frame.data)}B: {e}')
+            self.logger.error(f'Error putting frame of {topic} into queue, data size size={len(im.data)}B: {e}')
         self.out_queue_lock.release()
 
 
@@ -562,7 +562,7 @@ class Worker:
         try:
             packets, ts = self.encoder_h264.encode(frame=frame, force_keyframe=is_keyframe) # convert to 1/900000
         except Exception as e:
-            self.logger.error(f'Error packing compressed frame of {topic}, data size size={len(frame.data)}B: {e}')
+            self.logger.error(f'Error packing compressed frame of {topic}, data size size={len(im.data)}B: {e}')
             self.encoder_lock.release()
             return
         self.encoder_lock.release()
@@ -578,12 +578,12 @@ class Worker:
                 'keyframe': is_keyframe,
             })
         except Exception as e:
-            self.logger.error(f'Error packing compressed frame of {topic}, data size size={len(frame.data)}B: {e}')
+            self.logger.error(f'Error packing compressed frame of {topic}, data size size={len(im.data)}B: {e}')
             return
         
         self.out_queue_lock.acquire()
         try:
             self.out_queue.put_nowait(frame_transport)
         except Exception as e:
-            self.logger.error(f'Error putting compressed frame of {topic} into queue, data size size={len(frame.data)}B: {e}')
+            self.logger.error(f'Error putting compressed frame of {topic} into queue, data size size={len(im.data)}B: {e}')
         self.out_queue_lock.release()

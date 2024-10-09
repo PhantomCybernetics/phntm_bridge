@@ -1207,7 +1207,7 @@ class BridgeController(Node, BridgeControllerConfig):
             return { 'err': 2, 'msg': f'Service client init timeout' }
 
         try:
-            req =  message_converter.convert_dictionary_to_ros_message(
+            req = message_converter.convert_dictionary_to_ros_message(
                 message_class.Request,
                 payload
                 )

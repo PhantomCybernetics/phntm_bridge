@@ -232,16 +232,17 @@ class Introspection (AsyncIOEventEmitter):
             # # new nodes and topics aren't detected (on Humble) when started after the bridge node
             # # calling ros2cli topic list seems to flush the cache, so trigering it when a change is
             # # detected in docker containers
-            try:
-                self.logger.info(c(f'Docker containers changed, calling ros-cli topic list to flush the cache'))    
-                process = subprocess.Popen(['ros2', 'topic', 'list'],
-                                                stdout=self.devnull, 
-                                                stderr=subprocess.STDOUT)
-                process.wait()
-            except Exception as e:
-                self.logger.info(c(f'Exception while calling ros2cli topic list: {e}'))
+            # try:
+            #     self.logger.info(c(f'Docker containers changed, calling ros-cli topic list to flush the cache'))    
+            #     process = subprocess.Popen(['ros2', 'topic', 'list'],
+            #                                     stdout=self.devnull, 
+            #                                     stderr=subprocess.STDOUT)
+            #     process.wait()
+            # except Exception as e:
+            #     self.logger.info(c(f'Exception while calling ros2cli topic list: {e}'))
             # 
             # make sure instrospection is running as there are likely things to be detected
+            
             if not self.running:
                 asyncio.get_event_loop().create_task(self.start())
                 
