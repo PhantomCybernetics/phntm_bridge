@@ -16,6 +16,8 @@ import subprocess
 
 import fractions
 import tarfile, io
+import yaml
+import xml.etree.ElementTree as XmlET
 
 # from rcl_interfaces.msg import ParameterDescriptor
 # import signal
@@ -1264,13 +1266,76 @@ class BridgeController(Node, BridgeControllerConfig):
 
 async def main_async():
 
-    if not os.path.exists('/ros2_ws/phntm_devices_initialized'):
-        print(c('First run, initializing udev rules for /dev (bcs Picam)', 'magenta'))
+    first_run_file = '/ros2_ws/.phntm_first_run'
+    
+    if not os.path.exists(first_run_file):
+        
+        print(c('First run, checking extra packages', 'magenta'))
+        
+        # load node name from config before we can set node name
+        config_path = '/ros2_ws/phntm_bridge_params.yaml'
+        try:
+            with open(config_path, 'r') as file:
+                config = yaml.safe_load(file)
+                extra_packages = config["/**"]["ros__parameters"].get('extra_packages', [])
+                for extra_pkg in extra_packages:
+                    print(c(f'Checking package: {extra_pkg}', 'yellow'))
+                    if os.path.isdir(extra_pkg):
+                        print(f'  => directory, checking package.xml')
+                        pkg_xml_path = os.path.join(extra_pkg, 'package.xml')
+                        try:
+                            xml_tree = XmlET.parse(pkg_xml_path)
+                            print(f'  {pkg_xml_path} parsed')
+                            xml_root = xml_tree.getroot()
+                            if xml_root == None:
+                                print(c(f'  XML root not found, skipping', 'red'))
+                                continue
+                            build_type = xml_root.find('export/build_type')
+                            if build_type == None:
+                                print(c(f'  export/build_type not found, skipping', 'red'))
+                                continue
+                            pkg_name = xml_root.find('name')
+                            if pkg_name == None:
+                                print(c(f'  export/build_type not found, skipping', 'red'))
+                                continue
+                            print(f'  name: {pkg_name.text}')
+                            print(f'  build_type: {build_type.text}')
+                            try:
+                                print(f'  installing deps...')
+                                process = subprocess.Popen(['/usr/bin/rosdep', 'install', '-i', '--from-path', extra_pkg, '--rosdistro', os.environ["ROS_DISTRO"], '-y'], cwd='/ros2_ws/')
+                                process.wait()
+                                print(f'  building...')
+                                process = subprocess.Popen(['/usr/bin/colcon', 'build', '--symlink-install', '--packages-select', pkg_name.text], cwd='/ros2_ws/')
+                                process.wait()
+                            except Exception as e:
+                                print(c(f'  Error building {e}', 'red'))
+                                pass
+                            print(f'  Done.')
+                        except FileNotFoundError:
+                            print(c(f'  {pkg_xml_path} not found, skipping', 'red'))
+                            pass
+                    else:
+                        pkg_name = 'ros-'+os.environ["ROS_DISTRO"]+'-'+extra_pkg.replace('_', '-')
+                        print(f'  => package, installing {pkg_name}...')
+                        process = subprocess.Popen(['/usr/bin/apt-get', 'install', '-y', pkg_name])
+                        process.wait()
+                # node_name = f'{node_name}_{self.hostname}' if self.hostname else node_name
+        except FileNotFoundError:
+            print(c(f'{config_path} not found, ignoring', 'magenta'))
+            pass
+        
+        # TODO remove?!
+        print(c('Initializing udev rules for /dev (bcs Picam)', 'magenta'))
         process = subprocess.Popen([f'{ROOT}/../scripts/reload-devices.sh'])
         process.wait()
         print(c('Udev rules initialized', 'magenta'))
         await asyncio.sleep(1.0) # needs a bit for the udev rules to take effect and picam init sucessfuly
-
+        
+        open(first_run_file, 'w').close()
+        
+        print(c('Restarting Bridge...', 'magenta'))
+        exit()
+    
     rclpy.init()
     
     # reader runs on a separate process

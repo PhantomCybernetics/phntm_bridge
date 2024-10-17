@@ -12,4 +12,3 @@ if which udevadm > /dev/null; then
   udevadm trigger
   set -e # Re-enable exit on error
 fi
-touch /ros2_ws/phntm_devices_initialized
