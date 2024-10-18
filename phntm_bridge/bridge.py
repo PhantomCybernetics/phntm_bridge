@@ -1267,8 +1267,13 @@ class BridgeController(Node, BridgeControllerConfig):
 async def main_async():
 
     first_run_file = '/ros2_ws/.phntm_first_run'
+    force_first_run_checks = 'FORCE_FIRST_RUN_CHECKS' in os.environ.keys()
+    force_first_run_ignore_file = '/ros2_ws/.phntm_force_first_run_ignore'
+    if force_first_run_checks and os.path.exists(force_first_run_ignore_file): # just restarted after forced check, ignore to allow normal start
+        os.remove(force_first_run_ignore_file)
+        force_first_run_checks = False
     
-    if not os.path.exists(first_run_file):
+    if force_first_run_checks or not os.path.exists(first_run_file):
         
         print(c('First run, checking extra packages', 'magenta'))
         
@@ -1332,6 +1337,8 @@ async def main_async():
         await asyncio.sleep(1.0) # needs a bit for the udev rules to take effect and picam init sucessfuly
         
         open(first_run_file, 'w').close()
+        if force_first_run_checks:
+            open(force_first_run_ignore_file, 'w').close() # ignore force after restart
         
         print(c('Restarting Bridge...', 'magenta'))
         exit()
