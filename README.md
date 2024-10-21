@@ -1,67 +1,66 @@
 # Phantom Bridge
 
-Fast WebRTC + Socket.io ROS2 bridge written in Python for real-time data and video streaming, teleoperation, HRI, and remote monitoring. Comes with Docker Container control for the host machine, CPU and Wifi monitoring, customizable Web UI and peer client API.
+Fast WebRTC + Socket.io ROS2 Bridge written in Python for real-time data and video streaming, teleoperation, HRI, and remote robot monitoring. Comes with Docker Container control for the host machine, CPU and Wi-Fi monitoring, and [customizable Web Interface](https://github.com/PhantomCybernetics/bridge_ui). \
+\
+[See full documentation here](https://docs.phntm.io/bridge) \
 
 ## Features
-- ROS Topic and Service discovery 
-- Fast streamimg of binary ROS2 messages via UDP 
-- Fast hw-encoded H264 video steraming
-- Stream sw-encoded ROS Image messages as H264 video (CPU cost, 3-10 FPS max on Pi4B)  
-- Docker container discovery & control (start/stop/restart) via Socket.io  
-- Reliable ROS service calls via Socket.io  
-- Robot's wifi signal strength monitoring, scan & AP roaming  
-- Connects P2P or via a TURN server  
-- ~5-30ms RTT on the same wifi local network, ~50ms RTT remote operation via TURN
-- Multiple peers can connect to the same machine at very low extra CPU cost (incl. video streams)  
-- Works with rosbag, and sims like Gazebo or Webots
-- File upload from any running Docker container (URDF models, etc)  
-- System load + Docker stats monitoring  
+- ROS2 Topic and Service discovery
+- Fast streamimg of binary ROS2 messages (in a out)
+- Fast H.264 video streaming (hw or sw encodeded frames)
+- Software encoded ROS2 Image messages streamed as H.264 video
+- Docker container discovery and control
+- Reliable ROS2 Service calls
+- ROS2 Parameneters read/write API
+- Extra ROS2 packages can be easily included for custom message type support
+- Robot's Wi-Fi signal monitoring, scan & roaming
+- File retreival from any running Docker container (such as URDF models)
+- System Load and Docker Stats monitoring
+- Standalone lightweight Bridge Agent for monitoring and management of various parts of a distributed system
+- Connects P2P or via a TURN server when P2P link is not possible
+- Multiple peers can connect to the same machine at a very low extra CPU cost
+- ~5-10ms RTT on local network, 50ms+ RTT remote operation via a TURN server
+- Works with rosbag and sims such as Gazebo or Webots
 
-TODO
-- TODO: Variable bitrate for video streams  
-- TODO: USB camera support?
-- TODO: Sound in/out
-- TODO: Compressed PointCloud
-- TODO: Compressed CostMap
+## Architecture
+![Infrastructure map](https://github.com/PhantomCybernetics/phntm_bridge/blob/a1499ecf02909b20fa7101d9d415bca3d61ca667/docs/PHNTM%20Bridge%20Architecture.png)
 
 # Install
 
 ### Install Docker, Docker Build & Docker Compose
 
-E.g. on Debian: https://docs.docker.com/engine/install/debian/
-Then add current user to the docker group
+E.g. on Debian/Ubuntu follow [these instructions](https://docs.docker.com/engine/install/debian/). Then add the current user to the docker group:
 ```bash
 sudo usermod -aG docker ${USER}
-#log out & back in
+# log out & back in
 ```
 
-### Build Docker Image
-TODO: This will be via docker pull \
-Download Dockerfile:
+### Build the Docker Image
 ```bash
 cd ~
-wget https://raw.githubusercontent.com/PhantomCybernetics/phntm_bridge/main/Dockerfile -O phntm-bridge.Dockerfile
-```
-Build Docker image, ROS_DISTRO should match your other ROS2 packages running on the system (defaults to humble). Use `--build-arg PI_EXTRAS=True` to enable harware video encoding on Raspberry Pi.
-```bash
+git clone git@github.com:PhantomCybernetics/phntm_bridge.git phntm_bridge
+cd phntm_bridge
 ROS_DISTRO=humble; \
-docker build -f phntm-bridge.Dockerfile -t phntm/bridge:$ROS_DISTRO \
+docker build -f Dockerfile -t phntm/bridge:$ROS_DISTRO \
   --build-arg ROS_DISTRO=$ROS_DISTRO \
-  --build-arg PI_EXTRAS=True \
-  --build-arg PI_CAMERA=True \
   --build-arg ARCH=aarch64 \
   .
 ```
-Docker downloads and builds several packages from source, this may take a while (about ~25 minutes on Pi 4B with PI_EXTRAS=True). Pre-built images will be hosted on Docker Hub as soon as I get to it.
 
-### Register new Machine on Cloud Bridge
-This registers a new robot on the Cloud Bridge and returns default config file you can then edit further. Unique id_robot and key are generated in this step. More about the config file @here.
+### Register a new Machine on Cloud Bridge
+This registers a new robot on the [Cloud Bridge](https://github.com/PhantomCybernetics/cloud_bridge) and returns default config file you can edit further. Unique id_robot and key pair are generated in this step.
 ```bash
-wget -O phntm_bridge.yaml 'https://bridge.phntm.io:1337/robot/register?yaml' --no-check-certificate
-# edit the file to give your robot a name and configure the bridge
+wget -O ~/phntm_bridge.yaml 'https://bridge.phntm.io:1337/robot/register?yaml'
 ```
 
-### Add service to compose.yaml
+### Explore and Modify the Config File
+A default configutation file was created in ~/phntm_bridge.yaml \
+The full list of configuration options can be found [here](https://docs.phntm.io/bridge/configuration). \
+```yaml
+# TODO
+```
+
+### Add Bridge Service to your compose.yaml
 Add phntm_bridge service to your compose.yaml file with ~/phntm_bridge.yaml mounted in the container:
 ```yaml
 services:
@@ -86,69 +85,29 @@ services:
       ros2 launch phntm_bridge bridge_launch.py
 ```
 
-### Run
+### Run the Bridge
 ```bash
 docker compose up phntm_bridge
 ```
 
-Then open https://bridge.phntm.io/YOUR_ROBOT_ID in your web browser ([Firefox has issues](https://github.com/PhantomCybernetics/bridge_ui/blob/main/FIREFOX_ISSUES.md)). \
-YOUR_ROBOT_ID can be found in the generated phntm_bridge.yaml file under ros__parameters/id_robot. \
+### Open the Web UI
+Open https://bridge.phntm.io/ID_ROBOT in a web browser. \
+ \ 
+If you provided maintainer's e-mail in your robot's YAML config file, a permanent link will be sent to you for your reference after the first Bridge launch. \
  \
-[Detailed web UI documentation is here](https://github.com/PhantomCybernetics/bridge_ui)
+Please note that Firefox is not fully supported at this time, ([reasons are explained here](https://github.com/PhantomCybernetics/bridge_ui/blob/main/FIREFOX_ISSUES.md)).
 
 
-# Dev Mode
-Dev mode mapps live git repo on the host machine to the container so that you can make changes more conventinetly.
-```bash
-cd ~
-git clone git@github.com:PhantomCybernetics/phntm_bridge.git phntm_bridge
-```
+## TODOs in the Pipeline
+- Compressed CostMap streaming
+- Compressed PointCloud streaming
+- Audio in/out streaming
+- Variable bitrate for video (?)
+- Generic USB camera support (?!)
 
-Make the following changes to your docker compose service in compose.yaml. This overwrites /ros2_ws/src/phntm_bridge with live git repo so that you can edit source code from the host filesystem easily:
-```yaml
-services:
-  phntm_bridge:
-      - ~/phntm_bridge:/ros2_ws/src/phntm_bridge
-    command:
-      # launching manually to prevent Docker from exiting on crash
-      /bin/sh -c "while sleep 1000; do :; done"
-```
 
-Launch manually for better control:
-```bash
-docker compose up phntm_bridge -d
-docker exec -it phntm-bridge bash
-ros2 launch phntm_bridge bridge_launch.py
-```
-
-# Video
-
-## Hardware-encoded video
-
-[Raspberry Pi Camera modules](https://www.raspberrypi.com/products/#cameras-and-displays) are automatically discovered out of the box and can stream very fast H264 video at high resolution with a very small CPU overhead. This is achieved utilizing hw-encoding capabilities on the VideoCore and Picam2 library included in the Docker image.
-
-[OAK Cameras](https://shop.luxonis.com/collections/oak-cameras-1): TODO!
-
-## ROS sensor_msgs/msg/Image
-
-Standard ROS image topics can be subscribed to and streamed as WebRTC video. these will be software encoded and streamed as H.264. The ROS message contains a raw OpenCV frame, which needs to be encoded and packetized. At this moment the following frame encodings are impelemnted: rgb8 for RGB, 16UC1 and 32FC1 for depth.
-
-Software encoding requires significantly more CPU time compared to GPU-based video encoding and can lead to increased latency and power consumption. Despite being offloaded to a dedicated process[^1]. On Pi 4B, camera streaming 640x480 @ 30 FPS only achieves about 5-10 FPS transmission. With delay between frames this long, every frame is encoded as a keyframe.
-
-[^1] The process encoding image frames is in fact shared with all read subscriptions, including non-image ROS topics, in order ro isolate fast hw-encoded video streaming and inbound control data streams from potentially slower data.
-
-## Depth processing
-
-ROS Image messages containing depth data can be processed and colorized for better visibility. As mentioned above, 16UC1 and 32FC1 frame encoginds are supported at this point.
-
-## USB cameras
-
-TODO!
-
-# Architecture
-
-![Infrastructure map](https://github.com/PhantomCybernetics/phntm_bridge/blob/a1499ecf02909b20fa7101d9d415bca3d61ca667/docs/PHNTM%20Bridge%20Architecture.png)
-
-## See also
-- [Cloud Bridge](https://github.com/PhantomCybernetics/cloud_bridge#readme) facilitates peer handshakes and signalling  
+## See Also
+- [Documentation](https://docs.phntm.io/bridge) Full Phantom Bridge documentation
 - [Bridge UI](https://github.com/PhantomCybernetics/bridge_ui#readme) customizable robot web UI/dashboard
+- [Picam ROS2](https://github.com/PhantomCybernetics/picam_ros2) standalone ROS node that converts hardware-encoded H.264 frames into ROS messages
+- [Cloud Bridge](https://github.com/PhantomCybernetics/cloud_bridge#readme) facilitates peer handshakes and signalling
