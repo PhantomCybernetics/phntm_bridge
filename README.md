@@ -91,7 +91,7 @@ docker compose up phntm_bridge
 ```
 
 ### Open the Web UI
-Open https://bridge.phntm.io/ID_ROBOT in a web browser. \
+Open `https://bridge.phntm.io/ID_ROBOT` in a web browser. \
  \
 If you provided maintainer's e-mail in your robot's YAML config file, a permanent link will be sent to you for your reference after the first Bridge launch. \
  \
@@ -109,5 +109,5 @@ Please note that Firefox is not fully supported at this time, [reasons are expla
 ## See Also
 - [Documentation](https://docs.phntm.io/bridge) Full Phantom Bridge documentation
 - [Bridge UI](https://github.com/PhantomCybernetics/bridge_ui#readme) customizable robot web UI/dashboard
-- [Picam ROS2](https://github.com/PhantomCybernetics/picam_ros2) standalone ROS node that converts hardware-encoded H.264 frames into ROS messages
+- [Picam ROS2](https://github.com/PhantomCybernetics/picam_ros2) standalone ROS2 node that converts hardware-encoded H.264 frames into ROS messages
 - [Cloud Bridge](https://github.com/PhantomCybernetics/cloud_bridge#readme) facilitates peer handshakes and signalling
