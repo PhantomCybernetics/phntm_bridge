@@ -1,9 +1,71 @@
+import gpiod
+import time
+from gpiod.line import Direction, Value
+
+# chip = gpiod.Chip('/dev/gpiochip0')
+# led_line = chip.get_line(24)  # Use the GPIO number, not pin number
+# led_line.request(consumer="LED", type=gpiod.LINE_REQ_DIR_OUT)
+
+
+# while True:
+#     led_line.set_value(1)
+#     print("LED ON")
+#     time.sleep(1)
+#     led_line.set_value(0)
+#     print("LED OFF")
+    # time.sleep(1)
+
+with gpiod.Chip("/dev/gpiochip4") as chip:
+    info = chip.get_info()
+    print(f"{info.name} [{info.label}] ({info.num_lines} lines)")
+
+LINE0 = 23
+LINE1 = 24
+
+request =  gpiod.request_lines(
+    "/dev/gpiochip4",
+    consumer="blink-example",
+    config={
+        LINE0: gpiod.LineSettings(
+            direction=Direction.OUTPUT, output_value=Value.ACTIVE
+        ),
+        LINE1: gpiod.LineSettings(
+            direction=Direction.OUTPUT, output_value=Value.ACTIVE
+        )
+    },
+)
+while True:
+    request.set_value(LINE0, Value.ACTIVE)
+    request.set_value(LINE1, Value.INACTIVE)
+    time.sleep(1)
+    request.set_value(LINE0, Value.INACTIVE)
+    request.set_value(LINE1, Value.ACTIVE)
+    time.sleep(1)
+
+exit
+
+from gpiozero import LED
+from time import sleep
+
+led0 = LED(23)
+led1 = LED(24)
+
+while True:
+    led0.on()
+    led1.on()
+    sleep(1)
+    led0.off()
+    led1.off()
+    sleep(1)
+
+
+exit
 import RPi.GPIO as GPIO
 import time
 
 GPIO.setmode(GPIO.BCM)
 
-LEDS = [ 12, 16, 26 ]
+LEDS = [ 23, 24 ]
 
 PWM_1 = 13
 

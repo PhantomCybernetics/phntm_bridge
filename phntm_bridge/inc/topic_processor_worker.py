@@ -60,8 +60,11 @@ def TopicProcessorWorker(running_shared:mp.Value, reader_label:str, ctrl_queue:m
 
     print(f'Worker {reader_label} loaded config from {str(yaml_fname)}')
 
-    rclpy_executor = SingleThreadedExecutor()
+    rcl_context = rclpy.context.Context()
+    rcl_context.init()
+    rclpy_executor = SingleThreadedExecutor(context=rcl_context)
     reader_node = Node(node_name=f'phntm_worker_{reader_label}',
+                       context=rcl_context,
                        enable_rosout=False,
                        use_global_arguments=False)
     rclpy_executor.add_node(reader_node);
@@ -78,7 +81,7 @@ def TopicProcessorWorker(running_shared:mp.Value, reader_label:str, ctrl_queue:m
 
     reader_node.get_logger().warn(f'Stopping')
 
-    rclpy.shutdown()
+    # rclpy.shutdown()
     
 
 class Worker:

@@ -30,7 +30,7 @@ from queue import Empty, Full
 class TopicReadSubscription:
 
     # def __init__(self, sub:Subscription, peers:list[str], frame_processor, processed_frames_h264:mp.Queue, processed_frames_v8:mp.Queue, make_keyframe_shared:mp.Value, make_h264_shared:mp.Value, make_v8_shared:mp.Value):
-    def __init__(self, ctrl_node:Node, worker_ctrl_queue:mp.Queue, topic:str, protocol:str, event_loop:object, log_message_every_sec:float, qos:QoSProfile):
+    def __init__(self, ctrl_node:Node, worker_ctrl_queue:mp.Queue, topic:str, protocol:str, event_loop:object, log_message_every_sec:float, qos:QoSProfile, msg_blinker_cb:Callable):
 
         self.sub:Subscription|bool = None
         self.ctrl_node:Node = ctrl_node
@@ -48,7 +48,7 @@ class TopicReadSubscription:
         self.log_message_every_sec:float = log_message_every_sec
         self.qos = qos
         
-        self.on_msg_cb:Callable = None
+        self.msg_blinker_cb:Callable = msg_blinker_cb
         self.event_loop = event_loop
         self.last_send_future:asyncio.Future = None
         
@@ -153,8 +153,8 @@ class TopicReadSubscription:
                     print(f'⚡️ Exception in on_msg: {e}')
                     traceback.print_exception(e)
 
-        if self.on_msg_cb is not None:
-            self.on_msg_cb()
+        if len(self.peers.keys()) and self.msg_blinker_cb is not None:
+            self.msg_blinker_cb()
 
 
     # this might send a message twice or hang when there's nothing in the topic (exits when peer disconnects)
@@ -211,7 +211,11 @@ class TopicReadSubscription:
             return False # active subscribers
 
         if self.sub == True:
-            self.worker_ctrl_queue.put_nowait({'action': 'unsubscribe', 'topic':self.topic })
+            try:
+                self.worker_ctrl_queue.put_nowait({'action': 'unsubscribe', 'topic':self.topic })
+            except Exception as e:
+                print(f'Exception while sending unsubscribe of {self.topic} into ctrl queue {e}')
+                pass # allow cleanup
         else:
             self.ctrl_node.get_logger().info(f'Destroying local subscriber for {self.topic}')
             self.ctrl_node.destroy_subscription(self.sub)

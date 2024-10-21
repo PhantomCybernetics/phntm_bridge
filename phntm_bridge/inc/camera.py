@@ -272,18 +272,6 @@ class PacketsOutput(FileOutput):
         #     # print(f'Receiving frame {timestamp}: {len(frame)} B{" KEYFRAME" if keyframe else ""}')
 
 
-class CameraVideoStreamTrack(MediaStreamTrack):
-
-    kind = "video"
-
-    def __init__(self):
-        super().__init__()
-
-    async def recv(self) -> av.Packet:
-        pass #sending directly
-
-
-
 # class CameraVideoStreamTrack(MediaStreamTrack):
 
 #     kind = "video"

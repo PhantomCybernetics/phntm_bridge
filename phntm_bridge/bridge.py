@@ -8,11 +8,15 @@ from rcl_interfaces.msg import Parameter, ParameterValue, ParameterType
 from rcl_interfaces.msg import ParameterDescriptor, ParameterType, FloatingPointRange, IntegerRange
 from rclpy_message_converter import message_converter
 import concurrent.futures
+import gpiod
+
+from rclpy.executors import SingleThreadedExecutor
 
 from .inc.status_led import StatusLED
 from termcolor import colored as c
 
 import subprocess
+import signal
 
 import fractions
 import tarfile, io
@@ -28,26 +32,9 @@ import traceback
 import uuid 
 import os
 
-# if built with picamera2 support 
-try:
-    from picamera2 import Picamera2
-    class MyPicam2(Picamera2): # this only suppresses the error in desctrucror on failure
-        def close(self) -> None:
-            try:
-                super.close()
-            except (AttributeError) as e:
-                pass
-    print('Picamera2 loaded fine')
-except (ModuleNotFoundError, AttributeError) as e:
-    pass
-
 import time
-try:
-    from .inc.camera import get_camera_info, picam2_has_camera, CameraVideoStreamTrack, Picamera2Subscription, IsPiCameraId
-except (ModuleNotFoundError, AttributeError) as e:
-    pass
 
-from .inc.ros_video_streaming import ImageTopicReadSubscription, IsImageType, IsEncodedStreamType
+from .inc.ros_video_streaming import ImageTopicReadSubscription, CameraVideoStreamTrack, IsImageType, IsEncodedStreamType
 
 # from rclpy.subscription import TypeVar
 from rosidl_runtime_py.utilities import get_message, get_interface
@@ -95,11 +82,14 @@ class BridgeController(Node, BridgeControllerConfig):
     ##
     # node constructor
     ##
-    def __init__(self, video_worker_ctrl_queue:mp.Queue=None, video_worker_out_queue:mp.Queue=None, image_worker_ctrl_queue:mp.Queue=None, image_worker_out_queue:mp.Queue=None, data_worker_ctrl_queue:mp.Queue=None):
+    def __init__(self, context, executor, video_worker_ctrl_queue:mp.Queue=None, video_worker_out_queue:mp.Queue=None, image_worker_ctrl_queue:mp.Queue=None, image_worker_out_queue:mp.Queue=None, data_worker_ctrl_queue:mp.Queue=None):
         super().__init__(node_name='phntm_bridge',
+                         context=context,
                          enable_rosout=False,
                          use_global_arguments=True)
-
+        self.rcl_executor = executor
+        self.rcl_executor.add_node(self)
+        
         self.shutting_down:bool = False
         # self.paused:bool = False
        
@@ -109,23 +99,12 @@ class BridgeController(Node, BridgeControllerConfig):
         self.ros_distro = os.environ["ROS_DISTRO"]
         self.get_logger().debug(f'ROS Distro is: {self.ros_distro}')
         
-        self.picam2 = None
-        if self.picam_enabled:
-            try:
-                self.picam2 = MyPicam2()
-                print (c(f'Picamera2 global info: ', 'cyan') + str(self.picam2.global_camera_info()))
-            except IndexError:
-                print(c(f'Picamera2 init: no connected device found', 'cyan'))
-            except (Exception, AttributeError) as e:
-                print(c(f'Picamera2 init failed: {str(e)}', 'red'))
-
         # separate process
         self.topic_read_subscriptions:dict[str: TopicReadSubscription] = {}
         self.image_topic_read_subscriptions:dict[str: ImageTopicReadSubscription] = {}
 
         # this process
         self.topic_write_publishers:dict[str: TopicWritePublisher] = {}
-        self.camera_subscriptions:dict[str: Picamera2Subscription] = {}
 
         self.service_clients:dict[str: any] = {} # service name => client
         
@@ -146,16 +125,49 @@ class BridgeController(Node, BridgeControllerConfig):
                                                          sio=self.sio)
 
         self.conn_led = None
-        if (self.conn_led_topic != None and self.conn_led_topic != ''):
-            self.get_logger().info(f'CONN Led uses {self.conn_led_topic}')
-            self.conn_led = StatusLED('conn', node=self, mode=StatusLED.Mode.OFF, topic=self.conn_led_topic, qos=QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT))
-            self.conn_led.set_fast_pulse()
-            #self.led_spinner = self.create_timer(0.1, lambda: rclpy.spin_once(self.status_led))
         self.data_led = None
-        if (self.data_led_topic != None and self.data_led_topic != ''):
-            self.get_logger().info(f'DATA Led uses {self.data_led_topic}')
-            self.data_led = StatusLED('data', node=self, mode=StatusLED.Mode.OFF, topic=self.data_led_topic, qos=QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT))
-            #self.data_led.off()
+        if (self.conn_led_pin > -1 or self.data_led_pin > -1) and self.conn_led_gpio_chip:
+            led_pin_config = {}
+            if self.conn_led_pin > -1:
+                led_pin_config[self.conn_led_pin] = gpiod.LineSettings(
+                    direction=gpiod.line.Direction.OUTPUT, output_value=gpiod.line.Value.INACTIVE
+                )
+            if self.data_led_pin > -1:
+                led_pin_config[self.data_led_pin] = gpiod.LineSettings(
+                    direction=gpiod.line.Direction.OUTPUT, output_value=gpiod.line.Value.INACTIVE
+                )
+            self.led_pin_request = None
+            try:
+                self.led_pin_request = gpiod.request_lines(
+                    self.conn_led_gpio_chip,
+                    consumer="bridge-activity",
+                    config=led_pin_config,
+                )
+            except Exception as e:
+                self.get_logger().error(f'Error requesting GPIO for status leds: {e}')
+            if self.led_pin_request:
+                try:
+                    if self.conn_led_pin > -1:
+                        self.get_logger().info(f'CONN Led uses pin {self.conn_led_pin}')
+                        self.conn_led = StatusLED('conn', node=self, mode=StatusLED.Mode.OFF, pin=self.conn_led_pin, pin_request=self.led_pin_request)
+                        self.conn_led.set_fast_pulse()
+                except Exception as e:
+                    self.get_logger().error(f'Error initializing connection led: {e}')
+                try:
+                    if self.data_led_pin > -1:
+                        self.get_logger().info(f'DATA Led uses pin {self.data_led_pin}')
+                        self.data_led = StatusLED('data', node=self, mode=StatusLED.Mode.OFF, pin=self.data_led_pin, pin_request=self.led_pin_request)
+                except Exception as e:
+                    self.get_logger().error(f'Error initializing data led: {e}')
+        else: #topic control
+            if (self.conn_led_topic != None and self.conn_led_topic != ''):
+                self.get_logger().info(f'CONN Led uses {self.conn_led_topic}')
+                self.conn_led = StatusLED('conn', node=self, mode=StatusLED.Mode.OFF, topic=self.conn_led_topic, qos=QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT))
+                self.conn_led.set_fast_pulse()
+            
+            if (self.data_led_topic != None and self.data_led_topic != ''):
+                self.get_logger().info(f'DATA Led uses {self.data_led_topic}')
+                self.data_led = StatusLED('data', node=self, mode=StatusLED.Mode.OFF, topic=self.data_led_topic, qos=QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT))
 
         self.video_worker_ctrl_queue:mp.Queue = video_worker_ctrl_queue
         self.video_worker_out_queue:mp.Queue = video_worker_out_queue
@@ -193,7 +205,6 @@ class BridgeController(Node, BridgeControllerConfig):
             # push latest introspection results to the server
             asyncio.get_event_loop().create_task(self.introspection.report_idls())
             asyncio.get_event_loop().create_task(self.introspection.report_nodes())
-            asyncio.get_event_loop().create_task(self.introspection.report_cameras())
             asyncio.get_event_loop().create_task(self.introspection.report_topics())
             asyncio.get_event_loop().create_task(self.introspection.report_services())
             asyncio.get_event_loop().create_task(self.introspection.report_docker())
@@ -223,7 +234,7 @@ class BridgeController(Node, BridgeControllerConfig):
                 # await self.introspection.stop()
             return { 'success': 1, 'introspection': self.introspection.running }
 
-        # subscribe topics and cameras
+        # subscribe topics
         @self.sio.on('subscribe')
         async def on_subscribe(data:dict):
             id_peer = WRTCPeer.GetId(data)
@@ -244,7 +255,7 @@ class BridgeController(Node, BridgeControllerConfig):
 
             await self.process_peer_subscriptions(peer, send_update=True)
 
-        # unsubscribe topics and cameras
+        # unsubscribe topics
         @self.sio.on('unsubscribe')
         async def on_unsubscribe(data:dict):
             id_peer = WRTCPeer.GetId(data)
@@ -577,18 +588,8 @@ class BridgeController(Node, BridgeControllerConfig):
             }
 
         peer.topics_not_discovered = []
-        peer.cameras_not_discovered = []
         for sub in peer.read_subs:
-            if self.picam2 != None and IsPiCameraId(sub):
-                if sub in self.introspection.discovered_cameras.keys():
-                    id_track = await self.subscribe_picamera(sub, peer)
-                    res['read_video_streams'].append([sub, id_track])
-                else:
-                    self.get_logger().info(c(f'{peer} missing {sub}, not discovered yet', 'dark_grey'))
-                    if not sub in peer.cameras_not_discovered:
-                        peer.cameras_not_discovered.append(sub) # introspection will keep running
-
-            elif sub in self.introspection.discovered_topics.keys():
+            if sub in self.introspection.discovered_topics.keys():
                 msg_type = self.introspection.discovered_topics[sub]['msg_type']
                 is_image = IsImageType(msg_type)
                 
@@ -647,7 +648,7 @@ class BridgeController(Node, BridgeControllerConfig):
                 if not sub in peer.topics_not_discovered:
                     peer.topics_not_discovered.append(sub) # introspection will keep running
 
-        if not disconnected and (len(peer.topics_not_discovered) > 0 or len(peer.cameras_not_discovered) > 0):
+        if not disconnected and len(peer.topics_not_discovered) > 0:
             self.introspection.add_waiting_peer(peer)
             asyncio.get_event_loop().create_task(self.introspection.start())
         else:
@@ -670,12 +671,8 @@ class BridgeController(Node, BridgeControllerConfig):
         # unsubscribe from video streams
         for sub in list(peer.video_tracks.keys()):
             if not sub in peer.read_subs:
-                if IsPiCameraId(sub):
-                    self.get_logger().info(f'{peer} unsubscribing from camera {sub}')
-                    await self.unsubscribe_picamera(sub, peer)
-                else:
-                    self.get_logger().info(f'{peer} unsubscribing from image topic {sub}')
-                    await self.unsubscribe_image_topic(sub, peer)
+                self.get_logger().info(f'{peer} unsubscribing from image topic {sub}')
+                await self.unsubscribe_image_topic(sub, peer)
                 res['read_video_streams'].append([ sub ]) # no id => unsubscribed
 
         # close write channels
@@ -804,10 +801,11 @@ class BridgeController(Node, BridgeControllerConfig):
         if self.conn_led != None or self.data_led != None:
             if self.conn_led != None:
                 self.conn_led.clear()
+                self.conn_led = None
             if self.data_led != None:
                 self.data_led.clear()
-            #TODO actually I should spin ros node some more here
-            await asyncio.sleep(1) # wait a bit
+                self.data_led = None
+        await asyncio.sleep(0.1) # wait a bit
     
     
     async def reset_conn_leds(self):
@@ -870,10 +868,10 @@ class BridgeController(Node, BridgeControllerConfig):
                                                                             protocol=msg_type,
                                                                             qos=qos,
                                                                             event_loop=asyncio.get_event_loop(),
-                                                                            log_message_every_sec=self.log_message_every_sec
+                                                                            log_message_every_sec=self.log_message_every_sec,
+                                                                            msg_blinker_cb = self.on_msg_blink
                                                                             )
             asyncio.get_event_loop().create_task(self.introspection.start())
-            self.topic_read_subscriptions[topic].on_msg_cb = self.on_msg_blink # blinker
 
         send_latest = False
         if peer:
@@ -944,10 +942,7 @@ class BridgeController(Node, BridgeControllerConfig):
                                                                                           worker_out_queue=out_queue,
                                                                                           blocking_reads_executor=self.image_read_executor,
                                                                                           log_message_every_sec=self.log_message_every_sec,
-                                                                                          on_msg_cb=self.on_msg_blink # blinker
-                                                                                          # clock_rate=1000000000,
-                                                                                          # time_base=1,
-                                                                                          # bridge_time_started_ns=self.time_started_ns
+                                                                                          msg_blinker_cb=self.on_msg_blink
                                                                                           )
             asyncio.get_event_loop().create_task(self.introspection.start())
 
@@ -1003,75 +998,6 @@ class BridgeController(Node, BridgeControllerConfig):
                 self.get_logger().debug(f'Removing {worker_type} worker')
                 self.image_topic_read_subscriptions.pop(worker_type)
                 asyncio.get_event_loop().create_task(self.introspection.start())
-
-
-    # SUBSCRIBE Pi camera stream
-    async def subscribe_picamera(self, id_cam:str, peer:WRTCPeer) -> str:
-        if self.picam2 is None:
-            self.get_logger().error(f'Picamera2 not available')
-            return None
-
-        if not picam2_has_camera(self.picam2, id_cam):
-            self.get_logger().error(f'{id_cam} Not available via Picamera2')
-            return None
-
-        if not id_cam in self.camera_subscriptions.keys():
-            self.get_logger().info(f'Subscribing to camera {id_cam}')
-            self.camera_subscriptions[id_cam] = Picamera2Subscription(id_camera=id_cam,
-                                                                      picam2=self.picam2,
-                                                                      hflip=self.get_parameter('picam_hflip').get_parameter_value().bool_value,
-                                                                      vflip=self.get_parameter('picam_vflip').get_parameter_value().bool_value,
-                                                                      bitrate=self.get_parameter('picam_bitrate').get_parameter_value().integer_value,
-                                                                      framerate=self.get_parameter('picam_framerate').get_parameter_value().integer_value,
-                                                                      node=self,
-                                                                      bridge_time_started_ns=self.time_started_ns,
-                                                                      log_message_every_sec=self.log_message_every_sec
-                                                                    )
-
-        if not id_cam in peer.video_tracks.keys():
-            track = CameraVideoStreamTrack()
-            transceiver = peer.pc.addTransceiver(track, "sendonly")
-            sender:RTCRtpSender = transceiver.sender
-            sender.setDirect(True)
-            
-            # set transciever's preference to H264
-            capabilities = RTCRtpSender.getCapabilities("video")
-            preferences = list(filter(lambda x: x.mimeType == "video/H264", capabilities.codecs))
-            transceiver.setCodecPreferences(preferences)
-
-            sender._stream_id = sender._track_id
-            sender.name = id_cam
-            sender.pc = peer.pc
-            peer.video_tracks[id_cam] = sender
-
-            self.get_logger().info(f'Created video sender for {peer} {id_cam}, track_id=={sender._track_id}, capabilities: {str(sender.getCapabilities(kind="video"))}')
-
-            @sender.track.on('ended')
-            async def on_sender_track_ended():
-                self.get_logger().warn(f'Sender video track ended for {peer} {id_cam}, track_id=={str(sender._track_id)}')
-
-        if not await self.camera_subscriptions[id_cam].start(peer.id, peer.video_tracks[id_cam]):
-            self.get_logger().error(f'Camera {id_cam} failed to subscribe for {peer}')
-            return None
-
-        return peer.video_tracks[id_cam]._track_id
-
-
-    # UNSUBSCRIBE Pi camera stream
-    async def unsubscribe_picamera(self, id_cam:str, peer:WRTCPeer):
-        
-        if id_cam in self.camera_subscriptions.keys():
-            self.get_logger().debug(f'Stopping camera sub {id_cam}')
-            if self.camera_subscriptions[id_cam].stop(peer.id): # cam destroyed
-                self.get_logger().debug(f'No longer processing {id_cam}')
-                self.camera_subscriptions.pop(id_cam)
-        
-        if id_cam in peer.video_tracks.keys():
-            self.get_logger().debug(f'{peer} no longer subscribed to {id_cam}; removing video track')
-            await peer.video_tracks[id_cam].stop() # sender
-            self.get_logger().debug(f'{peer} video track stopped')
-            peer.video_tracks.pop(id_cam)
-            self.get_logger().debug(f'video_track cleared')
 
 
     # OPEN WRITE data channel
@@ -1148,13 +1074,6 @@ class BridgeController(Node, BridgeControllerConfig):
     ###
     async def on_write_subscription_change(self, peer:WRTCPeer, data:dict) -> {}:
         pass
-
-
-    ##
-    # Camera feed subscriptions
-    ##
-    async def on_camera_subscription_change(self, peer:WRTCPeer, data:dict):
-        pass
         
 
     ##
@@ -1224,7 +1143,7 @@ class BridgeController(Node, BridgeControllerConfig):
             timeout_sec = 10.0
             while not future.done() and not self.shutting_down and timeout_sec > 0.0:
                 try:
-                    await event_loop.run_in_executor(None, lambda: rclpy.spin_once(self, timeout_sec=0.1)) # gotta spin to hear back
+                    await event_loop.run_in_executor(None, lambda: self.rcl_executor.spin_once(timeout_sec=0.1)) # gotta spin to hear back
                     # await fut
                 except Exception as e:
                     if (str(e) != 'cannot use Destroyable because destruction was requeste'):
@@ -1246,7 +1165,9 @@ class BridgeController(Node, BridgeControllerConfig):
 
     async def shutdown_cleanup(self):
 
-        # close peer connections
+        await self.clear_conn_leds()
+        
+        # close peer connections        
         await self.remove_all_peers()
 
         await self.sio.disconnect()
@@ -1260,15 +1181,15 @@ class BridgeController(Node, BridgeControllerConfig):
         if self.sio_reconnect_wait_task != None:
             self.sio_reconnect_wait_task.cancel()
             await self.sio_reconnect_wait_task
-
-        await self.clear_conn_leds()
-
-
+            
+def rcl_context_shutdown():
+    print(c(f'!! rcl_context_shutdown !!', 'cyan'))
+        
 async def main_async():
 
-    first_run_file = '/ros2_ws/.phntm_first_run'
+    first_run_file = '/.phntm_first_run'
     force_first_run_checks = 'FORCE_FIRST_RUN_CHECKS' in os.environ.keys()
-    force_first_run_ignore_file = '/ros2_ws/.phntm_force_first_run_ignore'
+    force_first_run_ignore_file = '/.phntm_ignore_force_first_run'
     if force_first_run_checks and os.path.exists(force_first_run_ignore_file): # just restarted after forced check, ignore to allow normal start
         os.remove(force_first_run_ignore_file)
         force_first_run_checks = False
@@ -1329,13 +1250,6 @@ async def main_async():
             print(c(f'{config_path} not found, ignoring', 'magenta'))
             pass
         
-        # TODO remove?!
-        print(c('Initializing udev rules for /dev (bcs Picam)', 'magenta'))
-        process = subprocess.Popen([f'{ROOT}/../scripts/reload-devices.sh'])
-        process.wait()
-        print(c('Udev rules initialized', 'magenta'))
-        await asyncio.sleep(1.0) # needs a bit for the udev rules to take effect and picam init sucessfuly
-        
         open(first_run_file, 'w').close()
         if force_first_run_checks:
             open(force_first_run_ignore_file, 'w').close() # ignore force after restart
@@ -1343,7 +1257,11 @@ async def main_async():
         print(c('Restarting Bridge...', 'magenta'))
         exit()
     
-    rclpy.init()
+    rcl_context = rclpy.context.Context()
+    rcl_context.init()
+    rcl_context.on_shutdown(rcl_context_shutdown)
+    rcl_executor = SingleThreadedExecutor(context=rcl_context)
+    # rclpy.init(context=rcl_context)
     
     # reader runs on a separate process
     workers_enabled = mp.Value('b', 1, lock=False)
@@ -1377,11 +1295,14 @@ async def main_async():
     image_topic_read_worker.start()
 
     try:
-        bridge_node = BridgeController(video_worker_ctrl_queue=video_worker_ctrl_queue,
+        bridge_node = BridgeController(context=rcl_context,
+                                       executor=rcl_executor,
+                                       video_worker_ctrl_queue=video_worker_ctrl_queue,
                                        video_worker_out_queue=video_worker_out_queue,
                                        image_worker_ctrl_queue=image_worker_ctrl_queue,
                                        image_worker_out_queue=image_worker_out_queue,
                                        data_worker_ctrl_queue=data_worker_ctrl_queue)
+        
         sio_task = asyncio.get_event_loop().create_task(bridge_node.spin_sio_client(), name="sio_task")
         # spin_future = asyncio.get_event_loop().run_in_executor(None, lambda: rclpy.spin(bridge_node))
         asyncio.get_event_loop().create_task(bridge_node.introspection.start(), name="initial_introspection_task")
@@ -1389,29 +1310,31 @@ async def main_async():
         # concurrently execute both tasks on this process
         await asyncio.wait([ sio_task ], return_when=asyncio.ALL_COMPLETED)
 
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        print(c('Shutting down main_async', 'red'))
+        pass
     except Exception as e:
         print(c('Exception in main_async()', 'red'))
         traceback.print_exc(e)
-    except (asyncio.CancelledError, KeyboardInterrupt):
-        print(c('Shutting down main_async', 'red'))
 
-    print('SHUTTING DOWN')
+    print(c('SHUTTING DOWN', 'cyan'))
     # bridge_node.get_logger().log_rosout_disabled 
     bridge_node.shutting_down = True
 
-    image_worker_ctrl_queue.close();
-    data_worker_ctrl_queue.close();
-    video_worker_ctrl_queue.close();
     workers_enabled.value = 0 # stops worker threads
-    
-    video_topic_read_worker.join()
+
     video_topic_read_worker.terminate()
-        
-    image_topic_read_worker.join()
-    image_topic_read_worker.terminate()
+    video_topic_read_worker.join()
     
-    data_topic_read_worker.join()
+    image_topic_read_worker.terminate()    
+    image_topic_read_worker.join()
+    
     data_topic_read_worker.terminate()
+    data_topic_read_worker.join()
+    
+    image_worker_ctrl_queue.close()
+    data_worker_ctrl_queue.close()
+    video_worker_ctrl_queue.close()
     
     # cancel tasks
     # if spin_task.cancel():
@@ -1426,16 +1349,19 @@ async def main_async():
     try:
         bridge_node.destroy_node()
         # rcl_executor.shutdown()
-        rclpy.shutdown()
+        # rclpy.shutdown(context=rcl_context)
+        rcl_context.shutdown()
     except:
         pass
 
     # asyncio.get_event_loop().close()
 
+
 class MyPolicy(asyncio.DefaultEventLoopPolicy):
     def new_event_loop(self):
         selector = selectors.SelectSelector()
         return asyncio.SelectorEventLoop(selector)
+
 
 def main(): # ros2 calls this, so init here
     asyncio.set_event_loop_policy(MyPolicy())
@@ -1444,5 +1370,16 @@ def main(): # ros2 calls this, so init here
     except (asyncio.CancelledError, KeyboardInterrupt):
         pass
 
+def cleaner(): # ros2 calls this, so init here
+    print(c('!!! OHI FROM TEH CLEANER !!!', 'cyan'))
+    # asyncio.set_event_loop_policy(MyPolicy())
+    # try:
+    #     asyncio.run(main_async())
+    # except (asyncio.CancelledError, KeyboardInterrupt):
+    #     pass
+
 if __name__ == '__main__': #ignired by ros
     main()
+    
+if __name__ == '__cleaner__': #ignired by ros
+    cleaner()

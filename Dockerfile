@@ -28,7 +28,8 @@ RUN pip install setuptools \
                 opencv-python \
                 termcolor \
                 aiohttp \
-                PyEventEmitter
+                PyEventEmitter \
+                gpiod
 		        # aiortc #forked
                 # aiohttp #forker
 
@@ -146,14 +147,15 @@ RUN . /opt/ros/$ROS_DISTRO/setup.sh && \
     colcon build --symlink-install --packages-select phntm_interfaces
 
 # clone and install phntm agent
-RUN git clone https://github.com/PhantomCybernetics/phntm_agent.git /ros2_ws/src/phntm_agent
-RUN . /opt/ros/$ROS_DISTRO/setup.sh && \
-    . /ros2_ws/install/setup.sh && \
-    rosdep install -i --from-path src/phntm_agent --rosdistro $ROS_DISTRO -y && \
-    colcon build --symlink-install --packages-select phntm_agent
+# RUN git clone https://github.com/PhantomCybernetics/phntm_agent.git /ros2_ws/src/phntm_agent
+# RUN . /opt/ros/$ROS_DISTRO/setup.sh && \
+#     . /ros2_ws/install/setup.sh && \
+#     rosdep install -i --from-path src/phntm_agent --rosdistro $ROS_DISTRO -y && \
+#    colcon build --symlink-install --packages-select phntm_agent
 
 # clone and install phntm bridge
-RUN git clone https://github.com/PhantomCybernetics/phntm_bridge.git /ros2_ws/src/phntm_bridge
+# RUN git clone https://github.com/PhantomCybernetics/phntm_bridge.git /ros2_ws/src/phntm_bridge
+COPY ./ $ROS_WS/src/phntm_bridge
 RUN . /opt/ros/$ROS_DISTRO/setup.sh && \
     . /ros2_ws/install/setup.sh && \
     rosdep install -i --from-path src/phntm_bridge --rosdistro $ROS_DISTRO -y && \

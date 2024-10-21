@@ -18,10 +18,6 @@ from rclpy.duration import Duration, Infinite
 from pprint import pprint
 from .lib import qos_equal
 
-try:
-    from .camera import get_camera_info
-except ModuleNotFoundError:
-    pass
 import socketio
 from termcolor import colored as c
 import time
@@ -44,12 +40,10 @@ class Introspection (AsyncIOEventEmitter):
         self.ctrl_node:Node = ctrl_node
         self.logger = ctrl_node.get_logger()
 
-        self.picam2 = ctrl_node.picam2
         self.docker_monitor_topic:str = self.ctrl_node.get_parameter(f'docker_monitor_topic').get_parameter_value().string_value
         self.discovered_topics:dict[str: dict['msg_type':str]] =  {}
         self.discovered_idls:dict[str:str] = {}
         self.discovered_services:dict[str: dict['msg_type':str]] = {}
-        self.discovered_cameras:dict[str: any] = {}
         self.discovered_docker_containers:dict[str: DockerStatus] = {} # last received docker status message by host
         self.discovered_nodes:dict[str: dict[
             'namespace':str,
@@ -86,20 +80,15 @@ class Introspection (AsyncIOEventEmitter):
         await self.report_introspection()
 
         while self.running:
-            new_topics_or_cameras_discovered:bool = await self.run_discovery() # True if cameras or topics discovered
+            new_topics_discovered:bool = await self.run_discovery()
 
             for peer in self.waiting_peers.copy():
-                update_peer = new_topics_or_cameras_discovered
+                update_peer = new_topics_discovered
                 if not update_peer:
                     for topic in peer.topics_not_discovered:
                         if topic in self.discovered_topics.keys():
                             update_peer = True
-                            break
-                if not update_peer:
-                    for cam in peer.cameras_not_discovered:
-                        if cam in self.discovered_cameras.keys():
-                            update_peer = True
-                            break
+                            break            
                 if update_peer:
                     self.waiting_peers.remove(peer)
                     await self.ctrl_node.process_peer_subscriptions(peer, send_update=True)
@@ -253,7 +242,6 @@ class Introspection (AsyncIOEventEmitter):
         nodes_changed = False
         idls_changed = False
         services_changed = False
-        cameras_changed = False
         topics_changed = False
         
         try:
@@ -261,8 +249,6 @@ class Introspection (AsyncIOEventEmitter):
             for peer in self.waiting_peers:
                 for topic in peer.topics_not_discovered:
                     wating_for.add(topic)
-                for cam in peer.cameras_not_discovered:
-                    wating_for.add(cam)
 
             pub_info_by_topic:dict[str:list[dict]] = {}
             sub_info_by_topic:dict[str:list[dict]] = {}
@@ -488,27 +474,11 @@ class Introspection (AsyncIOEventEmitter):
             if services_changed:
                 await self.report_services()
 
-            #cameras
-            new_cameras = []
-
-            if self.picam2 is not None:
-                new_cameras = get_camera_info(self.picam2)
-                for [ id_cam, cam_info ] in new_cameras:
-                    # print (f'cam "{id_cam}" <<{cam_info}>>')
-                    # id_cam = cam_info[0]
-                    # TODO: blacklist cameras
-                    if not id_cam in self.discovered_cameras.keys():
-                        self.discovered_cameras[id_cam] = cam_info
-                        cameras_changed = True
-                        self.logger.info(c(f'Discovered camera {id_cam} model {cam_info["Model"]}', 'green'))
-            if cameras_changed:
-                await self.report_cameras()
-
         except Exception as e:
             self.logger.error(f'Exception in introspection: {e}')
             self.logger.error(traceback.format_exception(e))
             
-        return topics_changed or cameras_changed # only topics and cameras keep introspection running
+        return topics_changed # keep introspection running
 
     def get_qos_data(self, qos:QoSProfile) -> dict:
         if qos:
@@ -653,31 +623,6 @@ class Introspection (AsyncIOEventEmitter):
 
             await self.sio.emit(
                 event='services',
-                data=data,
-                callback=None
-                )
-        except:
-            pass
-
-    def get_cameras_data(self):
-        data = {}
-        for id_cam in self.discovered_cameras.keys():
-            data[id_cam] = self.discovered_cameras[id_cam]
-        return data
-
-    async def report_cameras(self):
-
-        self.emit('cameras', self.discovered_cameras.keys())
-
-        if not self.sio or not self.sio.connected:
-            return # reports all on socket connect
-
-        try:
-            data = self.get_cameras_data()
-            self.logger.info(c(f'Reporting {len(data)} cameras', 'dark_grey'))
-
-            await self.sio.emit(
-                event='cameras',
                 data=data,
                 callback=None
                 )

@@ -130,18 +130,19 @@ class BridgeControllerConfig():
         if (self.sio_address == None or self.sio_address == ''): self.get_logger().error(f'Param sio_address not provided!')
         if (self.sio_port == None): logger.error(f'Param sio_port not provided!')
 
-        # Conn LED (blinks when connecting; on when connected; off = bridge not running)
+        # Conn LED control via topic (blinks when connecting; on when connected; off = bridge not running)
         self.declare_parameter('conn_led_topic', '' )
         self.conn_led_topic = self.get_parameter('conn_led_topic').get_parameter_value().string_value
-        # TODO:
-        self.declare_parameter('conn_led_pin', -1)
-        self.conn_led_pin = self.get_parameter('conn_led_pin').get_parameter_value().integer_value
-
-        # Data LED (flashes when any data is sent via webrtc; off when not connected)
+        # Data LED control via topic (flashes when any data is sent via webrtc; off when not connected)
         self.declare_parameter('data_led_topic', '' )
         self.data_led_topic = self.get_parameter('data_led_topic').get_parameter_value().string_value
-        # TODO:
-        self.declare_parameter('data_led_pin', -1)
+        
+        # Conn/Data LED control via GPIO
+        self.declare_parameter('conn_led_gpio_chip', '/dev/gpiochip4') # PI5 default
+        self.conn_led_gpio_chip = self.get_parameter('conn_led_gpio_chip').get_parameter_value().string_value
+        self.declare_parameter('conn_led_pin', -1) # set GPIO number
+        self.conn_led_pin = self.get_parameter('conn_led_pin').get_parameter_value().integer_value
+        self.declare_parameter('data_led_pin', -1) # set GPIO number
         self.data_led_pin = self.get_parameter('data_led_pin').get_parameter_value().integer_value
 
         # Discovery
@@ -152,14 +153,6 @@ class BridgeControllerConfig():
         self.declare_parameter('ui_wifi_monitor_topic', '/iw_status') # agent writes here
         self.declare_parameter('ui_enable_wifi_scan', True) # enables scan without roaming
         self.declare_parameter('ui_enable_wifi_roam', False) # enables roaming (potentially dangerous)
-         
-        # picamera2
-        self.declare_parameter('picam_enabled', False)
-        self.picam_enabled = self.get_parameter('picam_enabled').get_parameter_value().bool_value
-        self.declare_parameter('picam_hflip', False)
-        self.declare_parameter('picam_vflip', False)
-        self.declare_parameter('picam_bitrate', 5000000)
-        self.declare_parameter('picam_framerate', 30)
         
         self.declare_parameter('ui_battery_topic', '/battery') # use this in ui 
         self.declare_parameter('ui_docker_control', True)

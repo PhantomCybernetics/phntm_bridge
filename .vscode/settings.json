@@ -6,8 +6,6 @@
         "/opt/ros/humble/lib/python3.10/site-packages",
         "/opt/ros/humble/local/lib/python3.10/dist-packages",
         "",
-        "/ros2_ws/libcamera/build/src/py",
-        "/ros2_ws/kmsxx/build/py"
     ],
     "python.analysis.extraPaths": [
         "/ros2_ws/build/phntm_bridge",
@@ -16,8 +14,6 @@
         "/opt/ros/humble/lib/python3.10/site-packages",
         "/opt/ros/humble/local/lib/python3.10/dist-packages",
         "",
-        "/ros2_ws/libcamera/build/src/py",
-        "/ros2_ws/kmsxx/build/py"
     ],
     "workbench.colorTheme": "Tomorrow Night Blue",
     "ros.distro": "humble"

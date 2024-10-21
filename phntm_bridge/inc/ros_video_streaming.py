@@ -78,6 +78,14 @@ def IsImageType(s:str) -> bool:
 def IsEncodedStreamType(s:str) -> bool:
     return s == ImageTopicReadSubscription.STREAM_MSG_TYPE
 
+class CameraVideoStreamTrack(MediaStreamTrack):
+    kind = "video"
+    def __init__(self):
+        super().__init__()
+
+    async def recv(self) -> av.Packet:
+        pass #sending directly
+
 class ImageTopicReadSubscription:
 
     MSG_TYPE:str = 'sensor_msgs/msg/Image'
@@ -85,7 +93,7 @@ class ImageTopicReadSubscription:
     STREAM_MSG_TYPE:str = 'ffmpeg_image_transport_msgs/msg/FFMPEGPacket'
     
     # def __init__(self, sub:Subscription, peers:list[str], frame_processor, processed_frames_h264:mp.Queue, processed_frames_v8:mp.Queue, make_keyframe_shared:mp.Value, make_h264_shared:mp.Value, make_v8_shared:mp.Value):
-    def __init__(self, ctrl_node:Node, worker_type:str, worker_ctrl_queue:mp.Queue, worker_out_queue: mp.Queue, blocking_reads_executor, log_message_every_sec:float=5.0, on_msg_cb:Callable=None):
+    def __init__(self, ctrl_node:Node, worker_type:str, worker_ctrl_queue:mp.Queue, worker_out_queue: mp.Queue, blocking_reads_executor, log_message_every_sec:float=5.0, msg_blinker_cb:Callable=None):
 
         self.ctrl_node:Node = ctrl_node
         self.worker_ctrl_queue:mp.Queue = worker_ctrl_queue
@@ -102,7 +110,7 @@ class ImageTopicReadSubscription:
         self.last_log:dict[str:float] = {}
         self.log_message_every_sec:float = log_message_every_sec
         
-        self.on_msg_cb:Callable = on_msg_cb
+        self.msg_blinker_cb:Callable = msg_blinker_cb
         self.event_loop = asyncio.get_event_loop() # save current
         self.executor = blocking_reads_executor
 
@@ -271,8 +279,9 @@ class ImageTopicReadSubscription:
                 except Exception as e:
                     self.ctrl_node.get_logger().error(f'👁️  Exception while sending {topic} to id_peer={id_peer} / id_stream= {str(peer_sender._stream_id)}, {e}; pc={peer_sender.pc.connectionState}, transport={peer_sender.transport.state}')
 
-            if self.on_msg_cb is not None:
-                self.on_msg_cb()
+            
+            if len(self.peers[topic].keys()) and self.msg_blinker_cb is not None:
+                self.msg_blinker_cb()
                 
         except Exception as e:
             self.ctrl_node.get_logger().error(f'Error in frame read handler {self.worker_type} {e}')
@@ -293,7 +302,11 @@ class ImageTopicReadSubscription:
                 self.last_msg_time.pop(topic)
             if topic in self.last_log.keys():
                 self.last_log.pop(topic)
-            self.worker_ctrl_queue.put_nowait({'action': 'unsubscribe', 'topic': topic})
+            try:
+                self.worker_ctrl_queue.put_nowait({'action': 'unsubscribe', 'topic': topic})
+            except Exception as e:
+                print(f'Exception while sending unsubscribe of {topic} into ctrl queue {e}')
+                self.peers = {} #allow cleanup
 
         if len(self.peers.keys()) > 0:
             return False # still some topics subscribed

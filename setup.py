@@ -25,6 +25,8 @@ setup(
     entry_points={
         'console_scripts': [
             'bridge = phntm_bridge.bridge:main',
+            'bridge_cleaner = phntm_bridge.bridge:cleaner',
+            'agent = phntm_bridge.agent:main',
         ],
     },
 )

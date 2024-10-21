@@ -9,10 +9,8 @@ from rosidl_runtime_py.utilities import get_message, get_interface
 from rclpy.callback_groups import CallbackGroup
 from rclpy.qos import QoSHistoryPolicy, QoSReliabilityPolicy, DurabilityPolicy
 
-from typing import Callable
 import time
-
-import threading
+import math
 
 def qos_equal(a:QoSProfile, b:QoSProfile) -> bool:
     if not a and b or not b and a:
@@ -33,20 +31,27 @@ def qos_equal(a:QoSProfile, b:QoSProfile) -> bool:
 
     return True
 
-# def key_in_tuple_list(key:str, search_list:list[tuple]):
-#     for item in search_list:
-#         if item[0] == key:
-#             return True
-#     return False
+
+def set_message_header(node, msg):
+    time_nanosec:int = time.time_ns()
+    msg.header.stamp.sec = math.floor(time_nanosec / 1000000000)
+    msg.header.stamp.nanosec = time_nanosec % 1000000000
+    msg.header.frame_id = node.hostname
 
 
-# def matches_param_filters(key:str, param:Parameter):
-#     for test in param.get_parameter_value().string_array_value:
-#         if test == '': continue
-
-#         #if re.search(test, key):
-#         #    return True
-#         if test == '.*' or test == key[0:len(test)]:
-#             return True
-#     return False
-
+def format_bytes(b, mib=False):        
+    unit = 1000
+    GB = unit * unit * unit # 
+    MB = unit * unit # docker stats shows MiB, keep consistent
+    KB = unit
+    
+    if b > GB:
+        return f'{(b / GB):.2f}{"GiB" if mib else "GB"}'
+    elif b > MB:
+        return f'{(b / MB):.2f}{"MiB" if mib else "MB"}'
+    elif b > KB:
+        return f'{(b / KB):.2f}{"KiB" if mib else "KB"}'
+    elif b > 0:
+        return f'{(b):.2f}B'
+    else:
+        return f'0B'

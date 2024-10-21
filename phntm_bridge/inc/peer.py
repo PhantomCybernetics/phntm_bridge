@@ -14,8 +14,6 @@ import time
 
 from termcolor import colored as c
 
-# from .camera import CameraVideoStreamTrack
-
 import threading
 
 class WRTCPeer:
@@ -36,7 +34,6 @@ class WRTCPeer:
         self.wrtc_nextChannelId = 1
         
         self.topics_not_discovered:list[str] = []
-        self.cameras_not_discovered:list[str] = []
         
         self.last_heartbeat:float = -1
         
