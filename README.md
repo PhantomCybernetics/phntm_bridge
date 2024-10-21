@@ -2,7 +2,7 @@
 
 Fast WebRTC + Socket.io ROS2 Bridge written in Python for real-time data and video streaming, teleoperation, HRI, and remote robot monitoring. Comes with Docker Container control for the host machine, CPU and Wi-Fi monitoring, and [customizable Web Interface](https://github.com/PhantomCybernetics/bridge_ui). \
 \
-[See full documentation here](https://docs.phntm.io/bridge) \
+[See full documentation here](https://docs.phntm.io/bridge)
 
 ## Features
 - ROS2 Topic and Service discovery
@@ -50,12 +50,12 @@ docker build -f Dockerfile -t phntm/bridge:$ROS_DISTRO \
 ### Register a new Machine on Cloud Bridge
 This registers a new robot on the [Cloud Bridge](https://github.com/PhantomCybernetics/cloud_bridge) and returns default config file you can edit further. Unique id_robot and key pair are generated in this step.
 ```bash
-wget -O ~/phntm_bridge.yaml 'https://bridge.phntm.io:1337/robot/register?yaml'
+wget -O ~/phntm_bridge.yaml 'https://bridge.phntm.io:1337/robot/register?yaml' --no-check-certificate
 ```
 
-### Explore and Modify the Config File
-A default configutation file was created in ~/phntm_bridge.yaml \
-The full list of configuration options can be found [here](https://docs.phntm.io/bridge/configuration). \
+### Examine and Modify the Config File
+Default configutation file was created in ~/phntm_bridge.yaml \
+The full list of configuration options can be found [here](https://docs.phntm.io/bridge/configuration).
 ```yaml
 # TODO
 ```
@@ -85,17 +85,17 @@ services:
       ros2 launch phntm_bridge bridge_launch.py
 ```
 
-### Run the Bridge
+### Launch the Bridge
 ```bash
 docker compose up phntm_bridge
 ```
 
 ### Open the Web UI
 Open https://bridge.phntm.io/ID_ROBOT in a web browser. \
- \ 
+ \
 If you provided maintainer's e-mail in your robot's YAML config file, a permanent link will be sent to you for your reference after the first Bridge launch. \
  \
-Please note that Firefox is not fully supported at this time, ([reasons are explained here](https://github.com/PhantomCybernetics/bridge_ui/blob/main/FIREFOX_ISSUES.md)).
+Please note that Firefox is not fully supported at this time, [reasons are explained here](https://github.com/PhantomCybernetics/bridge_ui/blob/main/FIREFOX_ISSUES.md).
 
 
 ## TODOs in the Pipeline
