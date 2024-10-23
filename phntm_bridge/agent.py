@@ -571,7 +571,7 @@ class AgentController(Node):
         self.iw_control_enabled = self.get_parameter('iw_control').get_parameter_value().bool_value
         self.declare_parameter('iw_roaming', False)
         self.iw_roaming_enabled = self.get_parameter('iw_roaming').get_parameter_value().bool_value
-        if self.iw_control_enabled:
+        if self.iw_enabled and self.iw_control_enabled:
             print(f'Network control enabled'+(' with roaming' if self.iw_roaming_enabled else ''))
     
     async def shutdown_cleanup(self):
