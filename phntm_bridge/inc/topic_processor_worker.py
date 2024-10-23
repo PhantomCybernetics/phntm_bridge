@@ -106,14 +106,8 @@ class Worker:
         self.num_samples = 0  
         
         self.node_spin_task = None
-        
-        self.encoder_lock = threading.Lock()
         self.out_queue_lock = threading.Lock()
-        try:
-            self.encoder_h264 = H264Encoder()
-        except Exception as e:
-            self.logger.error(f'Error getting h264 encoder : {e}')
-            return
+        
     
     async def spin_node_loop(self):
         self.logger.info(f'Spining the node...')
@@ -362,14 +356,13 @@ class Worker:
             self.logger.error(f'Error casting frame to packet for {topic}, data size size={len(frame.data)}B: {e}')
             return
 
-        self.encoder_lock.acquire()
         try:
-            packets, ts = self.encoder_h264.pack(p)
+            if 'encoder' not in sub.keys():
+                sub['encoder'] = H264Encoder()
+            packets, ts = sub['encoder'].pack(p)
         except Exception as e:
             self.logger.error(f'Error packing frame of {topic}, data size size={len(frame.data)}B: {e}')
-            self.encoder_lock.release()
             return
-        self.encoder_lock.release()
 
         try:
             frame_transport = marshal.dumps({
@@ -474,14 +467,13 @@ class Worker:
         is_keyframe = 'last_keyframe_stamp_ns' not in sub.keys() \
             or stamp_ns_raw - sub['last_keyframe_stamp_ns'] >= NS_TO_SEC # make first keyframe, then every second
 
-        self.encoder_lock.acquire()
         try:
-            packets, ts = self.encoder_h264.encode(frame=frame, force_keyframe=is_keyframe) # convert to 1/900000
+            if 'encoder' not in sub.keys():
+                sub['encoder'] = H264Encoder()
+            packets, ts = sub['encoder'].encode(frame=frame, force_keyframe=is_keyframe) # convert to 1/900000
         except Exception as e:
             self.logger.error(f'Error packing frame of {topic}, data size size={len(im.data)}B: {e}')
-            self.encoder_lock.release()
             return
-        self.encoder_lock.release()
         
         if is_keyframe:
             sub['last_keyframe_stamp_ns'] = stamp_ns_raw
@@ -561,14 +553,13 @@ class Worker:
         is_keyframe = 'last_keyframe_stamp_ns' not in sub.keys() \
             or stamp_ns_raw - sub['last_keyframe_stamp_ns'] >= NS_TO_SEC # make first keyframe, then every second
 
-        self.encoder_lock.acquire()
         try:
-            packets, ts = self.encoder_h264.encode(frame=frame, force_keyframe=is_keyframe) # convert to 1/900000
+            if 'encoder' not in sub.keys():
+                sub['encoder'] = H264Encoder()
+            packets, ts = sub['encoder'].encode(frame=frame, force_keyframe=is_keyframe) # convert to 1/900000
         except Exception as e:
             self.logger.error(f'Error packing compressed frame of {topic}, data size size={len(im.data)}B: {e}')
-            self.encoder_lock.release()
             return
-        self.encoder_lock.release()
         
         if is_keyframe:
             sub['last_keyframe_stamp_ns'] = stamp_ns_raw

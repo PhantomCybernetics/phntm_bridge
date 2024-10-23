@@ -19,13 +19,12 @@ setup(
     zip_safe=True,
     maintainer='Mirek Burkon',
     maintainer_email='mirek@phntm.io',
-    description='Bidirectional WebRTC ROS bridge for fast P2P data visualization and human-robot interaction',
+    description='Bidirectional WebRTC ROS2 Bridge for fast P2P data visualization, video streaming, and human-robot interaction',
     license='MIT',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
             'bridge = phntm_bridge.bridge:main',
-            'bridge_cleaner = phntm_bridge.bridge:cleaner',
             'agent = phntm_bridge.agent:main',
         ],
     },

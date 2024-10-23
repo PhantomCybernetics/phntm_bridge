@@ -20,7 +20,5 @@ def generate_launch_description():
         )
 
     return LaunchDescription([
-        
        agent_node
-       
     ])

@@ -10,7 +10,7 @@ from rclpy_message_converter import message_converter
 import concurrent.futures
 import gpiod
 
-from rclpy.executors import SingleThreadedExecutor
+from rclpy.executors import SingleThreadedExecutor, MultiThreadedExecutor
 
 from .inc.status_led import StatusLED
 from termcolor import colored as c
@@ -82,14 +82,13 @@ class BridgeController(Node, BridgeControllerConfig):
     ##
     # node constructor
     ##
-    def __init__(self, context, executor, video_worker_ctrl_queue:mp.Queue=None, video_worker_out_queue:mp.Queue=None, image_worker_ctrl_queue:mp.Queue=None, image_worker_out_queue:mp.Queue=None, data_worker_ctrl_queue:mp.Queue=None):
+    def __init__(self, context, executor):
         super().__init__(node_name='phntm_bridge',
                          context=context,
-                         enable_rosout=False,
+                         enable_rosout=True,
                          use_global_arguments=True)
-        self.rcl_executor = executor
-        self.rcl_executor.add_node(self)
         
+        self.rcl_executor = executor
         self.shutting_down:bool = False
         # self.paused:bool = False
        
@@ -115,6 +114,8 @@ class BridgeController(Node, BridgeControllerConfig):
         self.sio_wait_task: asyncio.Future[any] = None
         self.sio_reconnect_wait_task: asyncio.Future[any] = None
 
+
+    def start(self, video_worker_ctrl_queue:mp.Queue=None, video_worker_out_queue:mp.Queue=None, image_worker_ctrl_queue:mp.Queue=None, image_worker_out_queue:mp.Queue=None, data_worker_ctrl_queue:mp.Queue=None):
         self.create_sio_client()
 
         discovery_period:float = self.get_parameter('discovery_period_sec').get_parameter_value().double_value
@@ -124,9 +125,23 @@ class BridgeController(Node, BridgeControllerConfig):
                                                          ctrl_node=self,
                                                          sio=self.sio)
 
+        self.setup_conn_leds()
+
+        self.video_worker_ctrl_queue:mp.Queue = video_worker_ctrl_queue
+        self.video_worker_out_queue:mp.Queue = video_worker_out_queue
+        self.image_worker_ctrl_queue:mp.Queue = image_worker_ctrl_queue
+        self.image_worker_out_queue:mp.Queue = image_worker_out_queue
+        self.data_worker_ctrl_queue:mp.Queue = data_worker_ctrl_queue
+        
+        self.image_read_executor = concurrent.futures.ThreadPoolExecutor(max_workers=10, thread_name_prefix=f'im_read')
+
+        self.get_logger().debug(f'Phntm Bridge started, idRobot={c(self.id_robot, "cyan")}')
+    
+    
+    def setup_conn_leds(self):
         self.conn_led = None
         self.data_led = None
-        if (self.conn_led_pin > -1 or self.data_led_pin > -1) and self.conn_led_gpio_chip:
+        if (self.conn_led_pin > -1 or self.data_led_pin > -1) and self.conn_led_gpio_chip: # contril via pins
             led_pin_config = {}
             if self.conn_led_pin > -1:
                 led_pin_config[self.conn_led_pin] = gpiod.LineSettings(
@@ -159,7 +174,7 @@ class BridgeController(Node, BridgeControllerConfig):
                         self.data_led = StatusLED('data', node=self, mode=StatusLED.Mode.OFF, pin=self.data_led_pin, pin_request=self.led_pin_request)
                 except Exception as e:
                     self.get_logger().error(f'Error initializing data led: {e}')
-        else: #topic control
+        else: # control via topics
             if (self.conn_led_topic != None and self.conn_led_topic != ''):
                 self.get_logger().info(f'CONN Led uses {self.conn_led_topic}')
                 self.conn_led = StatusLED('conn', node=self, mode=StatusLED.Mode.OFF, topic=self.conn_led_topic, qos=QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT))
@@ -168,21 +183,7 @@ class BridgeController(Node, BridgeControllerConfig):
             if (self.data_led_topic != None and self.data_led_topic != ''):
                 self.get_logger().info(f'DATA Led uses {self.data_led_topic}')
                 self.data_led = StatusLED('data', node=self, mode=StatusLED.Mode.OFF, topic=self.data_led_topic, qos=QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT))
-
-        self.video_worker_ctrl_queue:mp.Queue = video_worker_ctrl_queue
-        self.video_worker_out_queue:mp.Queue = video_worker_out_queue
-        self.image_worker_ctrl_queue:mp.Queue = image_worker_ctrl_queue
-        self.image_worker_out_queue:mp.Queue = image_worker_out_queue
-        self.data_worker_ctrl_queue:mp.Queue = data_worker_ctrl_queue
-        
-        self.image_read_executor = concurrent.futures.ThreadPoolExecutor(max_workers=10, thread_name_prefix=f'im_read')
-        # self.reader_image_topic_pipes:dict = {}
-
-        self.time_started_ns:int = time.time_ns() # used to synchronize all video stream stamps
-
-        self.get_logger().debug(f'Phntm Bridge started, idRobot={c(self.id_robot, "cyan")}')
-
-
+    
     ##
     # make a socket.io instance
     ##
@@ -507,9 +508,8 @@ class BridgeController(Node, BridgeControllerConfig):
                 await self.sio_reconnect_wait_task
                 self.sio_reconnect_wait_task = None
             except asyncio.CancelledError:
-                self.get_logger().info('Socker.io CancelledError')
+                self.get_logger().info('Socket.io CancelledError')
                 return
-
 
     ##
     # init p2p connection with a peer sdp offer
@@ -518,16 +518,6 @@ class BridgeController(Node, BridgeControllerConfig):
 
         self.get_logger().debug(c(f'Peer {id_peer} connected... w peer_data={peer_data}', 'magenta'))
 
-        # if id_peer in self.wrtc_peers.keys():
-        #     peer = self.wrtc_peers[id_peer]
-        #     peer.sio_connected = True
-        #     if peer.pc.connectionState != "failed" and peer.id_instance == peer_data['id_instance']:
-        #         self.get_logger().warn(f'{peer} was already connected w state {peer.pc.connectionState}, reusing session...')
-        #         # self.get_logger().warn(f'{self.wrtc_peers[id_peer]} was already connected, killing old...')
-        #         # await self.remove_peer(id_peer, False)
-        #         return await self.process_peer_subscriptions(peer, send_update=False, ui_config=True)
-
-        # pc.addTransceiver('video', direction='sendonly') #must have at least one
         peer = WRTCPeer(id_peer=id_peer,
                         id_app=peer_data['id_app'] if 'id_app' in peer_data.keys() else None,
                         id_instance=peer_data['id_instance'] if 'id_instance' in peer_data.keys() else None,
@@ -754,20 +744,20 @@ class BridgeController(Node, BridgeControllerConfig):
 
         peer = self.wrtc_peers[id_peer]
 
-        if wait:
-            wait_s = 2.0
-            self.get_logger().info(f'{peer} seems to be disconnected (waiting {wait_s}s...)')
+        # if wait:
+        #     wait_s = 2.0
+        #     self.get_logger().info(f'{peer} seems to be disconnected (waiting {wait_s}s...)')
 
-            # self.paused = True
-            await asyncio.sleep(wait_s) #wait a bit for reconnects (?!)
+        #     # self.paused = True
+        #     await asyncio.sleep(wait_s) #wait a bit for reconnects (?!)
 
-            if not id_peer in self.wrtc_peers.keys():
-                return # already removed
+        #     if not id_peer in self.wrtc_peers.keys():
+        #         return # already removed
 
-            peer = self.wrtc_peers[id_peer]
-            if peer.pc.connectionState in [ 'connected' ]:
-                self.get_logger().info(f'{peer} recovered, we good')
-                return
+        #     peer = self.wrtc_peers[id_peer]
+        #     if peer.pc.connectionState in [ 'connected' ]:
+        #         self.get_logger().info(f'{peer} recovered, we good')
+        #         return
 
         self.get_logger().info(c(f'{peer} disconnected, cleaning up', 'red'))
 
@@ -781,7 +771,8 @@ class BridgeController(Node, BridgeControllerConfig):
         
         if id_peer in self.wrtc_peers.keys():
             try:
-                await self.wrtc_peers[id_peer].pc.close()
+                if not self.shutting_down:
+                    await self.wrtc_peers[id_peer].pc.close()
             except Exception as e:
                 self.get_logger().info(c(f'Exception while closing pc of {peer}, {e}', 'red'))
                 pass
@@ -1162,31 +1153,124 @@ class BridgeController(Node, BridgeControllerConfig):
         self.get_logger().debug(f'Returning service {service} reply: {str(reply)}')
         return reply
     
+    def shutdown(self):
+        # Cleanup code goes here
+        self.get_logger().info('Performing cleanup before shutdown')
+        print('Performing cleanup before shutdown')
+        # Example: close file handles, stop motors, etc.
 
     async def shutdown_cleanup(self):
 
-        await self.clear_conn_leds()
-        
-        # close peer connections        
-        await self.remove_all_peers()
-
-        await self.sio.disconnect()
-        if self.spin_task != None:
-            self.spin_task.cancel()
-
-        if self.sio_wait_task != None:
-            self.sio_wait_task.cancel()
-            await self.sio_wait_task
-
-        if self.sio_reconnect_wait_task != None:
-            self.sio_reconnect_wait_task.cancel()
-            await self.sio_reconnect_wait_task
+        try:
+            await self.clear_conn_leds()
+             
+            await self.introspection.stop(report=False)
             
-def rcl_context_shutdown():
-    print(c(f'!! rcl_context_shutdown !!', 'cyan'))
-        
-async def main_async():
+            # close peer connections     
+            await self.remove_all_peers()
 
+            await self.sio.disconnect()
+            if self.spin_task != None and not self.spin_task.done():
+                self.spin_task.cancel()
+
+            if self.sio_wait_task != None and not self.sio_wait_task.done():
+                self.sio_wait_task.cancel()
+
+            if self.sio_reconnect_wait_task != None and not self.sio_reconnect_wait_task.done():
+                self.sio_reconnect_wait_task.cancel()
+            
+            print('Shutdown cleanup complete')
+        except Exception as e:
+            print(c(f'Exception in shutdown_cleanup: {e}', 'red'))
+
+
+async def main_async(rcl_context, rcl_executor):
+
+    workers_enabled = mp.Value('b', 1, lock=False) # controls workers
+    
+    video_worker_ctrl_queue = mp.Queue()
+    video_worker_out_queue = mp.Queue(20)
+    video_topic_read_worker = mp.Process(target=TopicProcessorWorker,
+                                      args=(workers_enabled,
+                                            'video',
+                                            video_worker_ctrl_queue,
+                                            video_worker_out_queue
+                                            ))
+    video_topic_read_worker.start()
+    
+    data_worker_ctrl_queue = mp.Queue()
+    data_topic_read_worker = mp.Process(target=TopicProcessorWorker,
+                                      args=(workers_enabled,
+                                            'data',
+                                            data_worker_ctrl_queue,
+                                            None))
+    data_topic_read_worker.start()
+    
+    image_worker_ctrl_queue = mp.Queue()
+    image_worker_out_queue = mp.Queue(20)
+    image_topic_read_worker = mp.Process(target=TopicProcessorWorker,
+                                      args=(workers_enabled,
+                                            'img',
+                                            image_worker_ctrl_queue,
+                                            image_worker_out_queue
+                                            ))
+    
+    bridge_node = BridgeController(context=rcl_context, executor=rcl_executor)
+    rcl_executor.add_node(bridge_node)
+    
+    image_topic_read_worker.start()
+
+    try:
+        bridge_node.start(video_worker_ctrl_queue=video_worker_ctrl_queue,
+                          video_worker_out_queue=video_worker_out_queue,
+                          image_worker_ctrl_queue=image_worker_ctrl_queue,
+                          image_worker_out_queue=image_worker_out_queue,
+                          data_worker_ctrl_queue=data_worker_ctrl_queue)
+        
+        sio_task = asyncio.get_event_loop().create_task(bridge_node.spin_sio_client(), name="sio_task")
+        asyncio.get_event_loop().create_task(bridge_node.introspection.start(), name="initial_introspection_task")
+        
+        await asyncio.wait([ sio_task ], return_when=asyncio.ALL_COMPLETED)
+
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        print(c('Shutting down main_async', 'red'))
+        pass
+    except Exception as e:
+        print(c('Exception in main_async()', 'red'))
+        traceback.print_exc(e)
+
+    print(c('SHUTTING DOWN', 'cyan'))
+
+    bridge_node.shutting_down = True
+
+    workers_enabled.value = 0 # stops worker threads
+
+    video_topic_read_worker.terminate()
+    video_topic_read_worker.join()
+    
+    image_topic_read_worker.terminate()    
+    image_topic_read_worker.join()
+    
+    data_topic_read_worker.terminate()
+    data_topic_read_worker.join()
+    
+    image_worker_ctrl_queue.close()
+    data_worker_ctrl_queue.close()
+    video_worker_ctrl_queue.close()
+    
+    if sio_task != None and not sio_task.done():
+        sio_task.cancel()
+
+    await bridge_node.shutdown_cleanup()
+
+    try:
+        print('Destroying Bridge node')
+        bridge_node.destroy_node()
+    except Exception as e:
+        print(c(f'Error while shutting down rcl: {e}', 'red'))
+
+
+def first_run_checks():
     first_run_file = '/.phntm_first_run'
     force_first_run_checks = 'FORCE_FIRST_RUN_CHECKS' in os.environ.keys()
     force_first_run_ignore_file = '/.phntm_ignore_force_first_run'
@@ -1256,130 +1340,32 @@ async def main_async():
         
         print(c('Restarting Bridge...', 'magenta'))
         exit()
-    
-    rcl_context = rclpy.context.Context()
-    rcl_context.init()
-    rcl_context.on_shutdown(rcl_context_shutdown)
-    rcl_executor = SingleThreadedExecutor(context=rcl_context)
-    # rclpy.init(context=rcl_context)
-    
-    # reader runs on a separate process
-    workers_enabled = mp.Value('b', 1, lock=False)
-    
-    video_worker_ctrl_queue = mp.Queue()
-    video_worker_out_queue = mp.Queue(20)
-    video_topic_read_worker = mp.Process(target=TopicProcessorWorker,
-                                      args=(workers_enabled,
-                                            'video',
-                                            video_worker_ctrl_queue,
-                                            video_worker_out_queue
-                                            ))
-    video_topic_read_worker.start()
-    
-    data_worker_ctrl_queue = mp.Queue()
-    data_topic_read_worker = mp.Process(target=TopicProcessorWorker,
-                                      args=(workers_enabled,
-                                            'data',
-                                            data_worker_ctrl_queue,
-                                            None))
-    data_topic_read_worker.start()
-    
-    image_worker_ctrl_queue = mp.Queue()
-    image_worker_out_queue = mp.Queue(20)
-    image_topic_read_worker = mp.Process(target=TopicProcessorWorker,
-                                      args=(workers_enabled,
-                                            'img',
-                                            image_worker_ctrl_queue,
-                                            image_worker_out_queue
-                                            ))
-    image_topic_read_worker.start()
 
-    try:
-        bridge_node = BridgeController(context=rcl_context,
-                                       executor=rcl_executor,
-                                       video_worker_ctrl_queue=video_worker_ctrl_queue,
-                                       video_worker_out_queue=video_worker_out_queue,
-                                       image_worker_ctrl_queue=image_worker_ctrl_queue,
-                                       image_worker_out_queue=image_worker_out_queue,
-                                       data_worker_ctrl_queue=data_worker_ctrl_queue)
-        
-        sio_task = asyncio.get_event_loop().create_task(bridge_node.spin_sio_client(), name="sio_task")
-        # spin_future = asyncio.get_event_loop().run_in_executor(None, lambda: rclpy.spin(bridge_node))
-        asyncio.get_event_loop().create_task(bridge_node.introspection.start(), name="initial_introspection_task")
-        
-        # concurrently execute both tasks on this process
-        await asyncio.wait([ sio_task ], return_when=asyncio.ALL_COMPLETED)
-
-    except (asyncio.CancelledError, KeyboardInterrupt):
-        print(c('Shutting down main_async', 'red'))
-        pass
-    except Exception as e:
-        print(c('Exception in main_async()', 'red'))
-        traceback.print_exc(e)
-
-    print(c('SHUTTING DOWN', 'cyan'))
-    # bridge_node.get_logger().log_rosout_disabled 
-    bridge_node.shutting_down = True
-
-    workers_enabled.value = 0 # stops worker threads
-
-    video_topic_read_worker.terminate()
-    video_topic_read_worker.join()
-    
-    image_topic_read_worker.terminate()    
-    image_topic_read_worker.join()
-    
-    data_topic_read_worker.terminate()
-    data_topic_read_worker.join()
-    
-    image_worker_ctrl_queue.close()
-    data_worker_ctrl_queue.close()
-    video_worker_ctrl_queue.close()
-    
-    # cancel tasks
-    # if spin_task.cancel():
-        # await spin_task
-    if sio_task != None and sio_task.cancel():
-        await sio_task
-    # if read_data_task != None and read_data_task.cancel():
-    #     await read_data_task
-
-    await bridge_node.shutdown_cleanup()
-
-    try:
-        bridge_node.destroy_node()
-        # rcl_executor.shutdown()
-        # rclpy.shutdown(context=rcl_context)
-        rcl_context.shutdown()
-    except:
-        pass
-
-    # asyncio.get_event_loop().close()
-
-
-class MyPolicy(asyncio.DefaultEventLoopPolicy):
+class MyAsyncioPolicy(asyncio.DefaultEventLoopPolicy):
     def new_event_loop(self):
         selector = selectors.SelectSelector()
         return asyncio.SelectorEventLoop(selector)
 
-
 def main(): # ros2 calls this, so init here
-    asyncio.set_event_loop_policy(MyPolicy())
+    
+    first_run_checks() # installs custom packages
+    
+    asyncio.set_event_loop_policy(MyAsyncioPolicy())
+    
+    rcl_context = rclpy.context.Context()
+    rcl_context.init()
+    rcl_executor = SingleThreadedExecutor(context=rcl_context)
+    
     try:
-        asyncio.run(main_async())
+        asyncio.run(main_async(rcl_context=rcl_context, rcl_executor=rcl_executor))
     except (asyncio.CancelledError, KeyboardInterrupt):
         pass
-
-def cleaner(): # ros2 calls this, so init here
-    print(c('!!! OHI FROM TEH CLEANER !!!', 'cyan'))
-    # asyncio.set_event_loop_policy(MyPolicy())
-    # try:
-    #     asyncio.run(main_async())
-    # except (asyncio.CancelledError, KeyboardInterrupt):
-    #     pass
-
-if __name__ == '__main__': #ignired by ros
-    main()
     
-if __name__ == '__cleaner__': #ignired by ros
-    cleaner()
+    print('AsyncIO loop stopped')
+    try:
+        rcl_context.shutdown()
+    except:
+        pass
+
+if __name__ == '__main__':
+    main()

@@ -15,7 +15,9 @@ from gpiod.line import Direction, Value
 #     print("LED OFF")
     # time.sleep(1)
 
-with gpiod.Chip("/dev/gpiochip4") as chip:
+chip_path = '/dev/gpiochip0'
+
+with gpiod.Chip(chip_path) as chip:
     info = chip.get_info()
     print(f"{info.name} [{info.label}] ({info.num_lines} lines)")
 
@@ -23,7 +25,7 @@ LINE0 = 23
 LINE1 = 24
 
 request =  gpiod.request_lines(
-    "/dev/gpiochip4",
+    chip_path,
     consumer="blink-example",
     config={
         LINE0: gpiod.LineSettings(

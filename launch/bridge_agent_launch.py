@@ -29,6 +29,32 @@ def generate_launch_description():
         parameters=[bridge_config]
     )
     
+    agent_config = os.path.join(
+        '/ros2_ws/',
+        'phntm_agent_params.yaml'
+        )
+    
+    agent_node = Node(
+            package='phntm_bridge',
+            executable='agent',
+            output='screen',
+            emulate_tty=True,
+            parameters=[agent_config]
+        )
+    
     return LaunchDescription([
-        bridge_node
+
+        bridge_node,
+        agent_node,
+       
+        RegisterEventHandler(
+            OnProcessExit(
+                target_action=bridge_node,
+                on_exit=[
+                    LogInfo(msg='bridge_node stopped; killing agent'), # this will restart docker container (e.g. after first run checks)
+                    EmitEvent(event=Shutdown(reason='Bridge node exited'))
+                ]
+            )
+        ),
+           
     ])

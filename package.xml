@@ -3,7 +3,7 @@
 <package format="3">
   <name>phntm_bridge</name>
   <version>0.0.1</version>
-  <description>Bidirectional WebRTC ROS bridge for fast P2P data visualization and human-robot interaction</description>
+  <description>Bidirectional WebRTC ROS2 Bridge for fast P2P data visualization, video streaming, and human-robot interaction</description>
   <maintainer email="mirek@phntm.io">Mirek Burkon</maintainer>
   <license>MIT</license>
 

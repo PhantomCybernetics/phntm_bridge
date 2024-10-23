@@ -43,17 +43,16 @@ cd phntm_bridge
 ROS_DISTRO=humble; \
 docker build -f Dockerfile -t phntm/bridge:$ROS_DISTRO \
   --build-arg ROS_DISTRO=$ROS_DISTRO \
-  --build-arg ARCH=aarch64 \
   .
 ```
 
 ### Register a new Machine on Cloud Bridge
 This registers a new robot on the [Cloud Bridge](https://github.com/PhantomCybernetics/cloud_bridge) and returns default config file you can edit further. Unique id_robot and key pair are generated in this step.
 ```bash
-wget -O ~/phntm_bridge.yaml 'https://bridge.phntm.io:1337/robot/register?yaml' --no-check-certificate
+wget -O ~/phntm_bridge.yaml --no-check-certificate 'https://bridge.phntm.io:1337/robot/register?yaml'
 ```
 
-### Examine and Modify the Config File
+### Examine and Modify the Bridge Config File
 Default configutation file was created in ~/phntm_bridge.yaml \
 The full list of configuration options can be found [here](https://docs.phntm.io/bridge/configuration).
 ```yaml
@@ -64,25 +63,20 @@ The full list of configuration options can be found [here](https://docs.phntm.io
 Add phntm_bridge service to your compose.yaml file with ~/phntm_bridge.yaml mounted in the container:
 ```yaml
 services:
- phntm_bridge:
+  phntm_bridge:
     image: phntm/bridge:humble
     container_name: phntm-bridge
     hostname: phntm-bridge.local
-    restart: unless-stopped
-    privileged: true
-    network_mode: host
-    cpuset: '0,1,2' # limit to cpu cores
-    shm_size: 200m # more room for camera frames
-    environment:
-      - TERM=xterm
+    restart: unless-stopped # restarts after first run
+    privileged: true # bridge needs this
+    network_mode: host # webrtc needs this
     volumes:
-      - ~/phntm_bridge.yaml:/ros2_ws/phntm_bridge_params.yaml # config goes here
-      - /var/run:/host_run # docker control needs this
-      - /tmp:/tmp
+      - ~/phntm_bridge.yaml:/ros2_ws/phntm_bridge_params.yaml # bridge config goes here
+      - /var/run:/host_run # docker file extractor needs this
     devices:
-      - /dev:/dev # cameras need this
+      - /dev:/dev # led control needs this
     command:
-      ros2 launch phntm_bridge bridge_launch.py
+      ros2 launch phntm_bridge bridge_agent_launch.py
 ```
 
 ### Launch the Bridge

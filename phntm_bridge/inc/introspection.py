@@ -64,9 +64,11 @@ class Introspection (AsyncIOEventEmitter):
         if not peer in self.waiting_peers:
             self.waiting_peers.append(peer)
 
+
     def remove_waiting_peer(self, peer:WRTCPeer):
         if peer in self.waiting_peers:
             self.waiting_peers.remove(peer)
+
 
     async def start(self):
 
@@ -79,31 +81,37 @@ class Introspection (AsyncIOEventEmitter):
         self.logger.info(c(f'Introspection started', 'dark_grey'))
         await self.report_introspection()
 
-        while self.running:
-            new_topics_discovered:bool = await self.run_discovery()
+        try:
+            while self.running:
+                new_topics_discovered:bool = await self.run_discovery()
 
-            for peer in self.waiting_peers.copy():
-                update_peer = new_topics_discovered
-                if not update_peer:
-                    for topic in peer.topics_not_discovered:
-                        if topic in self.discovered_topics.keys():
-                            update_peer = True
-                            break            
-                if update_peer:
-                    self.waiting_peers.remove(peer)
-                    await self.ctrl_node.process_peer_subscriptions(peer, send_update=True)
+                for peer in self.waiting_peers.copy():
+                    update_peer = new_topics_discovered
+                    if not update_peer:
+                        for topic in peer.topics_not_discovered:
+                            if topic in self.discovered_topics.keys():
+                                update_peer = True
+                                break            
+                    if update_peer:
+                        self.waiting_peers.remove(peer)
+                        await self.ctrl_node.process_peer_subscriptions(peer, send_update=True)
 
-            something_missing = len(self.waiting_peers) > 0
-            await asyncio.sleep(self.period)
+                something_missing = len(self.waiting_peers) > 0
+                await asyncio.sleep(self.period)
 
-            if not something_missing: #keep discovering until all is found (TODO or user hits stop)
-                if self.period <= 0: # one shot
-                    await self.stop(report=True)
-                    return
-                if self.stop_after > 0.0 and self.started_time+self.stop_after < time.time():
-                    self.logger.info(c(f'Introspection stopped automatically', 'dark_grey'))
-                    await self.stop(report=True)
-                    return
+                if not something_missing: #keep discovering until all is found (TODO or user hits stop)
+                    if self.period <= 0: # one shot
+                        await self.stop(report=True)
+                        return
+                    if self.stop_after > 0.0 and self.started_time+self.stop_after < time.time():
+                        self.logger.info(c(f'Introspection stopped automatically', 'dark_grey'))
+                        await self.stop(report=True)
+                        return
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            pass
+        except Exception as e:
+            self.logger.error(f'Exception in introspection loop: {e}')
+
 
     async def stop(self, report:bool = True):
         if self.running:
@@ -112,6 +120,7 @@ class Introspection (AsyncIOEventEmitter):
             self.waiting_peers = []
             if report:
                 await self.report_introspection()
+
 
     async def collect_idls(self, msg_type) -> bool:
         if msg_type in self.ctrl_node.blacklist_msg_types:
@@ -162,6 +171,7 @@ class Introspection (AsyncIOEventEmitter):
     
         return True
 
+
     async def start_docker_subscription(self, topic:str):
         
         qosProfile = QoSProfile(
@@ -176,6 +186,7 @@ class Introspection (AsyncIOEventEmitter):
                                                   qos=qosProfile,
                                                   peer=None,
                                                   msg_callback=self._on_docker_message)
+    
     
     async def stop_docker_subscription(self, topic:str):
         await self.ctrl_node.unsubscribe_data_topic(topic, peer=None, msg_callback=self._on_docker_message)
@@ -475,10 +486,12 @@ class Introspection (AsyncIOEventEmitter):
                 await self.report_services()
 
         except Exception as e:
-            self.logger.error(f'Exception in introspection: {e}')
-            self.logger.error(traceback.format_exception(e))
+            if f'{e}' == 'Executor shutdown has been called':
+                return
+            self.logger.error(f'Exception {type(e)} in introspection: {e}')
             
         return topics_changed # keep introspection running
+
 
     def get_qos_data(self, qos:QoSProfile) -> dict:
         if qos:
@@ -499,6 +512,7 @@ class Introspection (AsyncIOEventEmitter):
                 'lifespan': 0,
                 'deadline': 0
             }
+    
     
     def get_nodes_data(self) -> dict:
         nodes_data = {}
@@ -550,8 +564,10 @@ class Introspection (AsyncIOEventEmitter):
             traceback.print_exc(e)
             pass
 
+
     def get_idls_data(self):
         return self.discovered_idls
+
 
     async def report_idls(self):
 
@@ -571,6 +587,7 @@ class Introspection (AsyncIOEventEmitter):
             self.logger.error(f'Exception while reporting idls: {str(e)}')
             pass
 
+
     def get_topics_data(self):
         data = []
         for topic in self.discovered_topics.keys():
@@ -580,6 +597,7 @@ class Introspection (AsyncIOEventEmitter):
                 ]
             data.append(topic_data)
         return data
+
 
     async def report_topics(self):
 
@@ -600,6 +618,7 @@ class Introspection (AsyncIOEventEmitter):
         except:
             pass
 
+
     def get_services_data(self):
         data = []
         for service in self.discovered_services.keys():
@@ -609,6 +628,7 @@ class Introspection (AsyncIOEventEmitter):
                 ]
             data.append(service_data)
         return data
+
 
     async def report_services(self):
 
@@ -629,12 +649,14 @@ class Introspection (AsyncIOEventEmitter):
         except:
             pass
 
+
     def get_docker_data(self):
         print(self.discovered_docker_containers);
         data = {}
         for host in self.discovered_docker_containers.keys():
             data[host] = message_converter.convert_ros_message_to_dictionary(self.discovered_docker_containers[host])
         return data # latest cached docker status msg per host
+
 
     async def report_docker(self):
 
@@ -654,6 +676,7 @@ class Introspection (AsyncIOEventEmitter):
             self.logger.error('Exception while reporting Docker data')
             traceback.print_exception(e)
             pass
+
 
     async def report_introspection(self):
 

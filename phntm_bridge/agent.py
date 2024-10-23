@@ -76,15 +76,22 @@ class AgentController(Node):
         self.iw_pub = None
         self.iw_task = None
         
+        self.iw_max_quality:float = False
+        self.iw_supports_scanning:bool = False
+        self.last_essid:str = None #roaming between APs with same essid
+        self.last_access_point:str = None
+        self.last_frequency:float = None #GHz
         if self.iw_enabled:
-            self.iw_max_quality:float = iwlib.utils.get_max_quality(self.iw_interface)
-            self.iw_supports_scanning:bool = iwlib.utils.supports_scanning(self.iw_interface)
-            self.last_essid:str = None #roaming between APs with same essid
-            self.last_access_point:str = None
-            self.last_frequency:float = None #GHz
+            try:
+                self.iw_max_quality:float = iwlib.utils.get_max_quality(self.iw_interface)
+                self.iw_supports_scanning:bool = iwlib.utils.supports_scanning(self.iw_interface)
+            except OSError:
+                self.l.error(f'Error initiating interface {self.iw_interface}; wi-fi control disabled')
+                self.iw_enabled = False
         
         self.docker_cmd_srv = self.create_service(DockerCmd, f'/{node_name}/docker_command', self.docker_command_srv_callback)
-        self.iw_scan_cmd_srv = self.create_service(IWScanCmd, f'/{node_name}/iw_scan', self.iw_scan_command_srv_callback)
+        if self.iw_supports_scanning:
+            self.iw_scan_cmd_srv = self.create_service(IWScanCmd, f'/{node_name}/iw_scan', self.iw_scan_command_srv_callback)
 
 
     def docker_command_srv_callback(self, request, response):
@@ -524,7 +531,7 @@ class AgentController(Node):
         self.declare_parameter('log', False)
         self.log_output = self.get_parameter('log').get_parameter_value().bool_value
         
-        self.declare_parameter('refresh_period_sec', 1.0)
+        self.declare_parameter('refresh_period_sec', 0.5)
         refresh_period_sec = self.get_parameter('refresh_period_sec').get_parameter_value().double_value
         print(f'Refresh period is {refresh_period_sec:.1f}s')
         
@@ -562,7 +569,7 @@ class AgentController(Node):
 
         self.declare_parameter('iw_control', True)
         self.iw_control_enabled = self.get_parameter('iw_control').get_parameter_value().bool_value
-        self.declare_parameter('iw_roaming', True)
+        self.declare_parameter('iw_roaming', False)
         self.iw_roaming_enabled = self.get_parameter('iw_roaming').get_parameter_value().bool_value
         if self.iw_control_enabled:
             print(f'Network control enabled'+(' with roaming' if self.iw_roaming_enabled else ''))
@@ -584,10 +591,9 @@ class AgentController(Node):
             self.iw_pub.destroy()
             self.iw_pub = None
 
+
 # agent_node = None
 async def main_async(args):
-    rclpy.init()
-    
     try:
         agent_node = AgentController()
         loop_task = asyncio.get_event_loop().create_task(agent_node.agent_loop(), name="introspection_task")
@@ -609,29 +615,28 @@ async def main_async(args):
     await agent_node.shutdown_cleanup()
     try:
         agent_node.destroy_node()
-        # rcl_executor.shutdown()
+    except:
+        pass
+
+
+class MyAsyncioPolicy(asyncio.DefaultEventLoopPolicy):
+    def new_event_loop(self):
+        selector = selectors.SelectSelector()
+        return asyncio.SelectorEventLoop(selector)
+
+
+def main(args=None): # ros2 calls this, so init here
+    rclpy.init()
+    asyncio.set_event_loop_policy(MyAsyncioPolicy())
+    try:
+        asyncio.run(main_async(args))
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        pass
+    try:
         rclpy.shutdown()
     except:
         pass
 
 
-class MyPolicy(asyncio.DefaultEventLoopPolicy):
-    def new_event_loop(self):
-        selector = selectors.SelectSelector()
-        return asyncio.SelectorEventLoop(selector)
-
-# def sigterm_handler(s, frame):
-#     print(f'sigterm_handler {s}: SHUTTING DOWN')
-#    agent_node.shutting_down = True
-
-def main(args=None): # ros2 calls this, so init here
-    # signal.signal(signal.SIGTERM, sigterm_handler) # TODO rclpy catches these so dunno
-    # signal.signal(signal.SIGINT, sigterm_handler)
-    asyncio.set_event_loop_policy(MyPolicy())
-    try:
-        asyncio.run(main_async(args))
-    except (asyncio.CancelledError, KeyboardInterrupt):
-        pass
-
-if __name__ == '__main__': #ignired by ros
+if __name__ == '__main__':
     main()

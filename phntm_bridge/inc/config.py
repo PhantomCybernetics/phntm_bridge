@@ -71,18 +71,7 @@ class BridgeControllerConfig():
         self.declare_parameter('sio_path', '/robot/socket.io')
         self.declare_parameter('sio_connection_retry_sec', 2.0)
         self.declare_parameter('sio_ssl_verify', True)
-        # self.declare_parameter('topic_overrides', [ '' ])
-        # self.topic_overrides = self.get_parameter('topic_overrides').get_parameter_value().string_array_value
-        # for topic_override in self.topic_overrides:
-        #     if topic_override == '':
-        #         continue
-        #     # ROS stuffs
-        #     # self.declare_parameter(f'{topic_override}.name', '')
-        #     self.declare_parameter(f'{topic_override}.reliability', 0) # 0 = best effort, 1 = reliable
-        #     self.declare_parameter(f'{topic_override}.durability', 0) # 0 system default, 1 = transient local, 2 = volatile
-        #     self.declare_parameter(f'{topic_override}.lifespan_sec', -1) # num sec as int, -1 infinity
-        #     self.declare_parameter(f'{topic_override}.raw', True) 
-        # logger.info(f'Loaded config topic_overrides: {str(self.topic_overrides)}')
+   
         # services collapsed in the ui menu (still operational, parameneter services by default; msg type or full service id)
         self.declare_parameter('collapse_services', [ 'rcl_interfaces/srv/DescribeParameters', 'rcl_interfaces/srv/GetParameterTypes', 'rcl_interfaces/srv/GetParameters', 'rcl_interfaces/srv/ListParameters', 'rcl_interfaces/srv/SetParameters', 'rcl_interfaces/srv/SetParametersAtomically' ], descriptor=ParameterDescriptor(
             type=ParameterType.PARAMETER_STRING_ARRAY,
