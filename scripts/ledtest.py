@@ -2,19 +2,6 @@ import gpiod
 import time
 from gpiod.line import Direction, Value
 
-# chip = gpiod.Chip('/dev/gpiochip0')
-# led_line = chip.get_line(24)  # Use the GPIO number, not pin number
-# led_line.request(consumer="LED", type=gpiod.LINE_REQ_DIR_OUT)
-
-
-# while True:
-#     led_line.set_value(1)
-#     print("LED ON")
-#     time.sleep(1)
-#     led_line.set_value(0)
-#     print("LED OFF")
-    # time.sleep(1)
-
 chip_path = '/dev/gpiochip0'
 
 with gpiod.Chip(chip_path) as chip:

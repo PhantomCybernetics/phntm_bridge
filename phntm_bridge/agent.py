@@ -155,7 +155,9 @@ class AgentController(Node):
             return response
         
         try:
-            results = iwlib.iwlist.scan(self.iw_interface)
+            results = subprocess.run(['iw', 'dev', self.iw_interface, 'scan'], capture_output=True, text=True)
+            print(results.stdout)
+            # results = iwlib.iwlist.scan(self.iw_interface)
         except Exception as e:
              print(f'Exception while scanning IW: {e}')
              response.err = 3
@@ -167,82 +169,70 @@ class AgentController(Node):
         response.scan_results = []
         roaming_candidates = []
 
-        for one_res in results:
-            one_data = IWScanResult()
-            linehr = []
-            print(f'{one_res}')
-            if 'ESSID' in one_res.keys():
-                one_data.essid = one_res['ESSID'].decode() # b'CircuitLaunch'
-                linehr.append(f'ESSID: {one_data.essid}')
-
-            if 'Access Point' in one_res.keys():
-                one_data.access_point = one_res['Access Point'].decode() # b'BA:FB:E4:45:19:4F'
-                linehr.append(f'AP: {one_data.access_point}')
-
-            if 'Frequency' in one_res.keys():
-                one_data.frequency = float(one_res['Frequency'].split()[0]) # b'5.24 GHz'
-                linehr.append(f'Freq: {one_data.frequency} GHz')
-
-            if 'BitRate' in one_res.keys():
-                one_data.bit_rate = float(one_res['BitRate'].split()[0]) # b'120 Mb/s'
-                linehr.append(f'BR: {one_data.bit_rate} Mb/s')
-
-            if 'Mode' in one_res.keys():
-                if one_res['Mode'] == b'Managed':
-                    one_data.mode = IWScanResult.MODE_MANAGED #b'Managed'
-                elif one_res['Mode'] == b'Ad-Hoc':
-                    one_data.mode = IWScanResult.MODE_AD_HOC #b'Ad-Hoc'
-                elif one_res['Mode'] == b'Master':
-                    one_data.mode = 3 # something else
-                linehr.append(f'Mode: {one_data.mode}')
-
-            if 'stats' in one_res.keys():
-                if 'quality' in one_res['stats'].keys():
-                    one_data.quality = one_res['stats']['quality'] # 34
-                    linehr.append(f'Q: {one_data.quality}')
-
-                if 'level' in one_res['stats'].keys():
-                    one_data.level = one_res['stats']['level'] # 180
-                    linehr.append(f'Lvl: {one_data.level}')
-
-                if 'noise' in one_res['stats'].keys():
-                    one_data.noise = one_res['stats']['noise'] # 0
-                    linehr.append(f'N: {one_data.noise}')
-
-                if 'updated' in one_res['stats'].keys():
-                    one_data.updated = one_res['stats']['updated']
-                    linehr.append(f'Upd: {one_data.updated}')
-
-            if one_data.essid == self.last_essid \
-            and one_data.access_point and one_data.quality and one_data.level:
-                one_data.roaming_candidate = True
-                roaming_candidates.append(one_data)
-
-            response.scan_results.append(one_data)
-            print(c(', '.join(linehr), 'cyan'))
-
+        curr_res = None
+        
+        for l in results.stdout.splitlines():
+            
+            if l.startswith('BSS'):
+                curr_res = IWScanResult()
+                response.scan_results.append(curr_res)
+                parts = l.split(' ')
+                if len(parts) > 0:
+                    bss_parts = parts[1].split('(')
+                    if len(bss_parts) > 0:
+                        curr_res.access_point = bss_parts[0].strip().lower()
+                curr_res.current = 'associated' in l                    
+                continue              
+            
+            if curr_res == None:
+                continue
+            
+            l = l.strip()
+            
+            if l.lower().startswith('freq'):
+                parts = l.split(':')
+                if len(parts) > 0:
+                    int_freq = int(parts[1].strip())
+                    curr_res.frequency = int_freq / 1000.0
+                continue
+            
+            if l.lower().startswith('ssid'):
+                parts = l.split(':')
+                if len(parts) > 0:
+                    curr_res.essid = parts[1].strip()
+                    if curr_res.essid.lower() == self.last_essid.lower():
+                        curr_res.roaming_candidate = True
+                        roaming_candidates.append(curr_res)
+                continue
+            
+            if l.lower().startswith('signal'):
+                parts = l.split(':')
+                if len(parts) > 0:
+                    curr_res.signal = float(parts[1].replace('dBm', '').strip())
+                continue
+        
+        response.scan_results = sorted(response.scan_results, key=lambda x: x.signal, reverse=True)
+        
         if request.attempt_roam:
             if not self.iw_roaming_enabled:
                 response.err = 3
                 response.msg = 'Roaming disabled by Agent'
             else:
                 print(f'IW: Seeing {len(roaming_candidates)} roaming candidates for {self.last_essid}')
-                # sort by quallity desc
-                sorted_candidates = sorted(roaming_candidates, key=lambda x: x.level, reverse=True)
-                for cand in sorted_candidates:
-                    print(f" >> {cand.access_point if cand.access_point else 'N/A'} {cand.frequency} GHz, Quality={cand.quality}, lvl={cand.level}, noise={cand.noise} {' < CURR' if cand.access_point == self.last_access_point else ''}")
-
-                bestest = sorted_candidates[0]
-                if bestest.access_point == self.last_access_point:
+                
+                roaming_candidates = sorted(roaming_candidates, key=lambda x: x.signal, reverse=True)        
+                bestest = roaming_candidates[0]
+                
+                if bestest.access_point.lower() == self.last_access_point.lower():
                     response.res = 0
-                    response.msg = 'Not roaming, current network seems best'
-                    print(c(f" >>> Not roaming, current AP seems best", 'cyan'))
+                    response.msg = 'Not roaming, current AP seems the best'
+                    print(c(f" >>> Not roaming, current AP seems the best", 'cyan'))
                 else:
-                    print(c(f" >>> Attenmpting to roam to {bestest.access_point} with quality={bestest.quality}", 'cyan'))
-                    wpa_cli_res = os.system(f"wpa_cli -p /host_run/wpa_supplicant/ -i {self.iw_interface} roam {bestest.access_point}")
+                    print(c(f' >>> Attenmpting to roam to "{bestest.essid}" {bestest.access_point} with signal={bestest.signal}', 'cyan'))
+                    wpa_cli_res = os.system(f'wpa_cli -p /host_run/wpa_supplicant/ -i {self.iw_interface} roam {bestest.access_point}')
                     print(f'wpa_cli_res={wpa_cli_res}')
                     response.res = wpa_cli_res
-                    response.msg = bestest.access_point
+                    response.msg = f'Switched to "{bestest.essid}" {bestest.access_point}'
 
         return response
     

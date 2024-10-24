@@ -72,7 +72,8 @@ services:
     network_mode: host # webrtc needs this
     volumes:
       - ~/phntm_bridge.yaml:/ros2_ws/phntm_bridge_params.yaml # bridge config goes here
-      - /var/run:/host_run # docker file extractor needs this
+      - /var/run:/host_run # docker file extractor and wifi control need this
+      - /tmp:/tmp # wifi control needs this
     devices:
       - /dev:/dev # led control needs this
     command:
