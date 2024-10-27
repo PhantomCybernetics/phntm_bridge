@@ -1214,11 +1214,10 @@ async def main_async(rcl_context, rcl_executor):
                                             image_worker_ctrl_queue,
                                             image_worker_out_queue
                                             ))
+    image_topic_read_worker.start()
     
     bridge_node = BridgeController(context=rcl_context, executor=rcl_executor)
     rcl_executor.add_node(bridge_node)
-    
-    image_topic_read_worker.start()
 
     try:
         bridge_node.start(video_worker_ctrl_queue=video_worker_ctrl_queue,

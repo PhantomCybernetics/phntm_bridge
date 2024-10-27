@@ -8,14 +8,14 @@ Fast WebRTC + Socket.io ROS2 Bridge written in Python for real-time data and vid
 - ROS2 Topic and Service discovery
 - Fast streamimg of binary ROS2 messages (in a out)
 - Fast H.264 video streaming (hw or sw encodeded frames)
-- Software encoded ROS2 Image messages streamed as H.264 video
+- Software encoded ROS2 Image messages streamed as H.264 video (at CPU cost)
 - Docker container discovery and control
 - Reliable ROS2 Service calls
-- ROS2 Parameneters read/write API
+- ROS2 Parameneters read/write at runtime
 - Extra ROS2 packages can be easily included for custom message type support
-- Robot's Wi-Fi signal monitoring, scan & roaming
-- File retreival from any running Docker container (such as URDF models)
-- System Load and Docker Stats monitoring
+- Robot's Wi-Fi signal monitoring, scan & roaming (requires wpa_supplicant)
+- File retreival from any running Docker container and host fs (such as URDF models)
+- System load and Docker stats monitoring
 - Standalone lightweight Bridge Agent for monitoring and management of various parts of a distributed system
 - Connects P2P or via a TURN server when P2P link is not possible
 - Multiple peers can connect to the same machine at a very low extra CPU cost
@@ -52,9 +52,14 @@ This registers a new robot on the [Cloud Bridge](https://github.com/PhantomCyber
 wget -O ~/phntm_bridge.yaml --no-check-certificate 'https://bridge.phntm.io:1337/robot/register?yaml'
 ```
 
-### Examine and Modify the Bridge Config File
-Default configutation file was created in ~/phntm_bridge.yaml \
+### Examine and Customize the Bridge Config File
+Default Bridge configutation file was created in `~/phntm_bridge.yaml` in the previous step. \
 The full list of configuration options can be found [here](https://docs.phntm.io/bridge/configuration).
+```yaml
+# TODO
+```
+
+### Configure the Agent (Optional)
 ```yaml
 # TODO
 ```
@@ -72,6 +77,7 @@ services:
     network_mode: host # webrtc needs this
     volumes:
       - ~/phntm_bridge.yaml:/ros2_ws/phntm_bridge_params.yaml # bridge config goes here
+      - ~/phntm_agent.yaml:/ros2_ws/phntm_agent_params.yaml # optional, agent config goes here
       - /var/run:/host_run # docker file extractor and wifi control need this
       - /tmp:/tmp # wifi control needs this
     devices:
@@ -80,10 +86,11 @@ services:
       ros2 launch phntm_bridge bridge_agent_launch.py
 ```
 
-### Launch the Bridge
+### Launch
 ```bash
 docker compose up phntm_bridge
 ```
+This launches the Bridge and Agent nodes in the same container. See the full documentation for other configuration options.
 
 ### Open the Web UI
 Open `https://bridge.phntm.io/ID_ROBOT` in a web browser. \
@@ -91,14 +98,6 @@ Open `https://bridge.phntm.io/ID_ROBOT` in a web browser. \
 If you provided maintainer's e-mail in your robot's YAML config file, a permanent link will be sent to you for your reference after the first Bridge launch. \
  \
 Please note that Firefox is not fully supported at this time, [reasons are explained here](https://github.com/PhantomCybernetics/bridge_ui/blob/main/FIREFOX_ISSUES.md).
-
-
-## TODOs in the Pipeline
-- Compressed CostMap streaming
-- Compressed PointCloud streaming
-- Audio in/out streaming
-- Variable bitrate for video (?)
-- Generic USB camera support (?!)
 
 
 ## See Also

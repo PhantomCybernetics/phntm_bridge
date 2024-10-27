@@ -110,7 +110,7 @@ class Worker:
         
     
     async def spin_node_loop(self):
-        self.logger.info(f'Spining the node...')
+        self.logger.info(f'Spinning the node...')
         while self.running_shared.value > 0:
             rclpy.spin_once(self.reader_node, executor=self.rclpy_executor, timeout_sec=0.1)
             await asyncio.sleep(0)
@@ -118,10 +118,8 @@ class Worker:
 
 
     async def worker_loop(self):
-        
         try:
             if not self.node_spin_task:
-                self.reader_node.get_logger().info(f'Spinning the node...')
                 self.node_spin_task = asyncio.get_event_loop().create_task(self.spin_node_loop())
         except Exception as e:
             self.reader_node.get_logger().error(f'Exception while spinning reader node: {e}')
