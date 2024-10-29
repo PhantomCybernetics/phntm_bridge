@@ -5,6 +5,7 @@
 ## Release notes
 
 # Video
+    -  detection overlay (NN config)
 
 ## Hardware-encoded video
 
@@ -83,6 +84,9 @@ nmcli d wifi connect %YOUR_AP_BSSID% # switch to the desired BSSID
 
 ## Hosting Cloud Bridge
 - TURN Server
+
+## Known inssues (move to GitHUb)
+Shutdown not always clean as Docker doesn't send proper signals to ROS process (should be fixed in 28.0.0 milestone) - status LEDs stay on after shutdown.
 
 ## Roadmap & Contributing
 - Compressed CostMap streaming

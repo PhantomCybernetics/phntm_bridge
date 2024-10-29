@@ -609,13 +609,11 @@ class BridgeController(Node, BridgeControllerConfig):
                         case 'vision_msgs/msg/Detection2DArray' | 'vision_msgs/msg/Detection3DArray':
                             # NN stuffs
                             try: 
-                                self.declare_parameter(f'{sub}.nn_input_cropped_square', True) # nn input is usually a square
                                 self.declare_parameter(f'{sub}.nn_input_w', 416)
                                 self.declare_parameter(f'{sub}.nn_input_h', 416)
                                 self.declare_parameter(f'{sub}.nn_detection_labels', [ '' ]) # nn class labels
                             except rclpy.exceptions.ParameterAlreadyDeclaredException:
                                 pass
-                            topic_conf['nn_input_cropped_square'] = self.get_parameter(f'{sub}.nn_input_cropped_square').get_parameter_value().bool_value
                             topic_conf['nn_input_w'] = self.get_parameter(f'{sub}.nn_input_w').get_parameter_value().integer_value
                             topic_conf['nn_input_h'] = self.get_parameter(f'{sub}.nn_input_h').get_parameter_value().integer_value
                             topic_conf['nn_detection_labels'] = self.get_parameter(f'{sub}.nn_detection_labels').get_parameter_value().string_array_value
