@@ -28,7 +28,7 @@ ROS Image messages containing depth data can be processed and colorized for bett
 ### Tested cameras
 Picams
 Astra
-Note about the Oak ROS package
+Oak (note about the Oak ROS package issues)
 
 ## Docker Compose Configuration
 
@@ -61,12 +61,33 @@ nmcli d wifi connect %YOUR_AP_BSSID% # switch to the desired BSSID
 
 ## User Interface
 - desktop interface 
-- graph menu
+- graph menu 
+    - qos compatinility
+    - node params
 - config file
 - input mapping & config
+    - custom input drivers
 - widget types
-- custom widgets
+    - battery
+    - range
+    - laser
+    - log
+    - video (+ overlays)
+    - imu
+    - system load (+ disk space)
+    - everythig 3d (+ overlays)
 - touch interface
+
+## Custom UI widgets
+- message type widgets
+- compound custom widgets (2d/3d)
+- description tf
+- zoomable 3d tiles
+- multitopic
+- linking external library
+
+## User Input
+- custom drivers
 
 ## ROS Services
 

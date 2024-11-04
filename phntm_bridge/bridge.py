@@ -617,6 +617,20 @@ class BridgeController(Node, BridgeControllerConfig):
                             topic_conf['nn_input_w'] = self.get_parameter(f'{sub}.nn_input_w').get_parameter_value().integer_value
                             topic_conf['nn_input_h'] = self.get_parameter(f'{sub}.nn_input_h').get_parameter_value().integer_value
                             topic_conf['nn_detection_labels'] = self.get_parameter(f'{sub}.nn_detection_labels').get_parameter_value().string_array_value
+                        case 'sensor_msgs/msg/CameraInfo':
+                            try: 
+                                self.declare_parameter(f'{sub}.frustum_color', 'cyan')
+                                self.declare_parameter(f'{sub}.frustum_near', 0.01)
+                                self.declare_parameter(f'{sub}.frustum_far', 1.0)
+                                self.declare_parameter(f'{sub}.force_frame_id', '')
+                            except rclpy.exceptions.ParameterAlreadyDeclaredException:
+                                pass
+                            topic_conf['frustum_color'] = self.get_parameter(f'{sub}.frustum_color').get_parameter_value().string_value
+                            topic_conf['frustum_near'] = self.get_parameter(f'{sub}.frustum_near').get_parameter_value().double_value
+                            topic_conf['frustum_far'] = self.get_parameter(f'{sub}.frustum_far').get_parameter_value().double_value
+                            force_frame_id = self.get_parameter(f'{sub}.force_frame_id').get_parameter_value().string_value
+                            if force_frame_id:
+                                topic_conf['force_frame_id'] = force_frame_id
                         case 'sensor_msgs/msg/BatteryState':
                             # Battery
                             try:
