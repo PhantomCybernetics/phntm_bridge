@@ -4,6 +4,9 @@
 
 ## Release notes
 
+# Architecture & WebRTC basics
+- force TURN with ?force_turn=1
+
 # Video
     -  detection overlay (NN config)
 
@@ -66,7 +69,9 @@ nmcli d wifi connect %YOUR_AP_BSSID% # switch to the desired BSSID
     - node params
 - config file
 - input mapping & config
+    - input profiles
     - custom input drivers
+    
 - widget types
     - battery
     - range
@@ -101,6 +106,9 @@ nmcli d wifi connect %YOUR_AP_BSSID% # switch to the desired BSSID
 
 ## Status LEDs
 
+## Standalone browser-client.js
+    designed to be a self contained minimal API reference for Phntm Bridge
+
 ## Updating the Bridge
 
 ## Hosting Cloud Bridge
@@ -112,6 +120,7 @@ Shutdown not always clean as Docker doesn't send proper signals to ROS process (
 ## Roadmap & Contributing
 - Compressed CostMap streaming
 - Compressed PointCloud streaming
+- State machine UI
 - UI schemes & toggle
 - Self-hosted custom UI widgets
 - Audio in/out streaming
