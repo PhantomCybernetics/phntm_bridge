@@ -24,6 +24,8 @@ RUN pip install setuptools \
                 PyEventEmitter \
                 gpiod
 
+RUN pip install --no-binary dulwich dulwich --config-settings "--build-option=--pure"
+
 # init workspace
 ENV ROS_WS=/ros2_ws
 RUN mkdir -p $ROS_WS/src

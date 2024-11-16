@@ -59,9 +59,23 @@ The full list of configuration options can be found [here](https://docs.phntm.io
 # TODO
 ```
 
-### Configure the Agent (Optional)
+### Configure the Agent
+Example config file for the Phntm Agent (~/phntm_agent.yaml)
 ```yaml
-# TODO
+/**:
+  ros__parameters:
+    host_name: 'pi5' # lower case, must be valid ros id or ''
+    refresh_period_sec: 0.5
+    docker: True # monitor containers
+    docker_topic: '/docker_info'
+    docker_control: True
+    system_info: True # monitor system stats
+    system_info_topic: '/system_info_pi5'
+    disk_volume_paths: [ '/', '/dev/shm' ] # volumes to monitor, must be mounted in the container
+    iw_interface: 'wlan0' # disabled if empty
+    iw_monitor_topic: '/iw_status' # writes output here
+    iw_control: True
+    iw_roaming: True
 ```
 
 ### Add Bridge Service to your compose.yaml
@@ -75,6 +89,7 @@ services:
     restart: unless-stopped # restarts after first run
     privileged: true # bridge needs this
     network_mode: host # webrtc needs this
+    ipc: host # bridge needs this to see other local containers
     volumes:
       - ~/phntm_bridge.yaml:/ros2_ws/phntm_bridge_params.yaml # bridge config goes here
       - ~/phntm_agent.yaml:/ros2_ws/phntm_agent_params.yaml # optional, agent config goes here

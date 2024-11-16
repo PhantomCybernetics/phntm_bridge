@@ -10,6 +10,9 @@ from rclpy_message_converter import message_converter
 import concurrent.futures
 import gpiod
 
+from dulwich.repo import Repo
+from dulwich import porcelain
+
 from rclpy.executors import SingleThreadedExecutor, MultiThreadedExecutor
 
 from .inc.status_led import StatusLED
@@ -97,6 +100,12 @@ class BridgeController(Node, BridgeControllerConfig):
 
         self.ros_distro = os.environ["ROS_DISTRO"]
         self.get_logger().debug(f'ROS Distro is: {self.ros_distro}')
+        
+        git_repo = Repo('.')
+        self.git_head_sha = git_repo.head().decode()
+        git_tags = git_repo.refs.as_dict(b"refs/tags")
+        self.latest_git_tag = sorted(git_tags.items(), key=lambda x: git_repo[x[1]].commit_time) if git_tags else None
+        self.get_logger().debug(f"Git commit: {self.git_head_sha} Tag: {self.latest_git_tag}")
         
         # separate process
         self.topic_read_subscriptions:dict[str: TopicReadSubscription] = {}
@@ -495,7 +504,9 @@ class BridgeController(Node, BridgeControllerConfig):
                     'id_robot': self.id_robot,
                     'key': self.auth_key,
                     'name': self.get_parameter('name').get_parameter_value().string_value,
-                    'ros_distro': self.ros_distro
+                    'ros_distro': self.ros_distro,
+                    'git_sha': self.git_head_sha,
+                    'git_tag': self.latest_git_tag
                 }
                 await self.sio.connect(url=f'{self.sio_address}:{self.sio_port}', socketio_path=self.sio_path, auth=auth_data)
 
