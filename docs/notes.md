@@ -13,6 +13,7 @@
 ## Hardware-encoded video
 
 [Raspberry Pi Camera modules](https://www.raspberrypi.com/products/#cameras-and-displays) are automatically discovered out of the box and can stream very fast H264 video at high resolution with a very small CPU overhead. This is achieved utilizing hw-encoding capabilities on the VideoCore and Picam2 library included in the Docker image.
+picam_ros package (add CameraInfo)
 
 [OAK Cameras](https://shop.luxonis.com/collections/oak-cameras-1): TODO!
 
@@ -111,7 +112,9 @@ nmcli d wifi connect %YOUR_AP_BSSID% # switch to the desired BSSID
 
 ## Updating the Bridge
 
-## Hosting Cloud Bridge
+## Cloud Bridge
+- What does Cloud Bridge log
+- Hosting your own
 - TURN Server
 
 ## Known inssues (move to GitHUb)
