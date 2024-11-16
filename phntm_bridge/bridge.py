@@ -104,7 +104,8 @@ class BridgeController(Node, BridgeControllerConfig):
         git_repo = Repo('.')
         self.git_head_sha = git_repo.head().decode()
         git_tags = git_repo.refs.as_dict(b"refs/tags")
-        self.latest_git_tag = sorted(git_tags.items(), key=lambda x: git_repo[x[1]].commit_time) if git_tags else None
+        self.latest_git_tag = sorted(git_tags.items(), key=lambda x: git_repo[x[1]].commit_time)[0][0].decode() if git_tags else None
+        
         self.get_logger().debug(f"Git commit: {self.git_head_sha} Tag: {self.latest_git_tag}")
         
         # separate process
