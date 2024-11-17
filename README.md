@@ -159,7 +159,8 @@ Here's an example config file.
 
 ### Add Bridge Service to your compose.yaml
 Add phntm_bridge service to your compose.yaml file with ~/phntm_bridge.yaml and ~/phntm_agent.yaml mounted in the container as show below:
-```yaml filename="compose.yaml"
+compose.yaml
+```yaml
 services:
   phntm_bridge:
     image: phntm/bridge:humble
