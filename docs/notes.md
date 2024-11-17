@@ -30,7 +30,7 @@ Software encoding requires significantly more CPU time compared to GPU-based vid
 ROS Image messages containing depth data can be processed and colorized for better visibility. As mentioned above, 16UC1 and 32FC1 frame encoginds are supported at this point.
 
 ### Tested cameras
-Picams
+Picams (w picam_ros2)
 Astra
 Oak (note about the Oak ROS package issues)
 

@@ -41,6 +41,11 @@ class BridgeControllerConfig():
             type=ParameterType.PARAMETER_STRING,
             description='Robot name'
         ))
+        
+        self.declare_parameter('maintainer_email', '', descriptor=ParameterDescriptor(
+            type=ParameterType.PARAMETER_STRING,
+            description='Maintainer e-mail address'
+        ))
 
         # will check these packages on 1st (container) start
         self.declare_parameter('extra_packages', [  ''  ], descriptor=ParameterDescriptor(

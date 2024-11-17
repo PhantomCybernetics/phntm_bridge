@@ -508,6 +508,7 @@ class BridgeController(Node, BridgeControllerConfig):
                     'id_robot': self.id_robot,
                     'key': self.auth_key,
                     'name': self.get_parameter('name').get_parameter_value().string_value,
+                    'maintainer_email': self.get_parameter('maintainer_email').get_parameter_value().string_value,
                     'ros_distro': self.ros_distro,
                     'git_sha': self.git_head_sha,
                     'git_tag': self.latest_git_tag
