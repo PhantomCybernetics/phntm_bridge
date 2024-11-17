@@ -8,7 +8,7 @@
 - force TURN with ?force_turn=1
 
 # Video
-    -  detection overlay (NN config)
+- detection overlay (NN config)
 
 ## Hardware-encoded video
 
