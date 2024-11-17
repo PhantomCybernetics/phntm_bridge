@@ -150,7 +150,7 @@ Here's an example config file, e.g. `~/phntm_agent.yaml`.
     docker_control: True
     system_info: True # monitor system stats
     system_info_topic: '/system_info_pi5'
-    disk_volume_paths: [ '/', '/dev/shm' ] # volumes to monitor, must be mounted in the container
+    disk_volume_paths: [ '/', '/dev/shm' ] # volumes to monitor, must be accessible from the container
     iw_interface: 'wlan0' # disabled if empty
     iw_monitor_topic: '/iw_status' # writes output here
     iw_control: True # enable wi-fi scanning
@@ -181,7 +181,6 @@ services:
 ```
 
 ### Launch
-This launches the Bridge and Agent nodes in the same container:
 ```bash
 docker compose up phntm_bridge
 ```
