@@ -192,7 +192,7 @@ If you provided maintainer's e-mail in the config, it will be also e-mailed to y
 Please note that Firefox is not fully supported at this time, [reasons are explained here](https://github.com/PhantomCybernetics/bridge_ui/blob/main/FIREFOX_ISSUES.md).
 
 
-## See Also
+## See also
 - [Documentation](https://docs.phntm.io/bridge) Full Phantom Bridge documentation
 - [Bridge UI](https://github.com/PhantomCybernetics/bridge_ui#readme) Overview of the customizable web UI
 - [Configure User Input](https://docs.phntm.io/bridge/user-input) Use keyboard, touch interface or gamepad to control your robot locally or remotely
