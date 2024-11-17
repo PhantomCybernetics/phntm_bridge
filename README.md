@@ -23,7 +23,7 @@ Fast WebRTC + Socket.io ROS2 Bridge written in Python for real-time data and vid
 - Works with rosbag and sims such as Gazebo or Webots
 
 ## Architecture
-![Infrastructure map](https://github.com/PhantomCybernetics/phntm_bridge/blob/a1499ecf02909b20fa7101d9d415bca3d61ca667/docs/PHNTM%20Bridge%20Architecture.png)
+![Infrastructure map](https://raw.githubusercontent.com/PhantomCybernetics/phntm_bridge_docs/refs/heads/main/img/Architecture_Bridge.png)
 
 # Install
 
