@@ -27,7 +27,7 @@ Fast WebRTC + Socket.io ROS2 Bridge written in Python for real-time data and vid
 
 # Install
 
-### Make sure your Root SSL Certificates are up to date
+### Make sure your root SSL Certificates are up to date
 
 ```bash
 sudo apt update
@@ -42,7 +42,7 @@ sudo usermod -aG docker ${USER}
 # log out & back in
 ```
 
-### Clone this Repo and Build the Docker Image
+### Clone this repo and build the Docker image
 ```bash
 cd ~
 git clone git@github.com:PhantomCybernetics/phntm_bridge.git phntm_bridge
@@ -53,13 +53,13 @@ docker build -f Dockerfile -t phntm/bridge:$ROS_DISTRO \
   .
 ```
 
-### Register a new Robot on Cloud Bridge
+### Register a new Robot on the Cloud Bridge
 This registers a new robot on the [Cloud Bridge](https://github.com/PhantomCybernetics/cloud_bridge) and returns default config file you can edit further. Unique ID_ROBOT and KEY pair are generated in this step.
 ```bash
 wget -O ~/phntm_bridge.yaml 'https://bridge.phntm.io:1337/robot/register?yaml'
 ```
 
-### Examine and Customize the Bridge Config File
+### Examine and customize the Bridge config file
 Below is an example of the config file generated in the previous step, e.g. `~/phntm_bridge.yaml`. \
 Full list of configuration options can be found [here](https://docs.phntm.io/bridge/configuration).
 ```yaml
@@ -122,14 +122,14 @@ Full list of configuration options can be found [here](https://docs.phntm.io/bri
       min_voltage: 9.0 # set empty voltage
       max_voltage: 12.6 # set set full voltage
 
-    ui_battery_topic: /battery # battery to show in UI, '' to disable
+    ui_battery_topic: /battery # battery to show in the UI, '' to disable
 
-    ui_wifi_monitor_topic: '/iw_status' # WiFi monitoring and control via Agent
+    ui_wifi_monitor_topic: '/iw_status' # WiFi monitor topic to show in the UI (produced by the Agent)
     ui_enable_wifi_scan: True
     ui_enable_wifi_roam: False
 
     ui_docker_control: True # Docker control via Agent
-    docker_monitor_topic: /docker_info # produced by Agent
+    docker_monitor_topic: /docker_info # produced by the Agent
 
     ## User input config
     input_drivers: [ 'Twist' ] # enabled input drivers
@@ -137,8 +137,8 @@ Full list of configuration options can be found [here](https://docs.phntm.io/bri
 ```
 
 ### Configure the Agent
-Bridge Agent is a lightweight node that performs system monitoring and various related tasks. Typically, it is run in the same
-container as the Bridge, but can be also installed separately in case of a distributed system (hence the separatae configuration).
+The [Bridge Agent](https://docs.phntm.io/bridge/agent) is a lightweight node that performs system monitoring and various related tasks. Typically, it's run in the same
+container as the Bridge, but can be also installed separately and run in multiple instances in case of a distributed system (hence the separatae configuration).
 Here's an example config file, e.g. `~/phntm_agent.yaml`.
 ```yaml
 /**:
@@ -157,7 +157,7 @@ Here's an example config file, e.g. `~/phntm_agent.yaml`.
     iw_roaming: False # enable wi-fi roaming
 ```
 
-### Add Bridge Service to your compose.yaml
+### Add the Bridge service to your compose.yaml
 Add phntm_bridge service to your `~/compose.yaml` file with both `~/phntm_bridge.yaml` and `~/phntm_agent.yaml` mounted in the container as shown below:
 ```yaml
 services:
@@ -181,21 +181,20 @@ services:
 ```
 
 ### Launch
+This launches the Bridge and Agent nodes in the same container:
 ```bash
 docker compose up phntm_bridge
 ```
-This launches the Bridge and Agent nodes in the same container. See the full documentation for further configuration options.
 
 ### Open the Web UI
-Open `https://bridge.phntm.io/%ID_ROBOT%` in a web browser. The exact link can be found at the top of the generated Bridge YAML config file (e.g. `~/phntm_bridge.yaml`).
-(if you provided maintainer's e-mail in your config, it will be also mailed to you for your reference after the first Bridge launch.) \
+Open `https://bridge.phntm.io/%ID_ROBOT%` in a web browser. The exact link can be found at the top of the generated Bridge config file (e.g. `~/phntm_bridge.yaml`).
+(if you provided maintainer's e-mail in the config, it will be also mailed to you for your reference, after the first Bridge launch.) \
  \
 Please note that Firefox is not fully supported at this time, [reasons are explained here](https://github.com/PhantomCybernetics/bridge_ui/blob/main/FIREFOX_ISSUES.md).
 
 
 ## See Also
 - [Documentation](https://docs.phntm.io/bridge) Full Phantom Bridge documentation
-- [Bridge UI](https://github.com/PhantomCybernetics/bridge_ui#readme) customizable robot web UI/dashboard
+- [Bridge UI](https://github.com/PhantomCybernetics/bridge_ui#readme) Overview of the customizable web UI
 - [Configure User Input](https://docs.phntm.io/bridge/user-input) Use keyboard, touch interface or gamepad to control your robot locally or remotely
-- [Picam ROS2](https://github.com/PhantomCybernetics/picam_ros2) standalone ROS2 node that converts hardware-encoded H.264 frames into ROS messages
-- [Cloud Bridge](https://github.com/PhantomCybernetics/cloud_bridge#readme) facilitates peer handshakes and signalling
+- [Picam ROS2](https://github.com/PhantomCybernetics/picam_ros2) Standalone ROS2 node that converts hardware-encoded H.264 frames into ROS messages
