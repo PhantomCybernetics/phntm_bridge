@@ -210,7 +210,7 @@ class Worker:
                             f = asyncio.run_coroutine_threadsafe(self.on_stream_image_data(topic, msg), topic_loop)
                             f.add_done_callback(handler_error_catcher)
                         except Exception as e:
-                            self.logger.error(f'Error handlind data of {topic}: {e}')
+                            self.logger.error(f'Error handling data of {topic}: {e}')
                     cb = on_msg_cb
                 elif msg_type == ImageTopicReadSubscription.MSG_TYPE:
                     def on_msg_cb(msg:any):
@@ -218,7 +218,7 @@ class Worker:
                             f = asyncio.run_coroutine_threadsafe(self.on_raw_image_data(topic, msg), topic_loop)
                             f.add_done_callback(handler_error_catcher)
                         except Exception as e:
-                            self.logger.error(f'Error handlind data of {topic}: {e}')
+                            self.logger.error(f'Error handling data of {topic}: {e}')
                     cb = on_msg_cb
                 elif msg_type == ImageTopicReadSubscription.COMPRESSED_MSG_TYPE:
                     def on_msg_cb(msg:any):
@@ -226,7 +226,15 @@ class Worker:
                             f = asyncio.run_coroutine_threadsafe(self.on_compressed_image_data(topic, msg), topic_loop)
                             f.add_done_callback(handler_error_catcher)
                         except Exception as e:
-                            self.logger.error(f'Error handlind data of {topic}: {e}')
+                            self.logger.error(f'Error handling data of {topic}: {e}')
+                    cb = on_msg_cb
+                elif self.out_queue != None: #tf data
+                    def on_msg_cb(msg:any):
+                        try:
+                            f = asyncio.run_coroutine_threadsafe(self.on_tf_data(topic, msg), topic_loop)
+                            f.add_done_callback(handler_error_catcher)
+                        except Exception as e:
+                            self.logger.error(f'Error handling tf data of {topic}: {e}')
                     cb = on_msg_cb
                 else: # data
                     def on_msg_cb(msg:any):
@@ -256,7 +264,7 @@ class Worker:
                 self.active_subs[topic] = {
                     'sub': sub,
                     'args': args,
-                    'pipe': pipe, # data only
+                    'pipe': pipe, # data only (non-tf)
                     'push_task': None,
                     'logged': False,
                     'executor': self.executor,
@@ -316,6 +324,28 @@ class Worker:
         except Exception as ee:
             self.logger.error(f'Pipe close {topic} exception {topic}: {ee}')
 
+
+    # hw (or elsewhere) encoded frames
+    async def on_tf_data(self, topic:str, msg:any):
+        
+        if not topic in self.active_subs.keys():
+            return
+        
+        sub = self.active_subs[topic]
+        
+        if 'ignore' in sub:
+            return
+        
+        self.out_queue_lock.acquire()
+        try:
+            self.out_queue.put_nowait({
+                'topic': topic,
+                'msg': msg
+            })
+        except Exception as e:
+            self.logger.error(f'Error putting msg of {topic} into queue: {e}')
+        self.out_queue_lock.release()
+        
 
     # hw (or elsewhere) encoded frames
     async def on_stream_image_data(self, topic:str, msg:any):

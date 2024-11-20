@@ -156,6 +156,7 @@ class ImageTopicReadSubscription:
                 'first_ts': -1,
                 'last_ts': -1
             }
+            
         except Exception as e:
             self.ctrl_node.get_logger().error(f'Error subscribing to {topic}: {e}')
 
@@ -173,8 +174,7 @@ class ImageTopicReadSubscription:
                 res_bytes = await self.last_read_task
                 res = marshal.loads(res_bytes)
 
-                if 'msg' in res and res['msg'] == None: # closing pipe from the worker
-                    self.clear_pipe()
+                if 'msg' in res and res['msg'] == None: # closing queue from the worker
                     return
                 
             except (KeyboardInterrupt, asyncio.CancelledError):

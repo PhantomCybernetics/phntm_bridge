@@ -167,6 +167,7 @@ services:
     hostname: phntm-bridge.local
     restart: unless-stopped # restarts after first run
     privileged: true # bridge needs this
+    # cpuset: '0,1,2' # consider dedicating a few CPU cores for maximal responsiveness
     network_mode: host # webrtc needs this
     ipc: host # bridge needs this to see other local containers
     volumes:

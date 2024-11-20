@@ -25,9 +25,10 @@ import threading
 import traceback
 
 import multiprocessing as mp
+from multiprocessing.connection import Connection
 from queue import Empty, Full
 
-class TopicReadSubscription:
+class DataPipedTopicSubscription:
 
     # def __init__(self, sub:Subscription, peers:list[str], frame_processor, processed_frames_h264:mp.Queue, processed_frames_v8:mp.Queue, make_keyframe_shared:mp.Value, make_h264_shared:mp.Value, make_v8_shared:mp.Value):
     def __init__(self, ctrl_node:Node, worker_ctrl_queue:mp.Queue, topic:str, protocol:str, event_loop:object, log_message_every_sec:float, qos:QoSProfile, msg_blinker_cb:Callable):
@@ -56,47 +57,51 @@ class TopicReadSubscription:
 
         self.msg_callbacks:list = []
         
+        self.pipe_out:Connection = None
+        self.pipe_worker:Connection = None
         # self.send_pool = concurrent.futures.ThreadPoolExecutor()
-        #print(f'TopicReadSubscription:__init__() {threading.get_ident()}')
+        #print(f'DataPipedTopicSubscription:__init__() {threading.get_ident()}')
 
     def start(self, peer:WRTCPeer, msg_callback) -> bool:
 
         if self.sub != None: # already subscribed
             if peer:
                 self.peers[peer.id] = peer.outbound_data_channels[self.topic] # add peers dc
-            if msg_callback and msg_callback not in msg_callback: 
+            if msg_callback and msg_callback not in self.msg_callbacks: 
                 self.msg_callbacks.append(msg_callback) # add callback
             return True #all done, one sub for all
 
-        if self.worker_ctrl_queue: # subscribe on processor's process
+        self.pipe_out, self.pipe_worker = mp.Pipe()
 
-            self.pipe_out, self.pipe_worker = mp.Pipe()
-            # no_skip:bool = self.reliability == QoSReliabilityPolicy.RELIABLE
-            try:
-                self.worker_ctrl_queue.put_nowait({'action': 'subscribe',
+        try:
+            self.worker_ctrl_queue.put_nowait({'action': 'subscribe',
                                                 'pipe': self.pipe_worker,
                                                 'topic': self.topic,
                                                 'qos': {
-                                                        'history': self.qos.history,
-                                                        'depth': self.qos.depth,
-                                                        'reliability':self.qos.reliability,
-                                                        'durability':self.qos.durability,
-                                                        'lifespan': -1 if self.qos.lifespan == Infinite else self.qos.lifespan.nanoseconds
+                                                    'history': self.qos.history,
+                                                    'depth': self.qos.depth,
+                                                    'reliability':self.qos.reliability,
+                                                    'durability':self.qos.durability,
+                                                    'lifespan': -1 if self.qos.lifespan == Infinite else self.qos.lifespan.nanoseconds
                                                 },
                                                 'msg_type': self.protocol
                                                 })
-                self.sub = True
-            except Exception as e:
-                self.ctrl_node.get_logger().error(f'Error subscribing to {self.topic}: {e}')
+            self.sub = True
             
+            if peer:
+                self.peers[peer.id] = peer.outbound_data_channels[self.topic] # add peer's dc
+            if msg_callback and msg_callback not in self.msg_callbacks:
+                self.msg_callbacks.append(msg_callback) # add callback
+                
+            # read the pipe
             self.read_task = self.event_loop.create_task(self.read_piped_data(), name="pipe_reader")
 
-        if peer:
-            self.peers[peer.id] = peer.outbound_data_channels[self.topic] # add peer's dc
-        if msg_callback and msg_callback not in self.msg_callbacks:
-            self.msg_callbacks.append(msg_callback) # add callback
+            return True
+        except Exception as e:
+            self.ctrl_node.get_logger().error(f'Error subscribing to piped {self.topic}: {e}')
+            print(self.worker_ctrl_queue)
+        return False
 
-        return True
 
     def clear_pipe(self):
         self.ctrl_node.get_logger().info(f'Topic reader for {self.topic} received pipe close')
@@ -105,6 +110,7 @@ class TopicReadSubscription:
         self.executor.shutdown(False, cancel_futures=True) 
 
 
+    # read piped data
     async def read_piped_data(self):
         while self.read_task and not self.read_task.cancelled():
             try:
@@ -120,6 +126,7 @@ class TopicReadSubscription:
             except Exception as e:
                 self.ctrl_node.get_logger().error(f'Exception while reading latest {self.topic} from data pipe: {str(e)}')
                 traceback.print_exc(e)
+    
 
     # called either by ctrl node's process or when data is received via reader_out_queue (called on ctrl node's process)
     async def on_msg(self, reader_res:dict):
@@ -127,7 +134,7 @@ class TopicReadSubscription:
         self.last_msg = reader_res['msg']
         self.last_msg_time = time.time()
 
-        #print(f'TopicReadSubscription:on_msg() {threading.get_ident()}')
+        #print(f'DataPipedTopicSubscription:on_msg() {threading.get_ident()}')
 
         log_msg = False
         if log_msg or self.num_received == 1: # first data in
@@ -150,7 +157,7 @@ class TopicReadSubscription:
                     peer_dc.send(self.last_msg)
 
                 except Exception as e:
-                    print(f'⚡️ Exception in on_msg: {e}')
+                    print(f'⚡️ Exception in piped on_msg: {e}')
                     traceback.print_exception(e)
 
         if len(self.peers.keys()) and self.msg_blinker_cb is not None:

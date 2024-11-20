@@ -59,7 +59,8 @@ from aiortc.rtcrtpsender import RTCRtpSender
 import os
 import platform
 
-from .inc.topic_reader import TopicReadSubscription
+from .inc.data_piped_topic_reader import DataPipedTopicSubscription
+from .inc.data_queued_topics_reader import DataQueuedTopicsSubscription
 from .inc.topic_processor_worker import TopicProcessorWorker
 from .inc.topic_writer import TopicWritePublisher
 from .inc.peer import WRTCPeer
@@ -112,7 +113,8 @@ class BridgeController(Node, BridgeControllerConfig):
         self.get_logger().debug(f"Git commit: {self.git_head_sha} Tag: {self.latest_git_tag}")
         
         # separate process
-        self.topic_read_subscriptions:dict[str: TopicReadSubscription] = {}
+        self.piped_topic_read_subscriptions:dict[str: DataPipedTopicSubscription] = {}
+        self.queued_topic_read_subscriptions:DataQueuedTopicsSubscription = None
         self.image_topic_read_subscriptions:dict[str: ImageTopicReadSubscription] = {}
 
         # this process
@@ -128,7 +130,10 @@ class BridgeController(Node, BridgeControllerConfig):
         self.sio_reconnect_wait_task: asyncio.Future[any] = None
 
 
-    def start(self, video_worker_ctrl_queue:mp.Queue=None, video_worker_out_queue:mp.Queue=None, image_worker_ctrl_queue:mp.Queue=None, image_worker_out_queue:mp.Queue=None, data_worker_ctrl_queue:mp.Queue=None):
+    def start(self, video_worker_ctrl_queue:mp.Queue, video_worker_out_queue:mp.Queue,
+            image_worker_ctrl_queue:mp.Queue, image_worker_out_queue:mp.Queue,
+            data_worker_ctrl_queue:mp.Queue,
+            tf_worker_ctrl_queue:mp.Queue, tf_worker_out_queue:mp.Queue):
         self.create_sio_client()
 
         discovery_period:float = self.get_parameter('discovery_period_sec').get_parameter_value().double_value
@@ -145,8 +150,11 @@ class BridgeController(Node, BridgeControllerConfig):
         self.image_worker_ctrl_queue:mp.Queue = image_worker_ctrl_queue
         self.image_worker_out_queue:mp.Queue = image_worker_out_queue
         self.data_worker_ctrl_queue:mp.Queue = data_worker_ctrl_queue
+        self.tf_worker_ctrl_queue:mp.Queue = tf_worker_ctrl_queue
+        self.tf_worker_out_queue:mp.Queue = tf_worker_out_queue
         
         self.image_read_executor = concurrent.futures.ThreadPoolExecutor(max_workers=10, thread_name_prefix=f'im_read')
+        self.queued_data_read_executor = concurrent.futures.ThreadPoolExecutor(max_workers=10, thread_name_prefix=f'queued_data_read')
 
         self.get_logger().debug(f'Phntm Bridge started, idRobot={c(self.id_robot, "cyan")}')
     
@@ -597,10 +605,10 @@ class BridgeController(Node, BridgeControllerConfig):
         for sub in peer.read_subs:
             if sub in self.introspection.discovered_topics.keys():
                 msg_type = self.introspection.discovered_topics[sub]['msg_type']
-                is_image = IsImageType(msg_type)
+                is_image_or_video = IsImageType(msg_type)
                 
                 try: 
-                    self.declare_parameter(f'{sub}.reliability', 0) # 0 = best effort, 1 = reliable
+                    self.declare_parameter(f'{sub}.reliability', 2) # 2 = best effort, 1 = reliable
                     self.declare_parameter(f'{sub}.durability', 0) # 0 system default, 1 = transient local, 2 = volatile
                     self.declare_parameter(f'{sub}.lifespan_sec', -1) # num sec as int, -1 infinity
                 except rclpy.exceptions.ParameterAlreadyDeclaredException:
@@ -617,7 +625,7 @@ class BridgeController(Node, BridgeControllerConfig):
                     lifespan=Infinite if lifespan < 0 else Duration(seconds=lifespan)
                 )
                     
-                if not is_image:
+                if not is_image_or_video:
                     id_dc = await self.subscribe_data_topic(sub, qos=qosProfile, peer=peer)
                     topic_conf = {} # passing config extras to the UI
                     # if sub in self.topic_overrides:
@@ -657,7 +665,7 @@ class BridgeController(Node, BridgeControllerConfig):
                             topic_conf['min_voltage'] = self.get_parameter(f'{sub}.min_voltage').get_parameter_value().double_value
                             topic_conf['max_voltage'] = self.get_parameter(f'{sub}.max_voltage').get_parameter_value().double_value
                     res['read_data_channels'].append([sub, id_dc, msg_type, reliability == QoSReliabilityPolicy.RELIABLE, topic_conf])
-                elif is_image:
+                elif is_image_or_video:
                     id_track = await self.subscribe_image_topic(sub, qos=qosProfile, peer=peer)
                     res['read_video_streams'].append([ sub, id_track ])
 
@@ -873,52 +881,85 @@ class BridgeController(Node, BridgeControllerConfig):
     # SUBSCRIBE data topic
     async def subscribe_data_topic(self, topic:str, qos:QoSProfile, peer:WRTCPeer=None, msg_callback=None) -> str:
 
-        if not topic in self.introspection.discovered_topics.keys():
-            return None
+        try:
+            if not topic in self.introspection.discovered_topics.keys():
+                return None
 
-        msg_type:str = self.introspection.discovered_topics[topic]['msg_type']
-        if IsImageType(msg_type):
-            return None
+            msg_type:str = self.introspection.discovered_topics[topic]['msg_type']
+            if IsImageType(msg_type):
+                return None
 
-        if not topic in self.topic_read_subscriptions.keys():
-            self.topic_read_subscriptions[topic] = TopicReadSubscription(ctrl_node=self,
-                                                                            worker_ctrl_queue=self.data_worker_ctrl_queue,
-                                                                            topic=topic,
-                                                                            protocol=msg_type,
-                                                                            qos=qos,
-                                                                            event_loop=asyncio.get_event_loop(),
-                                                                            log_message_every_sec=self.log_message_every_sec,
-                                                                            msg_blinker_cb = self.on_msg_blink
-                                                                            )
+            # TODO temp
+            is_queued_data = topic in [ '/tf', '/tf_static', '/robot_description' ]
+
+            if not is_queued_data and not topic in self.piped_topic_read_subscriptions.keys():
+                self.piped_topic_read_subscriptions[topic] = DataPipedTopicSubscription(
+                    ctrl_node = self,
+                    worker_ctrl_queue = self.data_worker_ctrl_queue,
+                    topic = topic,
+                    protocol = msg_type,
+                    qos = qos,
+                    event_loop = asyncio.get_event_loop(),
+                    log_message_every_sec = self.log_message_every_sec,
+                    msg_blinker_cb = self.on_msg_blink
+                )
+            elif is_queued_data and self.queued_topic_read_subscriptions == None:
+                self.queued_topic_read_subscriptions = DataQueuedTopicsSubscription(
+                    ctrl_node = self,
+                    worker_ctrl_queue = self.tf_worker_ctrl_queue,
+                    worker_out_queue = self.tf_worker_out_queue,
+                    event_loop = asyncio.get_event_loop(),
+                    blocking_reads_executor = self.queued_data_read_executor,
+                    log_message_every_sec = self.log_message_every_sec,
+                    msg_blinker_cb = self.on_msg_blink
+                )
             asyncio.get_event_loop().create_task(self.introspection.start())
 
-        send_latest = False
-        if peer:
-            if not topic in peer.outbound_data_channels.keys():
-                peer.wrtc_nextChannelId += 1
-                is_reliable = qos.reliability == QoSReliabilityPolicy.RELIABLE
-                dc:RTCDataChannel = peer.pc.createDataChannel(topic,
-                                                                id=peer.wrtc_nextChannelId,
-                                                                protocol=msg_type,
-                                                                negotiated=True, # true = negotiated by the app, not webrtc layer
-                                                                ordered=is_reliable,
-                                                                maxRetransmits=None if is_reliable else 0)
-                peer.outbound_data_channels[topic] = dc
-                self.get_logger().debug(f'{peer} subscribed to {topic} (protocol={msg_type}, ch_id={dc.id}); reliable={is_reliable}')
-                if is_reliable:
-                    send_latest = True
+            send_latest = False
+            if peer:
+                if not topic in peer.outbound_data_channels.keys():
+                    peer.wrtc_nextChannelId += 1
+                    is_reliable = qos.reliability == QoSReliabilityPolicy.RELIABLE
+                    dc:RTCDataChannel = peer.pc.createDataChannel(
+                        topic,
+                        id=peer.wrtc_nextChannelId,
+                        protocol=msg_type,
+                        negotiated=True, # true = negotiated by the app, not webrtc layer
+                        ordered=is_reliable,
+                        maxRetransmits=None if is_reliable else 0
+                    )
+                    peer.outbound_data_channels[topic] = dc
+                    self.get_logger().debug(f'{peer} subscribed to {topic} (protocol={msg_type}, ch_id={dc.id}); reliable={is_reliable}')
+                    if is_reliable:
+                        send_latest = True
 
-        if not self.topic_read_subscriptions[topic].start(peer, msg_callback):
-            self.get_logger().error(f'Topic {topic} failed to subscribee in on_read_subscriptions_change , peer={peer}, msg_callback={msg_callback}')
-            return None
+            if not is_queued_data and not self.piped_topic_read_subscriptions[topic].start(peer, msg_callback):
+                self.get_logger().error(f'Topic {topic} failed to start piped data subscription, peer={peer}, msg_callback={msg_callback}')
+                return None
+            elif is_queued_data and not self.queued_topic_read_subscriptions.start(
+                id_peer = peer.id,
+                msg_type = msg_type,
+                topic = topic,
+                qos = qos,
+                peer_dc = peer.outbound_data_channels[topic],
+                msg_callback = msg_callback
+            ):
+                self.get_logger().error(f'Topic {topic} failed to start queued data subscription, peer={peer}, msg_callback={msg_callback}')
+                return None
+            
+            if send_latest and not is_queued_data:
+                asyncio.get_event_loop().create_task(self.piped_topic_read_subscriptions[topic].report_latest_when_ready(peer, msg_callback))
+            elif send_latest and is_queued_data:
+                asyncio.get_event_loop().create_task(self.queued_topic_read_subscriptions.report_latest_when_ready(peer, topic, msg_callback))
+            
+            if peer != None:
+                return peer.outbound_data_channels[topic].id
+            else:
+                return None
+            
+        except Exception as e:
+            self.ctrl_node.get_logger().error(f'Exception in subscribe_data_topic: {e}')
 
-        if send_latest:
-            asyncio.get_event_loop().create_task(self.topic_read_subscriptions[topic].report_latest_when_ready(peer, msg_callback))
-        
-        if peer != None:
-            return peer.outbound_data_channels[topic].id
-        else:
-            return None
 
     # UNSUBSCRIBE data topic
     async def unsubscribe_data_topic(self, topic:str, peer:WRTCPeer=None, msg_callback=None):
@@ -928,10 +969,18 @@ class BridgeController(Node, BridgeControllerConfig):
             peer.outbound_data_channels[topic].close()
             peer.outbound_data_channels.pop(topic)
 
-        if topic in self.topic_read_subscriptions.keys():
-            if await self.topic_read_subscriptions[topic].stop(peer, msg_callback):
-                self.get_logger().debug(f'No longer reading {topic}')
-                self.topic_read_subscriptions.pop(topic)
+        # TODO temp
+        is_queued_data = topic in [ '/tf', '/tf_static', '/robot_description' ]
+
+        if not is_queued_data and topic in self.piped_topic_read_subscriptions.keys():
+            if await self.piped_topic_read_subscriptions[topic].stop(peer, msg_callback):
+                self.get_logger().debug(f'No longer reading piped {topic}')
+                self.piped_topic_read_subscriptions.pop(topic)
+                asyncio.get_event_loop().create_task(self.introspection.start())
+        elif is_queued_data and self.queued_topic_read_subscriptions != None:
+            if await self.queued_topic_read_subscriptions.stop(peer.id, topic, msg_callback):
+                self.get_logger().debug(f'No longer reading queued {topic}')
+                self.queued_topic_read_subscriptions = None
                 asyncio.get_event_loop().create_task(self.introspection.start())
 
 
@@ -955,14 +1004,15 @@ class BridgeController(Node, BridgeControllerConfig):
             out_queue = self.image_worker_out_queue
         
         if not worker_type in self.image_topic_read_subscriptions.keys():
-            self.image_topic_read_subscriptions[worker_type] = ImageTopicReadSubscription(ctrl_node=self,
-                                                                                          worker_type=worker_type,
-                                                                                          worker_ctrl_queue=ctrl_queue,
-                                                                                          worker_out_queue=out_queue,
-                                                                                          blocking_reads_executor=self.image_read_executor,
-                                                                                          log_message_every_sec=self.log_message_every_sec,
-                                                                                          msg_blinker_cb=self.on_msg_blink
-                                                                                          )
+            self.image_topic_read_subscriptions[worker_type] = ImageTopicReadSubscription(
+                ctrl_node=self,
+                worker_type=worker_type,
+                worker_ctrl_queue=ctrl_queue,
+                worker_out_queue=out_queue,
+                blocking_reads_executor=self.image_read_executor,
+                log_message_every_sec=self.log_message_every_sec,
+                msg_blinker_cb=self.on_msg_blink
+            )
             asyncio.get_event_loop().create_task(self.introspection.start())
 
         if not topic in peer.video_tracks.keys():
@@ -990,11 +1040,13 @@ class BridgeController(Node, BridgeControllerConfig):
             peer.video_tracks[topic] = sender
             # await sender.track.set_frame(av.VideoFrame(width=640, height=480, format='rgb24'))
 
-        if not self.image_topic_read_subscriptions[worker_type].start(id_peer=peer.id,
-                                                                      msg_type=msg_type,
-                                                                      topic=topic,
-                                                                      qos=qos,
-                                                                      peer_sender=peer.video_tracks[topic]):
+        if not self.image_topic_read_subscriptions[worker_type].start(
+                id_peer=peer.id,
+                msg_type=msg_type,
+                topic=topic,
+                qos=qos,
+                peer_sender=peer.video_tracks[topic]
+            ):
             self.get_logger().error(f'Image topic {worker_type} failed to subscribe {topic} for {peer}')
             return { 'err': 2, 'msg': f'Image topic {worker_type} failed to subscribe {topic}'}
 
@@ -1219,29 +1271,40 @@ async def main_async(rcl_context, rcl_executor):
     video_worker_ctrl_queue = mp.Queue()
     video_worker_out_queue = mp.Queue(20)
     video_topic_read_worker = mp.Process(target=TopicProcessorWorker,
-                                      args=(workers_enabled,
+                                         args=(workers_enabled,
                                             'video',
                                             video_worker_ctrl_queue,
                                             video_worker_out_queue
-                                            ))
+                                         ))
     video_topic_read_worker.start()
+    
+    tf_worker_ctrl_queue = mp.Queue()
+    tf_worker_out_queue = mp.Queue(20)
+    tf_read_worker = mp.Process(target=TopicProcessorWorker,
+                                args=(workers_enabled,
+                                    'tf',
+                                    tf_worker_ctrl_queue,
+                                    tf_worker_out_queue
+                                ))
+    tf_read_worker.start()
     
     data_worker_ctrl_queue = mp.Queue()
     data_topic_read_worker = mp.Process(target=TopicProcessorWorker,
-                                      args=(workers_enabled,
+                                        args=(workers_enabled,
                                             'data',
                                             data_worker_ctrl_queue,
-                                            None))
+                                            None
+                                        ))
     data_topic_read_worker.start()
     
     image_worker_ctrl_queue = mp.Queue()
     image_worker_out_queue = mp.Queue(20)
     image_topic_read_worker = mp.Process(target=TopicProcessorWorker,
-                                      args=(workers_enabled,
+                                         args=(workers_enabled,
                                             'img',
                                             image_worker_ctrl_queue,
                                             image_worker_out_queue
-                                            ))
+                                         ))
     image_topic_read_worker.start()
     
     bridge_node = BridgeController(context=rcl_context, executor=rcl_executor)
@@ -1252,7 +1315,10 @@ async def main_async(rcl_context, rcl_executor):
                           video_worker_out_queue=video_worker_out_queue,
                           image_worker_ctrl_queue=image_worker_ctrl_queue,
                           image_worker_out_queue=image_worker_out_queue,
-                          data_worker_ctrl_queue=data_worker_ctrl_queue)
+                          data_worker_ctrl_queue=data_worker_ctrl_queue,
+                          tf_worker_ctrl_queue=tf_worker_ctrl_queue,
+                          tf_worker_out_queue=tf_worker_out_queue
+                          )
         
         sio_task = asyncio.get_event_loop().create_task(bridge_node.spin_sio_client(), name="sio_task")
         asyncio.get_event_loop().create_task(bridge_node.introspection.start(), name="initial_introspection_task")
@@ -1281,8 +1347,13 @@ async def main_async(rcl_context, rcl_executor):
     data_topic_read_worker.terminate()
     data_topic_read_worker.join()
     
+    tf_read_worker.terminate()
+    tf_read_worker.join()
+    
     image_worker_ctrl_queue.close()
     data_worker_ctrl_queue.close()
+    tf_worker_ctrl_queue.close()
+    tf_worker_out_queue.close()
     video_worker_ctrl_queue.close()
     
     if sio_task != None and not sio_task.done():
