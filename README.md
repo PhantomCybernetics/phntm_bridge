@@ -111,16 +111,16 @@ Full list of configuration options can be found [here](https://docs.phntm.io/bri
 
     ## Custom topic configs
     /robot_description:
-      durability: 1 # TRANSIENT_LOCAL
-      reliability: 1 # RELIABLE
-      lifespan: -1 # INFINITY
+      reliability: 1 # Reliable
+      durability: 1 # Transient local
+      lifespan_sec: -1 # Infinity
     /tf_static:
-      durability: 1 # TRANSIENT_LOCAL
-      reliability: 1 # RELIABLE
-      lifespan: -1 # INFINITY
+      reliability: 1 # Reliable
+      durability: 1 # Transient local
+      lifespan_sec: -1 # Infinity
     /battery:
-      min_voltage: 9.0 # set empty voltage
-      max_voltage: 12.6 # set set full voltage
+      min_voltage: 9.0 # empty voltage
+      max_voltage: 12.6 # full voltage
 
     ui_battery_topic: /battery # battery to show in the UI, '' to disable
 
