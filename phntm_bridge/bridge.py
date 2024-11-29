@@ -589,7 +589,8 @@ class BridgeController(Node, BridgeControllerConfig):
                 collapse_services = []
             
             res['input_drivers'] = self.input_drivers
-            res['input_defaults'] = self.input_defaults # pass input mappings & service buttons
+            res['input_defaults'] = self.input_defaults # pass input mappings
+            res['service_defaults'] = self.service_defaults # pass service buttons
             res['ui'] = {
                 'battery_topic': self.get_parameter('ui_battery_topic').get_parameter_value().string_value,
                 'docker_control': self.docker_control_enabled,

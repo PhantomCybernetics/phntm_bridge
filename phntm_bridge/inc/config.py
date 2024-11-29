@@ -156,6 +156,7 @@ class BridgeControllerConfig():
         #input configs that get passed to ui
         self.declare_parameter('input_drivers', [ 'Joy' ]) # [ '' ] to disable input entirely, services are still set up
         self.declare_parameter(f'input_defaults', '') 
+        self.declare_parameter(f'service_defaults', '')
         
         self.input_drivers = self.get_parameter('input_drivers').get_parameter_value().string_array_value
         if len(self.input_drivers) == 0 or (len(self.input_drivers) == 1 and self.input_drivers[0] == ''):
@@ -163,14 +164,23 @@ class BridgeControllerConfig():
         
         input_defaults_file = self.get_parameter('input_defaults').get_parameter_value().string_value
         self.input_defaults = None
-        
         if input_defaults_file:
             try:
                 with open(input_defaults_file, "r") as read_content: 
                     self.input_defaults = json.load(read_content)
             except FileNotFoundError:
-                logger.error(f'input_defaults file not found: {input_defaults_file}')
+                logger.error(f'Input defaults file not found: {input_defaults_file}')
                 pass
+        service_defaults_file = self.get_parameter('service_defaults').get_parameter_value().string_value
+        self.service_defaults = None
+        if service_defaults_file:
+            try:
+                with open(service_defaults_file, "r") as read_content: 
+                    self.service_defaults = json.load(read_content)
+            except FileNotFoundError:
+                logger.error(f'Service defaults file not found: {service_defaults_file}')
+                pass
+
     
     def _make_test_srvs(self):
         self.test_srv_1 = self.create_service(GetPlan, f'/{self.get_name()}/test_srv_1', self.test_srv_1_cb)

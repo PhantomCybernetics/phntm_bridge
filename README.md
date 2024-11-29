@@ -132,8 +132,10 @@ Full list of configuration options can be found [here](https://docs.phntm.io/bri
     docker_monitor_topic: /docker_info # produced by the Agent
 
     ## User input config
-    input_drivers: [ 'Twist' ] # enabled input drivers
-    input_defaults: /ros2_ws/phntm_input_config.json # path to input config file as mounted inside the container
+    input_drivers: [ 'Twist', 'Joy' ] # enabled input drivers
+    input_defaults: /ros2_ws/phntm_input_config.json # path to input config file as mapped inside the container
+    service_defaults: /ros2_ws/phntm_service_config.json # path to services config file as mapped inside the container
+
 ```
 
 ### Configure the Agent
