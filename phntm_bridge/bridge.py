@@ -590,6 +590,7 @@ class BridgeController(Node, BridgeControllerConfig):
             
             res['input_drivers'] = self.input_drivers
             res['input_defaults'] = self.input_defaults # pass input mappings
+            res['custom_input_drivers'] = self.custom_input_drivers # pass custom includes
             res['service_defaults'] = self.service_defaults # pass service buttons
             res['ui'] = {
                 'battery_topic': self.get_parameter('ui_battery_topic').get_parameter_value().string_value,

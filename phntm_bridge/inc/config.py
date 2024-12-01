@@ -155,13 +155,33 @@ class BridgeControllerConfig():
         
         #input configs that get passed to ui
         self.declare_parameter('input_drivers', [ 'Joy' ]) # [ '' ] to disable input entirely, services are still set up
+        self.declare_parameter('custom_input_drivers', [ '' ]) # [ '' ] to disable input entirely, services are still set up
         self.declare_parameter(f'input_defaults', '') 
         self.declare_parameter(f'service_defaults', '')
         
         self.input_drivers = self.get_parameter('input_drivers').get_parameter_value().string_array_value
         if len(self.input_drivers) == 0 or (len(self.input_drivers) == 1 and self.input_drivers[0] == ''):
             self.input_drivers = []
-        
+            
+        custom_input_drivers_str = self.get_parameter('custom_input_drivers').get_parameter_value().string_array_value
+        self.custom_input_drivers = []
+        for custom_driver_str in custom_input_drivers_str:
+            if custom_driver_str.strip() == '':
+                continue
+            parts = custom_driver_str.split(' ')
+            parts_filtered = []
+            for p in parts:
+                if p != '':
+                    parts_filtered.append(p)
+            if len(parts_filtered) == 2:
+                self.custom_input_drivers.append({
+                    'class': parts_filtered[0],
+                    'url': parts_filtered[1],
+                })
+                logger.info(f'Adding custom input driver: {parts_filtered[0]} from {parts_filtered[1]}')
+            else:
+                logger.error(f'Invalid custom input driver definition: {custom_driver_str}')
+                    
         input_defaults_file = self.get_parameter('input_defaults').get_parameter_value().string_value
         self.input_defaults = None
         if input_defaults_file:
