@@ -613,8 +613,8 @@ class BridgeController(Node, BridgeControllerConfig):
                 is_image_or_video = IsImageType(msg_type)
                 
                 try: 
-                    self.declare_parameter(f'{sub}.reliability', 2) # 2 = best effort, 1 = reliable
-                    self.declare_parameter(f'{sub}.durability', 0) # 0 system default, 1 = transient local, 2 = volatile
+                    self.declare_parameter(f'{sub}.reliability', 2) # 0 = system default, 1 = reliable, 2 = best effort, 
+                    self.declare_parameter(f'{sub}.durability', 2) # 0 = system default, 1 = transient local, 2 = volatile
                     self.declare_parameter(f'{sub}.lifespan_sec', -1) # num sec as int, -1 infinity
                 except rclpy.exceptions.ParameterAlreadyDeclaredException:
                     pass
