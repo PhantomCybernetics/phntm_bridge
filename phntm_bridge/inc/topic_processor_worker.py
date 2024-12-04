@@ -440,8 +440,8 @@ class Worker:
         cv_colormap = 0
         if im.encoding == '16UC1' or im.encoding == 'mono16' or im.encoding == '32FC1':
             try:
-                colormap = self.yaml_config[topic][f'{im.encoding}_colormap'] if topic in self.yaml_config.keys() and f'{im.encoding}_colormap' in self.yaml_config[topic].keys() else cv2.COLORMAP_MAGMA
-                self.reader_node.declare_parameter(f'{topic}.{im.encoding}_colormap', colormap, descriptor=ParameterDescriptor(
+                colormap = self.yaml_config[topic]['colormap'] if topic in self.yaml_config.keys() and 'colormap' in self.yaml_config[topic].keys() else cv2.COLORMAP_MAGMA
+                self.reader_node.declare_parameter(f'{topic}.colormap', colormap, descriptor=ParameterDescriptor(
                     type=ParameterType.PARAMETER_INTEGER,
                     description='(Depth only) cv2.COLORMAP for colorization',
                     integer_range=[ IntegerRange(
@@ -449,15 +449,15 @@ class Worker:
                         to_value=21
                     ) ]
                 ))
-                max_sensor_value = self.yaml_config[topic][f'{im.encoding}_max_sensor_value'] if topic in self.yaml_config.keys() and f'{im.encoding}_max_sensor_value' in self.yaml_config[topic].keys() else 255.0
-                self.reader_node.declare_parameter(f'{topic}.{im.encoding}_max_sensor_value', max_sensor_value, descriptor=ParameterDescriptor(
+                max_sensor_value = self.yaml_config[topic]['max_sensor_value'] if topic in self.yaml_config.keys() and 'max_sensor_value' in self.yaml_config[topic].keys() else 255.0
+                self.reader_node.declare_parameter(f'{topic}.max_sensor_value', max_sensor_value, descriptor=ParameterDescriptor(
                     type=ParameterType.PARAMETER_DOUBLE,
                     description='(Depth only) The maximum sensor value (max distance or brightness)'
                 )) # 2m (units depend on sensor)
             except rclpy.exceptions.ParameterAlreadyDeclaredException:
                 pass
-            max_sensor_value =  self.reader_node.get_parameter(f'{topic}.{im.encoding}_max_sensor_value').get_parameter_value().double_value
-            cv_colormap =  self.reader_node.get_parameter(f'{topic}.{im.encoding}_colormap').get_parameter_value().integer_value
+            max_sensor_value =  self.reader_node.get_parameter(f'{topic}.max_sensor_value').get_parameter_value().double_value
+            cv_colormap =  self.reader_node.get_parameter(f'{topic}.colormap').get_parameter_value().integer_value
 
         if im.encoding == 'rgb8':
             channels = 3  # 3 for RGB format

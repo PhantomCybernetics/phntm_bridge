@@ -155,9 +155,11 @@ class BridgeControllerConfig():
         
         #input configs that get passed to ui
         self.declare_parameter('input_drivers', [ 'Joy' ]) # [ '' ] to disable input entirely, services are still set up
-        self.declare_parameter('custom_input_drivers', [ '' ]) # [ '' ] to disable input entirely, services are still set up
-        self.declare_parameter(f'input_defaults', '') 
-        self.declare_parameter(f'service_defaults', '')
+        self.declare_parameter('custom_input_drivers', [ '' ])
+        self.declare_parameter('input_defaults', '') 
+        self.declare_parameter('service_defaults', '')
+        self.declare_parameter('custom_service_widgets', [ '' ])
+        self.declare_parameter('service_widgets', [ '' ])
         
         self.input_drivers = self.get_parameter('input_drivers').get_parameter_value().string_array_value
         if len(self.input_drivers) == 0 or (len(self.input_drivers) == 1 and self.input_drivers[0] == ''):
@@ -181,7 +183,60 @@ class BridgeControllerConfig():
                 logger.info(f'Adding custom input driver: {parts_filtered[0]} from {parts_filtered[1]}')
             else:
                 logger.error(f'Invalid custom input driver definition: {custom_driver_str}')
-                    
+                
+        custom_service_widgets_str = self.get_parameter('custom_service_widgets').get_parameter_value().string_array_value
+        self.custom_service_widgets = []
+        for custom_service_widget_str in custom_service_widgets_str:
+            if custom_service_widget_str.strip() == '':
+                continue
+            parts = custom_service_widget_str.split(' ')
+            parts_filtered = []
+            for p in parts:
+                if p != '':
+                    parts_filtered.append(p)
+            if len(parts_filtered) == 2:
+                self.custom_service_widgets.append({
+                    'class': parts_filtered[0],
+                    'url': parts_filtered[1],
+                })
+                logger.info(f'Adding custom service widget: {parts_filtered[0]} from {parts_filtered[1]}')
+            else:
+                logger.error(f'Invalid custom service widget definition: {custom_service_widget_str}')
+        
+        service_widgets_str = self.get_parameter('service_widgets').get_parameter_value().string_array_value
+        self.service_widgets = []
+        for service_widget_str in service_widgets_str:
+            if service_widget_str.strip() == '':
+                continue
+            
+            assign_part = service_widget_str
+            json_data = None
+            if service_widget_str.count('{'):
+                json_data_start = service_widget_str.index('{')
+                assign_part = service_widget_str[:json_data_start]
+                data_part = service_widget_str[json_data_start:]
+                try:
+                    json_data = json.loads(data_part)
+                except json.decoder.JSONDecodeError as e: 
+                    logger.error(f'Error parsing widget JSON data, {e}: {data_part}')
+                    break
+            parts = assign_part.split(' ')
+            parts_filtered = []
+            for p in parts:
+                if p != '':
+                    parts_filtered.append(p)
+            if len(parts_filtered) == 2:
+                mapping = {
+                    'srv': parts_filtered[0],
+                    'class': parts_filtered[1]
+                }
+                if json_data:
+                    mapping['data'] = json_data
+                self.service_widgets.append(mapping)
+                logger.info(f'Adding service widget mapping: {parts_filtered[0]} > {parts_filtered[1]} data={str(json_data)}')
+            else:
+                logger.error(f'Invalid service widget mapping: {service_widget_str}')
+
         input_defaults_file = self.get_parameter('input_defaults').get_parameter_value().string_value
         self.input_defaults = None
         if input_defaults_file:

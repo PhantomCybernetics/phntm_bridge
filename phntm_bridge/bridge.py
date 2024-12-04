@@ -121,6 +121,7 @@ class BridgeController(Node, BridgeControllerConfig):
         self.topic_write_publishers:dict[str: TopicWritePublisher] = {}
 
         self.service_clients:dict[str: any] = {} # service name => client
+        self.service_clients_futures:dict[str: any] = {} # service name => future
         
         self.wrtc_peers:dict[str: WRTCPeer] = {}
 
@@ -592,6 +593,8 @@ class BridgeController(Node, BridgeControllerConfig):
             res['input_defaults'] = self.input_defaults # pass input mappings
             res['custom_input_drivers'] = self.custom_input_drivers # pass custom includes
             res['service_defaults'] = self.service_defaults # pass service buttons
+            res['custom_service_widgets'] = self.custom_service_widgets # pass custom includes
+            res['service_widgets'] = self.service_widgets # pass widget-class mapping + data
             res['ui'] = {
                 'battery_topic': self.get_parameter('ui_battery_topic').get_parameter_value().string_value,
                 'docker_control': self.docker_control_enabled,
@@ -1209,31 +1212,43 @@ class BridgeController(Node, BridgeControllerConfig):
             self.get_logger().error(f'Error making service message for {service}: {e}; payload={str(payload)}')
             return { 'err': 2, 'msg': f'{e}' }
         
-        future = self.service_clients[service].call_async(req)
-        # ftrs = set()
-        # rclpy.spin_until_future_complete(self, self.future)
-        async def srv_finished_checker():
+        # wait for previous call of this service to finish
+        timeout_sec = 10.0
+        while service in self.service_clients_futures.keys() and timeout_sec > 0.0: 
+            await asyncio.sleep(.01)
+            timeout_sec -= .01
+        if timeout_sec <= 0.0:
+            self.get_logger().warn(f"Service {service} call dropped while waiting for previus call finish")
+            return { 'err': 2, 'msg': f'Timed out waiting for previous service call to finish' }
+            
+        self.service_clients_futures[service] = self.service_clients[service].call_async(req)
+    
+        async def srv_finished_checker(): # TODO only spin once when processing multiple services
             timeout_sec = 10.0
-            while not future.done() and not self.shutting_down and timeout_sec > 0.0:
+            while not self.service_clients_futures[service].done() and not self.shutting_down and timeout_sec > 0.0:
                 try:
-                    await event_loop.run_in_executor(None, lambda: self.rcl_executor.spin_once(timeout_sec=0.1)) # gotta spin to hear back
-                    # await fut
+                    await event_loop.run_in_executor(None, lambda: self.rcl_executor.spin_once(timeout_sec=0.01)) # gotta spin to hear back
                 except Exception as e:
-                    if (str(e) != 'cannot use Destroyable because destruction was requeste'):
-                        print(f'Exception while spinning node for service {service}: {e}')
-                await asyncio.sleep(.1)
-                timeout_sec -= .1
+                    if (str(e) == 'cannot use Destroyable because destruction was requeste'):
+                        pass
+                    else:
+                        self.get_logger().error(f'Exception while spinning node for service {service}: {e}')
+                await asyncio.sleep(.01)
+                timeout_sec -= .01
             is_timeout = timeout_sec <= 0.0
-            self.get_logger().warn(f"Service {service} call finished with result: {str(future.result())}{(' TIMEOUT' if is_timeout else '')}")
+            self.get_logger().warn(f"Service {service} call finished with result: {str(self.service_clients_futures[service].result())}{(' TIMEOUT' if is_timeout else '')}")
             return is_timeout
         is_timeout = await srv_finished_checker()
 
         if is_timeout:
             return { 'err': 2, 'msg': f'Service execution timeout' }
         
-        reply = message_converter.convert_ros_message_to_dictionary(future.result())
+        reply = message_converter.convert_ros_message_to_dictionary(self.service_clients_futures[service].result())
+        del self.service_clients_futures[service]
+        
         self.get_logger().debug(f'Returning service {service} reply: {str(reply)}')
         return reply
+    
     
     def shutdown(self):
         # Cleanup code goes here
