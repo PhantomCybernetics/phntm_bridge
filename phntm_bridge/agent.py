@@ -116,21 +116,24 @@ class AgentController(Node):
                 case 1:
                     if cont.status == 'running':
                         response.err = 3
-                        response.msg = 'Container already running'
+                        response.msg = f'Container {request.id_container} already running'
                         return response
                     cont.start()
+                    response.msg = f'Container {request.id_container} starting...'
                 case 0:
                     if cont.status == 'exited':
                         response.err = 3
-                        response.msg = 'Container already exited'
+                        response.msg = f'Container {request.id_container} already exited'
                         return response
                     cont.stop(timeout=3)
+                    response.msg = f'Container {request.id_container} stopping...'
                 case 2:
                     if cont.status == 'restarting':
                         response.err = 3
-                        response.msg = 'Container already restarting'
+                        response.msg = f'Container {request.id_container} already restarting'
                         return response
                     cont.restart(timeout=3)
+                    response.msg = f'Container {request.id_container} restarting...'
         except Exception as e:
             response.err = 3
             response.msg = f'Docker exception: {str(e)}'
