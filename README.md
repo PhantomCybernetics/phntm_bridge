@@ -25,7 +25,7 @@ Fast WebRTC + Socket.io ROS2 Bridge written in Python for real-time data and vid
 ## Architecture
 ![Infrastructure map](https://raw.githubusercontent.com/PhantomCybernetics/phntm_bridge_docs/refs/heads/main/img/Architecture_Bridge.png)
 
-# Install
+## Install
 
 ### Make sure your root SSL Certificates are up to date
 
@@ -173,6 +173,7 @@ services:
     network_mode: host # webrtc needs this
     ipc: host # bridge needs this to see other local containers
     volumes:
+      - ~/phntm_bridge:/ros2_ws/src/phntm_bridge # live repo mapped here for easy updates
       - ~/phntm_bridge.yaml:/ros2_ws/phntm_bridge_params.yaml # bridge config goes here
       - ~/phntm_agent.yaml:/ros2_ws/phntm_agent_params.yaml # agent config goes here
       - /var/run:/host_run # docker file extractor and wifi control need this
@@ -189,11 +190,32 @@ docker compose up phntm_bridge
 ```
 
 ### Open the Web UI
-Open `https://bridge.phntm.io/%ID_ROBOT%` in a web browser. The exact link can be found at the top of the generated Bridge config file (e.g. `~/phntm_bridge.yaml`).
+Navigate to `https://bridge.phntm.io/%ID_ROBOT%` in a web browser. The exact link can be found at the top of the generated Bridge config file (e.g. `~/phntm_bridge.yaml`).
 If you provided maintainer's e-mail in the config, it will be also e-mailed to you for your reference after the first Bridge launch. \
  \
 Please note that Firefox is not fully supported at this time, [reasons are explained here](https://github.com/PhantomCybernetics/bridge_ui/blob/main/FIREFOX_ISSUES.md).
 
+## Upgrading
+
+Unless the Dockerfile changes between versions (which doesn't happen very often), all you need to do to upgrade the Phantom Bridge is to pull updates from this repo and restart the Docker container.
+
+```bash
+cd ~/phntm_bridge
+git pull
+docker restart phntm-bridge
+```
+
+Should the Dockerfile change, you need to rebuild the Docker image too.
+
+```bash
+cd ~/phntm_bridge
+git pull
+ROS_DISTRO=humble; \
+docker build -f Dockerfile -t phntm/bridge:$ROS_DISTRO \
+  --build-arg ROS_DISTRO=$ROS_DISTRO \
+  .
+docker restart phntm-bridge
+```
 
 ## See also
 - [Documentation](https://docs.phntm.io/bridge) Full Phantom Bridge documentation
