@@ -193,7 +193,7 @@ docker compose up phntm_bridge
 Navigate to `https://bridge.phntm.io/%ID_ROBOT%` in a web browser. The exact link can be found at the top of the generated Bridge config file (e.g. `~/phntm_bridge.yaml`).
 If you provided maintainer's e-mail in the config, it will be also e-mailed to you for your reference after the first Bridge launch. \
  \
-Please note that Firefox is not fully supported at this time, [reasons are explained here](https://github.com/PhantomCybernetics/bridge_ui/blob/main/FIREFOX_ISSUES.md).
+Please note that Firefox is not fully supported at this time, [reasons are explained here](https://github.com/PhantomCybernetics/bridge_ui/issues/1).
 
 ## Upgrading
 
