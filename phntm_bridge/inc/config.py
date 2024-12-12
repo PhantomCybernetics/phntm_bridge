@@ -58,17 +58,24 @@ class BridgeControllerConfig():
             self.extra_packages = []
         
         #webrtc
-        self.declare_parameter('ice_servers', [  'turn:turn.phntm.io:3478', 'turn:turn.phntm.io:3479'  ])
-        self.declare_parameter('ice_username', 'robo')
-        self.declare_parameter('ice_credential', 'pass')
+        self.declare_parameter('use_cloud_ice_config', True)
+        self.use_cloud_ice_config = self.get_parameter('use_cloud_ice_config').get_parameter_value().bool_value
+        self.declare_parameter('ice_servers', [  ''  ])
+        self.declare_parameter('ice_username', '') # id_robot if empty
+        self.declare_parameter('ice_secret', '')
         self.ice_servers = self.get_parameter('ice_servers').get_parameter_value().string_array_value
+        if len(self.ice_servers) == 1 and self.ice_servers[0] == '':
+            self.ice_servers = []
         self.ice_username = self.get_parameter('ice_username').get_parameter_value().string_value
-        self.ice_credential = self.get_parameter('ice_credential').get_parameter_value().string_value
+        if self.ice_username == '':
+            self.ice_username = self.id_robot
+        self.ice_secret = self.get_parameter('ice_secret').get_parameter_value().string_value
         
+        # prevent reading sensitive stuffs
         key_censored = Parameter('key', Parameter.Type.STRING, value='*************')
         ice_username_censored = Parameter('ice_username', Parameter.Type.STRING, value='*************')
-        ice_pass_censored = Parameter('ice_credential', Parameter.Type.STRING, value='*************')
-        self.set_parameters([ key_censored, ice_username_censored, ice_pass_censored]) # prevent reading sensitive stuffs
+        ice_secret_censored = Parameter('ice_secret', Parameter.Type.STRING, value='*************')
+        self.set_parameters([ key_censored, ice_username_censored, ice_secret_censored]) 
         
         # SOCKET.IO
         self.declare_parameter('sio_address', 'https://api.phntm.io')

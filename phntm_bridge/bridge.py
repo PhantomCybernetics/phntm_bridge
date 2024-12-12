@@ -235,6 +235,15 @@ class BridgeController(Node, BridgeControllerConfig):
 
         event_loop = asyncio.get_event_loop()
 
+        @self.sio.on('ice-servers')
+        async def on_ice_servers(data):
+            if not self.use_cloud_ice_config:
+                return
+            for one_server in data["servers"]:
+                self.ice_servers.append(one_server)
+            self.ice_secret = data["secret"]
+            self.get_logger().debug(f'Got ICE servers: {str(self.ice_servers)}, secret={self.ice_secret}')
+
         @self.sio.on('peer')
         async def on_peer(data):
             id_peer:str = WRTCPeer.GetId(data)
@@ -550,7 +559,7 @@ class BridgeController(Node, BridgeControllerConfig):
                         ctrl_node=self,
                         ice_servers=self.ice_servers,
                         ice_username=self.ice_username,
-                        ice_credential=self.ice_credential)
+                        ice_secret=self.ice_secret)
 
         @peer.pc.on("connectionstatechange")
         async def on_connectionstatechange():
@@ -605,6 +614,9 @@ class BridgeController(Node, BridgeControllerConfig):
                 'collapse_services': collapse_services,
                 'collapse_unhandled_services': self.get_parameter('collapse_unhandled_services').get_parameter_value().bool_value
             }
+            res['ice_servers'] = self.ice_servers
+            res['ice_username'] = self.ice_username
+            res['ice_secret'] = self.ice_secret
 
         peer.topics_not_discovered = []
         for sub in peer.read_subs:
@@ -737,7 +749,11 @@ class BridgeController(Node, BridgeControllerConfig):
 
         self.get_logger().debug(c(f'Creating SDP offer for {peer}...', 'cyan'))
         offer = await peer.pc.createOffer()
-        await peer.pc.setLocalDescription(offer)
+        try:
+            await peer.pc.setLocalDescription(offer)
+        except Exception as e:
+            self.get_logger().error(f'Error while setting local WebRTC description: {str(e)}')
+            return { 'err': 2, 'msg': f'Error while setting local WebRTC description: {str(e)}' }
 
         if not await self.peer_ice_checker(peer):
             peer.processing_subscriptions = False
@@ -771,7 +787,7 @@ class BridgeController(Node, BridgeControllerConfig):
             update_data['id_app'] = peer.id_app
         if peer.id_instance:
             update_data['id_instance'] = peer.id_instance
-        print(update_data)
+        # print(update_data)
         await self.sio.emit(event='peer:update',
                             data=update_data,
                             callback=peer.on_answer_reply)

@@ -84,12 +84,6 @@ Full list of configuration options can be found [here](https://docs.phntm.io/bri
     sio_ssl_verify: True
     sio_connection_retry_sec: 5.0
 
-    ## WebRTC config
-    ice_servers:
-      - 'turn:turn.phntm.io:3478'
-      - 'turn:turn.phntm.io:3479'
-    ice_username: 'robo' # TURN server auth (this will change at some point)
-    ice_credential: 'pass'
     log_sdp: True # verbose WebRTC debug
     log_heartbeat: True # debug heartbeat
 

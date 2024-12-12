@@ -23,7 +23,7 @@ class WRTCPeer:
 
     # self.wrtc_peer_video_tracks:dict[str,dict[str,RTCRtpSender]] = dict() # id_peer => [ topic => peer read webrtc video track ]
     # self.video_track_tmp:ROSVideoStreamTrack = None
-    def __init__(self, id_peer:str, id_app:str, id_instance:str, session:str, ctrl_node:Node, ice_servers:list, ice_username:str, ice_credential:str):
+    def __init__(self, id_peer:str, id_app:str, id_instance:str, session:str, ctrl_node:Node, ice_servers:list, ice_username:str, ice_secret:str):
 
         self.id:str = id_peer
         self.id_app = id_app
@@ -37,12 +37,16 @@ class WRTCPeer:
         
         self.last_heartbeat:float = -1
         
+        ice_server_urls = []
+        for one_server in ice_servers:
+            ice_server_urls.append(one_server)
+        
         config = RTCConfiguration(
             iceServers=[
                 RTCIceServer(
-                    urls=ice_servers,
+                    urls=ice_server_urls,
                     username=ice_username,
-                    credential=ice_credential
+                    credential=ice_secret
                 ),
             ]
         )
