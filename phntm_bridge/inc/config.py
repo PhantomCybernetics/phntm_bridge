@@ -63,9 +63,13 @@ class BridgeControllerConfig():
         self.declare_parameter('ice_servers', [  ''  ])
         self.declare_parameter('ice_username', '') # id_robot if empty
         self.declare_parameter('ice_secret', '')
-        self.ice_servers = self.get_parameter('ice_servers').get_parameter_value().string_array_value
-        if len(self.ice_servers) == 1 and self.ice_servers[0] == '':
-            self.ice_servers = []
+        self.ice_servers_custom = self.get_parameter('ice_servers').get_parameter_value().string_array_value
+        if len(self.ice_servers_custom) == 1 and self.ice_servers_custom[0] == '':
+            self.ice_servers_custom = []
+        else:
+            logger.info(f'Custom ICE servers: {str(self.ice_servers_custom)}')
+        self.ice_servers = self.ice_servers_custom.copy()
+        
         self.ice_username = self.get_parameter('ice_username').get_parameter_value().string_value
         if self.ice_username == '':
             self.ice_username = self.id_robot
@@ -263,21 +267,24 @@ class BridgeControllerConfig():
                 logger.error(f'Service defaults file not found: {service_defaults_file}')
                 pass
 
-    
+    # TODO remove this
     def _make_test_srvs(self):
         self.test_srv_1 = self.create_service(GetPlan, f'/{self.get_name()}/test_srv_1', self.test_srv_1_cb)
         self.test_srv_2 = self.create_service(ChangeState, f'/{self.get_name()}/test_srv_2', self.test_srv_2_cb)
         
+    # TODO remove this
     def test_srv_1_cb(self, request, response):
         print(f'test_srv_1_cb called w request: {str(request)}')
         response.plan = Path()
         return response
     
+    # TODO remove this
     def test_srv_2_cb(self, request, response):
         print(f'test_srv_2_cb called w request: {str(request)}')
         response.success = True
         return response
     
+    # TODO remove this
     def _make_test_params(self):
         self.declare_parameter('test_bool', False, descriptor=ParameterDescriptor(
             type=ParameterType.PARAMETER_BOOL,

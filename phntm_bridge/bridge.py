@@ -237,13 +237,14 @@ class BridgeController(Node, BridgeControllerConfig):
 
         @self.sio.on('ice-servers')
         async def on_ice_servers(data):
+            self.ice_servers = self.ice_servers_custom.copy()
             if not self.use_cloud_ice_config:
                 return
+            self.get_logger().debug(f'Got ICE servers: {str(data["servers"])}')
             for one_server in data["servers"]:
                 if not one_server in self.ice_servers:
                     self.ice_servers.append(one_server)
             self.ice_secret = data["secret"]
-            self.get_logger().debug(f'Got ICE servers: {str(self.ice_servers)}, secret={self.ice_secret}')
 
         @self.sio.on('peer')
         async def on_peer(data):
