@@ -28,9 +28,12 @@ Fast WebRTC + Socket.io ROS2 Bridge written in Python for real-time data and vid
 ## Install
 
 > [!WARNING]
-> This is a work in progress with some radical changes still taking place. Please wait until the first oficial release before installing this package,
-> the cloud infrastructure may be down or undergoing maintenance at any point. Some breaking changes may still occur requiring a full re-install.
-> The best way to get notified about a stable release is to follow [@phntm.io](https://bsky.app/profile/phntm.io) on BlueSky.
+> This is a work in progress, and some radical changes are still taking place.
+> Please wait until the first official release before installing this package,
+> as the cloud infrastructure may be down or undergoing maintenance at any time.
+> Some breaking changes may still occur, requiring a full re-install. 
+> The best way to get notified about a stable release is to use the Watch feature here on GitHub,
+> or by following [@phntm.io](https://bsky.app/profile/phntm.io) on BlueSky.
 
 ### Make sure your root SSL Certificates are up to date
 
