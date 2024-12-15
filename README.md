@@ -54,9 +54,9 @@ docker build -f Dockerfile -t phntm/bridge:$ROS_DISTRO \
 ```
 
 ### Register a new Robot on the Cloud Bridge
-This registers a new robot on the [Cloud Bridge](https://github.com/PhantomCybernetics/cloud_bridge) and returns default config file you can edit further. Unique ID_ROBOT and KEY pair are generated in this step.
+This registers a new robot on the Cloud Bridge and returns default config file you can edit further. Unique ID_ROBOT and KEY pair are generated in this step.
 ```bash
-wget -O ~/phntm_bridge.yaml 'https://bridge.phntm.io:1337/robot/register?yaml'
+wget -O ~/phntm_bridge.yaml 'https://register.phntm.io/robot?yaml'
 ```
 
 ### Examine and customize the Bridge config file
@@ -78,7 +78,7 @@ Full list of configuration options can be found [here](https://docs.phntm.io/bri
     maintainer_email: 'robot.master@domain.com' # e-mail for service announcements
 
     ## Socket.io config
-    sio_address: https://bridge.phntm.io
+    sio_address: https://us-ca.bridge.phntm.io
     sio_path: /robot/socket.io
     sio_port: 1337
     sio_ssl_verify: True
@@ -129,7 +129,6 @@ Full list of configuration options can be found [here](https://docs.phntm.io/bri
     input_drivers: [ 'Twist', 'Joy' ] # enabled input drivers
     input_defaults: /ros2_ws/phntm_input_config.json # path to input config file as mapped inside the container
     service_defaults: /ros2_ws/phntm_service_config.json # path to services config file as mapped inside the container
-
 ```
 
 ### Configure the Agent
