@@ -85,7 +85,7 @@ class BridgeControllerConfig():
         self.declare_parameter('sio_address', 'https://api.phntm.io')
         self.declare_parameter('sio_port', 1337)
         self.declare_parameter('sio_path', '/robot/socket.io')
-        self.declare_parameter('sio_connection_retry_sec', 2.0)
+        self.declare_parameter('sio_connection_retry_sec', 5.0)
         self.declare_parameter('sio_ssl_verify', True)
    
         # services collapsed in the ui menu (still operational, parameneter services by default; msg type or full service id)
