@@ -268,71 +268,71 @@ class BridgeControllerConfig():
                 pass
 
     # TODO remove this
-    def _make_test_srvs(self):
-        self.test_srv_1 = self.create_service(GetPlan, f'/{self.get_name()}/test_srv_1', self.test_srv_1_cb)
-        self.test_srv_2 = self.create_service(ChangeState, f'/{self.get_name()}/test_srv_2', self.test_srv_2_cb)
+    # def _make_test_srvs(self):
+    #     self.test_srv_1 = self.create_service(GetPlan, f'/{self.get_name()}/test_srv_1', self.test_srv_1_cb)
+    #     self.test_srv_2 = self.create_service(ChangeState, f'/{self.get_name()}/test_srv_2', self.test_srv_2_cb)
         
     # TODO remove this
-    def test_srv_1_cb(self, request, response):
-        print(f'test_srv_1_cb called w request: {str(request)}')
-        response.plan = Path()
-        return response
+    # def test_srv_1_cb(self, request, response):
+    #     print(f'test_srv_1_cb called w request: {str(request)}')
+    #     response.plan = Path()
+    #     return response
     
     # TODO remove this
-    def test_srv_2_cb(self, request, response):
-        print(f'test_srv_2_cb called w request: {str(request)}')
-        response.success = True
-        return response
+    # def test_srv_2_cb(self, request, response):
+    #     print(f'test_srv_2_cb called w request: {str(request)}')
+    #     response.success = True
+    #     return response
     
     # TODO remove this
-    def _make_test_params(self):
-        self.declare_parameter('test_bool', False, descriptor=ParameterDescriptor(
-            type=ParameterType.PARAMETER_BOOL,
-            description='This is a description of my bool parameter',
-            additional_constraints='Keep it cool',
-            read_only=True
-        ))
-        self.declare_parameter('test_bool_array', [ False ], descriptor=ParameterDescriptor(
-            type=ParameterType.PARAMETER_BOOL_ARRAY,
-            description='Bool array ftw',
-            additional_constraints='true or false, it\'s simple'
-        ))
-        self.declare_parameter('test_byte_array', [], descriptor=ParameterDescriptor(
-            type=ParameterType.PARAMETER_BYTE_ARRAY,
-            description='Byte array this is'
-        ))
-        self.declare_parameter('test_double', 0.0, descriptor=ParameterDescriptor(
-            type=ParameterType.PARAMETER_DOUBLE,
-            floating_point_range=[ FloatingPointRange(
-                from_value=-10.0,
-                to_value=100.0
-            ) ]
-        ))
-        self.declare_parameter('test_double_array', [ 0.0 ], descriptor=ParameterDescriptor(
-            type=ParameterType.PARAMETER_DOUBLE_ARRAY,
-            description='Array of floaring points aka doubles',
-            additional_constraints='Keep it between +/- 100',
-        ))
-        self.declare_parameter('test_integer', 0, descriptor=ParameterDescriptor(
-            type=ParameterType.PARAMETER_INTEGER,
-            integer_range=[ IntegerRange(
-                from_value=-11,
-                to_value=111
-            ) ]
-        ))
-        self.declare_parameter('test_integer_array', [ 1 ], descriptor=ParameterDescriptor(
-            type=ParameterType.PARAMETER_INTEGER_ARRAY,
-            description='Int array',
-            additional_constraints='Yo'
-        ))
-        self.declare_parameter('test_string', '', descriptor=ParameterDescriptor(
-            type=ParameterType.PARAMETER_STRING,
-            read_only=True
-        ))
-        self.declare_parameter('test_string_array', [ '' ], descriptor=ParameterDescriptor(
-            type=ParameterType.PARAMETER_STRING_ARRAY,
-            description='Insert your strings here',
-            additional_constraints='For realz',
-            read_only=False
-        ))
+    # def _make_test_params(self):
+    #     self.declare_parameter('test_bool', False, descriptor=ParameterDescriptor(
+    #         type=ParameterType.PARAMETER_BOOL,
+    #         description='This is a description of my bool parameter',
+    #         additional_constraints='Keep it cool',
+    #         read_only=True
+    #     ))
+    #     self.declare_parameter('test_bool_array', [ False ], descriptor=ParameterDescriptor(
+    #         type=ParameterType.PARAMETER_BOOL_ARRAY,
+    #         description='Bool array ftw',
+    #         additional_constraints='true or false, it\'s simple'
+    #     ))
+    #     self.declare_parameter('test_byte_array', [], descriptor=ParameterDescriptor(
+    #         type=ParameterType.PARAMETER_BYTE_ARRAY,
+    #         description='Byte array this is'
+    #     ))
+    #     self.declare_parameter('test_double', 0.0, descriptor=ParameterDescriptor(
+    #         type=ParameterType.PARAMETER_DOUBLE,
+    #         floating_point_range=[ FloatingPointRange(
+    #             from_value=-10.0,
+    #             to_value=100.0
+    #         ) ]
+    #     ))
+    #     self.declare_parameter('test_double_array', [ 0.0 ], descriptor=ParameterDescriptor(
+    #         type=ParameterType.PARAMETER_DOUBLE_ARRAY,
+    #         description='Array of floating point numbers',
+    #         additional_constraints='Keep it between +/- 100',
+    #     ))
+    #     self.declare_parameter('test_integer', 0, descriptor=ParameterDescriptor(
+    #         type=ParameterType.PARAMETER_INTEGER,
+    #         integer_range=[ IntegerRange(
+    #             from_value=-11,
+    #             to_value=111
+    #         ) ]
+    #     ))
+    #     self.declare_parameter('test_integer_array', [ 1 ], descriptor=ParameterDescriptor(
+    #         type=ParameterType.PARAMETER_INTEGER_ARRAY,
+    #         description='Int array',
+    #         additional_constraints='Yo'
+    #     ))
+    #     self.declare_parameter('test_string', '', descriptor=ParameterDescriptor(
+    #         type=ParameterType.PARAMETER_STRING,
+    #         read_only=True
+    #     ))
+    #     self.declare_parameter('test_string_array', [ '' ], descriptor=ParameterDescriptor(
+    #         type=ParameterType.PARAMETER_STRING_ARRAY,
+    #         description='Insert your strings here',
+    #         additional_constraints='For realz',
+    #         read_only=False
+    #     ))
         
