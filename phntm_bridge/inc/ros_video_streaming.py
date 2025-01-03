@@ -279,7 +279,6 @@ class ImageTopicReadSubscription:
                 except Exception as e:
                     self.ctrl_node.get_logger().error(f'👁️  Exception while sending {topic} to id_peer={id_peer} / id_stream= {str(peer_sender._stream_id)}, {e}; pc={peer_sender.pc.connectionState}, transport={peer_sender.transport.state}')
 
-            
             if len(self.peers[topic].keys()) and self.msg_blinker_cb is not None:
                 self.msg_blinker_cb()
                 
