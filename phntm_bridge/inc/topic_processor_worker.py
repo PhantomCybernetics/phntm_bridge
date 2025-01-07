@@ -373,7 +373,7 @@ class Worker:
             return
 
         is_keyframe = (frame.flags == 1)
-        stamp_ns_raw = int(frame.header.stamp.sec * NS_TO_SEC) + int(frame.header.stamp.nanosec)
+        stamp_ns_raw = (frame.header.stamp.sec * NS_TO_SEC) + frame.header.stamp.nanosec
     
         # expecting fully encoded frames here and only need to packetize them for transport
         try:
