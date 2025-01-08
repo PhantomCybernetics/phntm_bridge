@@ -17,12 +17,14 @@ from rclpy.executors import SingleThreadedExecutor, MultiThreadedExecutor
 
 from .inc.status_led import StatusLED
 from termcolor import colored as c
+from .inc.lib import locate_file, upload_file_bytes
 
 import subprocess
 import signal
 
 import fractions
 import tarfile, io
+import math
 import yaml
 import xml.etree.ElementTree as XmlET
 
@@ -56,7 +58,6 @@ from aiortc.rtcrtpsender import RTCRtpSender, RTCEncodedFrame
 from aiortc.contrib.media import MediaPlayer, MediaRelay
 from aiortc.rtcrtpsender import RTCRtpSender
 
-import os
 import platform
 
 from .inc.data_piped_topic_reader import DataPipedTopicSubscription
@@ -407,99 +408,14 @@ class BridgeController(Node, BridgeControllerConfig):
         @self.sio.on('file')
         async def on_file_request(data):
             file_url:str = data
-            pkg:str = None
-            pkg_prefix = ""
-            
-            if file_url.startswith('file:/'):
-                file_url = file_url.replace('file://', '')
-                file_url = file_url.replace('file:/', '')
-                if not file_url.startswith('/'):
-                    file_url = '/' + file_url
-                self.get_logger().warn(f'Bridge requesting file {file_url}')
-                
-            elif file_url.startswith('package:/'):
-                file_url = file_url.replace('package://', '')
-                file_url = file_url.replace('package:/', '')
-                
-                parts = file_url.split('/')
-                pkg = parts[0]
-                
-                # file_url = file_url.replace(f'{pkg}/', '')
-                
-                if not file_url.startswith('/'):
-                    file_url = '/' + file_url
-                
-                self.get_logger().warn(f'Bridge requesting file in pkg {pkg}: {file_url}')
-                
-                if pkg is not None:
-                    res = subprocess.run([f"/opt/ros/{self.ros_distro}/bin/ros2", "pkg", "prefix", pkg], capture_output=True)
-                    if res.stdout:
-                        pkg_prefix = res.stdout.decode("ASCII").rstrip() + '/share'
-                        self.get_logger().info(f'local ros2 {self.ros_distro} pkg prefix is {pkg_prefix}')
-                    else:
-                        self.get_logger().info(f'local ros2 {self.ros_distro} pkg prefix for {pkg} not found in this fs')
-            else:
-                self.get_logger().warn(f'Bridge requesting invalid file {file_url}')
+            file_bytes = await locate_file(file_url, self.ros_distro, docker_client, self.get_logger())
+            if not file_bytes:
                 return None # file not found
-            
-            if pkg_prefix and os.path.isfile(pkg_prefix + file_url):
-                self.get_logger().info(f'File found in this fs (pkg_prefix={pkg_prefix})')
-                f = open(file_url, "rb")
-                res = f.read()
-                f.close()
-                return res
-            elif os.path.isfile(file_url):
-                self.get_logger().info(f'File found in this fs')
-                f = open(file_url, "rb")
-                res = f.read()
-                f.close()
-                return res
-            elif docker_client:
-                self.get_logger().info(f'File not found in this fs, searching docker containers...')
-                docker_containers = docker_client.containers.list(all=False)
-                for container in docker_containers:
-                    pkg_prefix = ""    
-                    if pkg:
-                        cmd = f'/bin/bash -c "export PS1=phntm && . /opt/ros/{self.ros_distro}/setup.bash && . ~/.bashrc && /opt/ros/{self.ros_distro}/bin/ros2 pkg prefix {pkg}"'
-                        res = container.exec_run(cmd)
-                        if res.exit_code == 1:
-                            self.get_logger().info(f'pkg not found in cont {container.name} \nout={res.output}\ncmd={cmd}')
-                        else:
-                            pkg_prefix = res.output.decode("ASCII").rstrip() + '/share'
-                            self.get_logger().warn(f'cont {container.name} has pkg in {pkg_prefix}')
-                    
-                    try:
-                        tar_chunks, stats = container.get_archive(pkg_prefix+file_url, chunk_size=None, encode_stream=False)
-                    except Exception as e:
-                        self.get_logger().info(f'File not found in {container.name} fs')
-                        continue
-                    
-                    self.get_logger().debug(f'File found in {container.name} fs')
-                    self.get_logger().debug(str(stats))
-                    
-                    b_arr = []
-                    for chunk in tar_chunks:
-                        b_arr.append(chunk)
-                    
-                    tar_bytes = b''.join(b_arr)
-                    
-                    self.get_logger().info(f' making tar obj w {len(tar_bytes)} B')
-                    
-                    file_like_object = io.BytesIO(tar_bytes)
-                    tar = tarfile.open(fileobj=file_like_object)
-
-                    self.get_logger().info(f' Tar memebers: {tar.getnames()}')
-
-                    member = tar.getmember(stats['name'])
-                    
-                    self.get_logger().info(f' {member} data starts at {member.offset_data}')
-                    
-                    res = tar_bytes[member.offset_data:member.offset_data+stats['size']]
-                  
-                    self.get_logger().info(f' Returning {len(res)} B of tar member {member}')
-                    return res
-                      
-            return None # file not found
+            uploaded_file_res = await upload_file_bytes(file_url, file_bytes, self.id_robot, self.auth_key, f'{self.sio_address}:1336', self.get_logger())
+            if uploaded_file_res:
+                return uploaded_file_res
+            else:
+                return None # error
 
         @self.sio.on('*')
         async def catch_all(event, data):
@@ -835,8 +751,11 @@ class BridgeController(Node, BridgeControllerConfig):
             except Exception as e:
                 self.get_logger().info(c(f'Exception while closing pc of {peer}, {e}', 'red'))
                 pass
-            del self.wrtc_peers[id_peer]
-    
+            try:
+                del self.wrtc_peers[id_peer]
+            except KeyError:
+                pass
+            
     
     async def remove_all_peers(self):
         if len(self.wrtc_peers.values()) == 0:
