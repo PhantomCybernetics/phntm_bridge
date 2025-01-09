@@ -189,7 +189,7 @@ async def upload_file_bytes(file_url:str, file_bytes:bytes, id_robot:str, auth_k
     # Complete the upload
     complete_data = {
         'idRobot': id_robot,
-        'key': auth_key,
+        'authKey': auth_key,
         'fileUrl': file_url,
         'totalParts': total_parts
     }
