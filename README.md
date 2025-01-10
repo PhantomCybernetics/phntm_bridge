@@ -85,8 +85,9 @@ Full list of configuration options can be found [here](https://docs.phntm.io/bri
     name: 'Unnamed Robot'
     maintainer_email: 'robot.master@domain.com' # e-mail for service announcements
 
+    cloud_bridge_address: https://us-ca.bridge.phntm.io
+
     ## Socket.io config
-    sio_address: https://us-ca.bridge.phntm.io
     sio_path: /robot/socket.io
     sio_port: 1337
     sio_ssl_verify: True

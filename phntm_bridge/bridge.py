@@ -7,6 +7,7 @@ from rclpy_message_converter import message_converter
 from rcl_interfaces.msg import Parameter, ParameterValue, ParameterType
 from rcl_interfaces.msg import ParameterDescriptor, ParameterType, FloatingPointRange, IntegerRange
 from rclpy_message_converter import message_converter
+from std_srvs.srv import Trigger
 import concurrent.futures
 import gpiod
 
@@ -17,7 +18,7 @@ from rclpy.executors import SingleThreadedExecutor, MultiThreadedExecutor
 
 from .inc.status_led import StatusLED
 from termcolor import colored as c
-from .inc.lib import locate_file, upload_file_bytes
+from .inc.lib import locate_file, upload_file_bytes, request_clear_file_cache
 
 import subprocess
 import signal
@@ -100,6 +101,11 @@ class BridgeController(Node, BridgeControllerConfig):
         self.get_logger().set_level(rclpy.logging.LoggingSeverity.DEBUG)
         self.load_config(self.get_logger())
 
+        async def clear_file_cache_srv(request, response):
+            await request_clear_file_cache(self.id_robot, self.auth_key, self.uploader_address, response, self.get_logger())
+            return response
+        self.create_service(Trigger, f'/{self.get_name()}/clear_cloud_file_cache', clear_file_cache_srv)
+        
         self.ros_distro = os.environ["ROS_DISTRO"]
         self.get_logger().debug(f'ROS Distro is: {self.ros_distro}')
         
@@ -408,10 +414,14 @@ class BridgeController(Node, BridgeControllerConfig):
         @self.sio.on('file')
         async def on_file_request(data):
             file_url:str = data
+            time_start = time.time()
             file_bytes = await locate_file(file_url, self.ros_distro, docker_client, self.get_logger())
+            self.get_logger().warn(f'locate_file took {time.time()-time_start}s')
             if not file_bytes:
                 return None # file not found
-            uploaded_file_res = await upload_file_bytes(file_url, file_bytes, self.id_robot, self.auth_key, f'{self.sio_address}:1336', self.get_logger())
+            time_start = time.time()
+            uploaded_file_res = await upload_file_bytes(file_url, file_bytes, self.id_robot, self.auth_key, self.uploader_address, self.get_logger())
+            self.get_logger().warn(f'upload_file_bytes took {time.time()-time_start}s')
             if uploaded_file_res:
                 return uploaded_file_res
             else:
@@ -439,7 +449,7 @@ class BridgeController(Node, BridgeControllerConfig):
     async def spin_sio_client(self):
         while not self.shutting_down:
             try:
-                self.get_logger().info(f'Socket.io connecting to {self.sio_address}:{self.sio_port}{self.sio_path}')
+                self.get_logger().info(f'Socket.io connecting to {self.cloud_bridge_address}:{self.sio_port}{self.sio_path}')
                 auth_data = {
                     'id_robot': self.id_robot,
                     'key': self.auth_key,
@@ -449,7 +459,7 @@ class BridgeController(Node, BridgeControllerConfig):
                     'git_sha': self.git_head_sha,
                     'git_tag': self.latest_git_tag
                 }
-                await self.sio.connect(url=f'{self.sio_address}:{self.sio_port}', socketio_path=self.sio_path, auth=auth_data)
+                await self.sio.connect(url=f'{self.cloud_bridge_address}:{self.sio_port}', socketio_path=self.sio_path, auth=auth_data)
 
                 self.sio_wait_task = asyncio.get_event_loop().create_task(self.sio.wait()) # wait as long as connected
                 await self.sio_wait_task
@@ -1166,6 +1176,7 @@ class BridgeController(Node, BridgeControllerConfig):
                 try:
                     await event_loop.run_in_executor(None, lambda: self.rcl_executor.spin_once(timeout_sec=0.01)) # gotta spin to hear back
                 except Exception as e:
+     
                     if (str(e) == 'cannot use Destroyable because destruction was requeste'):
                         pass
                     else:

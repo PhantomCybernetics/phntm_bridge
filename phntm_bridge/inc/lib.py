@@ -201,3 +201,21 @@ async def upload_file_bytes(file_url:str, file_bytes:bytes, id_robot:str, auth_k
     else:
         logger.error(f"Error completing upload: {complete_response.text}")
         return None
+    
+async def request_clear_file_cache(id_robot:str, auth_key:str, upload_host:str, response, logger:RcutilsLogger):
+    logger.info(f'Requesting clear server file cache')
+    
+    clear_data = {
+        'idRobot': id_robot,
+        'authKey': auth_key
+    }
+    clear_response = requests.post(f'{upload_host}/clear_cache', json=clear_data)
+
+    if clear_response.status_code == 200:
+        logger.debug("Cache cleared")
+        response.success = True
+        response.message = clear_response.text
+    else:
+        logger.error(f"Error clearing cache: {clear_response.text}")
+        response.success = False
+        response.message = clear_response.text

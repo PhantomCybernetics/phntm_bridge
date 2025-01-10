@@ -81,8 +81,13 @@ class BridgeControllerConfig():
         ice_secret_censored = Parameter('ice_secret', Parameter.Type.STRING, value='*************')
         self.set_parameters([ key_censored, ice_username_censored, ice_secret_censored]) 
         
-        # SOCKET.IO
-        self.declare_parameter('sio_address', 'https://api.phntm.io')
+        # Cloud Bridge host
+        self.declare_parameter('cloud_bridge_address', 'https://us-ca.bridge.phntm.io')
+        
+        # Cloud Bridge files uploader port
+        self.declare_parameter('file_upload_port', 1336)
+        
+        # Socket.io
         self.declare_parameter('sio_port', 1337)
         self.declare_parameter('sio_path', '/robot/socket.io')
         self.declare_parameter('sio_connection_retry_sec', 5.0)
@@ -127,14 +132,18 @@ class BridgeControllerConfig():
         self.declare_parameter('log_message_every_sec', 10.0)
         self.log_message_every_sec = self.get_parameter('log_message_every_sec').get_parameter_value().double_value
 
-        self.sio_address = self.get_parameter('sio_address').get_parameter_value().string_value
+        self.cloud_bridge_address = self.get_parameter('cloud_bridge_address').get_parameter_value().string_value
+        self.file_upload_port = self.get_parameter('file_upload_port').get_parameter_value().integer_value
         self.sio_port = self.get_parameter('sio_port').get_parameter_value().integer_value
         self.sio_path = self.get_parameter('sio_path').get_parameter_value().string_value
         self.sio_ssl_verify = self.get_parameter('sio_ssl_verify').get_parameter_value().bool_value
         self.sio_connection_retry_sec = self.get_parameter('sio_connection_retry_sec').get_parameter_value().double_value
-        if (self.sio_address == None or self.sio_address == ''): self.get_logger().error(f'Param sio_address not provided!')
+        if (self.cloud_bridge_address == None or self.cloud_bridge_address == ''): self.get_logger().error(f'Param cloud_bridge_address not provided!')
+        if (self.file_upload_port == None): logger.error(f'Param file_upload_port not provided!')
         if (self.sio_port == None): logger.error(f'Param sio_port not provided!')
 
+        self.uploader_address = f'{self.cloud_bridge_address}:{self.file_upload_port}'
+        
         # Conn LED control via topic (blinks when connecting; on when connected; off = bridge not running)
         self.declare_parameter('conn_led_topic', '' )
         self.conn_led_topic = self.get_parameter('conn_led_topic').get_parameter_value().string_value
@@ -266,7 +275,7 @@ class BridgeControllerConfig():
             except FileNotFoundError:
                 logger.error(f'Service defaults file not found: {service_defaults_file}')
                 pass
-
+    
     # TODO remove this
     # def _make_test_srvs(self):
     #     self.test_srv_1 = self.create_service(GetPlan, f'/{self.get_name()}/test_srv_1', self.test_srv_1_cb)
