@@ -28,6 +28,7 @@ import tarfile, io
 import math
 import yaml
 import xml.etree.ElementTree as XmlET
+import json
 
 # from rcl_interfaces.msg import ParameterDescriptor
 # import signal
@@ -415,15 +416,15 @@ class BridgeController(Node, BridgeControllerConfig):
         async def on_file_request(data):
             file_url:str = data
             time_start = time.time()
-            file_bytes = await locate_file(file_url, self.ros_distro, docker_client, self.get_logger())
+            file_bytes = await asyncio.to_thread(locate_file, file_url, self.ros_distro, docker_client, self.get_logger())
             self.get_logger().warn(f'locate_file took {time.time()-time_start}s')
             if not file_bytes:
                 return None # file not found
             time_start = time.time()
-            uploaded_file_res = await upload_file_bytes(file_url, file_bytes, self.id_robot, self.auth_key, self.uploader_address, self.get_logger())
+            uploaded_file_res = await asyncio.to_thread(upload_file_bytes, file_url, file_bytes, self.id_robot, self.auth_key, self.uploader_address, self.get_logger())    
             self.get_logger().warn(f'upload_file_bytes took {time.time()-time_start}s')
             if uploaded_file_res:
-                return uploaded_file_res
+                return json.loads(uploaded_file_res)
             else:
                 return None # error
 

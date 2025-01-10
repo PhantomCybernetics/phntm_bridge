@@ -62,7 +62,7 @@ def format_bytes(b, mib=False):
     else:
         return f'0B'
     
-async def locate_file(file_url:str, ros_distro:str, docker_client:docker.DockerClient, logger:RcutilsLogger):
+def locate_file(file_url:str, ros_distro:str, docker_client:docker.DockerClient, logger:RcutilsLogger):
     
     pkg:str = None
     pkg_prefix = ""
@@ -158,7 +158,7 @@ async def locate_file(file_url:str, ros_distro:str, docker_client:docker.DockerC
             
     return None # file not found
 
-async def upload_file_bytes(file_url:str, file_bytes:bytes, id_robot:str, auth_key:str, upload_host:str, logger:RcutilsLogger):
+def upload_file_bytes(file_url:str, file_bytes:bytes, id_robot:str, auth_key:str, upload_host:str, logger:RcutilsLogger):
     
     chunk_size = 1024*1024
     byte_size = len(file_bytes)
@@ -197,7 +197,7 @@ async def upload_file_bytes(file_url:str, file_bytes:bytes, id_robot:str, auth_k
 
     if complete_response.status_code == 200:
         logger.debug("File upload and reassembly completed")
-        return json.loads(complete_response.text)
+        return complete_response.text
     else:
         logger.error(f"Error completing upload: {complete_response.text}")
         return None
