@@ -147,7 +147,7 @@ class DataQueuedTopicsSubscription:
                     # print(f'Sending {len(tfs_by_topic_and_frame[topic])} tfs for {topic}')
                     await self.on_msg(topic, tfs_by_topic_and_frame[topic])
                     
-                await asyncio.sleep(0.03)
+                await asyncio.sleep(0.01)
                 
             except (KeyboardInterrupt, asyncio.CancelledError):
                 print(f'read_queued_data for {self.topic} got interrupt')
