@@ -488,7 +488,8 @@ class Introspection (AsyncIOEventEmitter):
         except Exception as e:
             if f'{e}' == 'Executor shutdown has been called':
                 return
-            self.logger.error(f'Exception {type(e)} in introspection: {e}')
+            self.logger.error(f'Exception {type(e)} in introspection:')
+            traceback.print_stack(e)
             
         return topics_changed # keep introspection running
 

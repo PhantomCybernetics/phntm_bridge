@@ -263,6 +263,7 @@ class Worker:
 
                 self.active_subs[topic] = {
                     'sub': sub,
+                    'message_class': message_class,
                     'args': args,
                     'pipe': pipe, # data only (non-tf)
                     'push_task': None,

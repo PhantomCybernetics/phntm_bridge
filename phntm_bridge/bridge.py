@@ -825,7 +825,6 @@ class BridgeController(Node, BridgeControllerConfig):
             return False
         return True
 
-
     def on_msg_blink(self):
         if self.data_led != None:
             self.data_led.once() # blink when sending data to a peer
@@ -841,10 +840,14 @@ class BridgeController(Node, BridgeControllerConfig):
             msg_type:str = self.introspection.discovered_topics[topic]['msg_type']
             if IsImageType(msg_type):
                 return None
-
-            # TODO temp
-            is_queued_data = topic in [ '/tf', '/tf_static', '/robot_description' ]
-
+            
+            # auto_queued_topics = self.get_parameter('auto_queued_topics').get_parameter_value().string_array_value
+            # self.get_logger().debug(f'checking topic for queued: {topic} {str(auto_queued_topics)}')
+            # if not self.has_parameter(f'{topic}.queued_data'):
+            #     self.declare_parameter(f'{topic}.queued_data', (True if topic in auto_queued_topics else False)) # num sec as int, -1 infinity
+            # is_queued_data = self.get_parameter(f'{topic}.queued_data').get_parameter_value().bool_value
+            is_queued_data = (msg_type == 'tf2_msgs/msg/TFMessage')
+            
             if not is_queued_data and not topic in self.piped_topic_read_subscriptions.keys():
                 self.piped_topic_read_subscriptions[topic] = DataPipedTopicSubscription(
                     ctrl_node = self,
@@ -911,7 +914,9 @@ class BridgeController(Node, BridgeControllerConfig):
                 return None
             
         except Exception as e:
-            self.ctrl_node.get_logger().error(f'Exception in subscribe_data_topic: {e}')
+            self.get_logger().error(f'Exception in subscribe_data_topic:')
+            traceback.print_exc(e)
+            traceback.print_stack(e)
 
 
     # UNSUBSCRIBE data topic
@@ -922,8 +927,9 @@ class BridgeController(Node, BridgeControllerConfig):
             peer.outbound_data_channels[topic].close()
             peer.outbound_data_channels.pop(topic)
 
-        # TODO temp
-        is_queued_data = topic in [ '/tf', '/tf_static', '/robot_description' ]
+        # is_queued_data = self.has_parameter(f'{topic}.queued_data') and self.get_parameter(f'{topic}.queued_data').get_parameter_value().bool_value
+        msg_type:str = self.introspection.discovered_topics[topic]['msg_type']
+        is_queued_data = (msg_type == 'tf2_msgs/msg/TFMessage')
 
         if not is_queued_data and topic in self.piped_topic_read_subscriptions.keys():
             if await self.piped_topic_read_subscriptions[topic].stop(peer, msg_callback):
