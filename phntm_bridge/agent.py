@@ -102,6 +102,11 @@ class AgentController(Node):
             response.msg = 'Docker control disabled'
             return response
         
+        if not request.id_container:
+            response.err = 3
+            response.msg = 'No container id provided'
+            return response
+        
         self.get_logger().debug(f'Docker request {request.id_container} state:{request.set_state}')
         
         try:
