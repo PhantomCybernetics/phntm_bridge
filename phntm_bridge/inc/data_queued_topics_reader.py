@@ -13,6 +13,7 @@ from rclpy.qos import QoSHistoryPolicy, QoSReliabilityPolicy, DurabilityPolicy
 from termcolor import colored as c
 
 from .peer import WRTCPeer
+from rclpy.serialization import deserialize_message, serialize_message
 
 import rclpy
 
@@ -23,6 +24,9 @@ from rclpy.context import Context
 from rclpy.executors import Executor, MultiThreadedExecutor, SingleThreadedExecutor
 import threading
 import traceback
+
+from tf2_msgs.msg import TFMessage
+from geometry_msgs.msg import TransformStamped
 
 import multiprocessing as mp
 from multiprocessing.connection import Connection
@@ -115,13 +119,35 @@ class DataQueuedTopicsSubscription:
     async def read_queued_data(self):
         while self.read_task and not self.read_task.cancelled():
             try:
-                self.last_read_task = self.event_loop.run_in_executor(self.executor, self.queue.get) #blocks
-                res = await self.last_read_task
+                tfs_by_topic_and_frame = {}
+                num = 0
+                while self.queue.qsize() > 0: # uderliable but that's okay
+                    try:
+                        res = self.queue.get(False) # throws when empty
+                        if 'msg' in res.keys() and res['msg'] == None: # closing queue from the worker
+                            return
+                        topic=res['topic']
+                        if not topic in tfs_by_topic_and_frame.keys():
+                            tfs_by_topic_and_frame[topic] = {}
+                        tf = deserialize_message(res['msg'], TFMessage)
+                        for t in tf.transforms:
+                            # print(t)
+                            frame_id = t.header.frame_id + '>' + t.child_frame_id
+                            if (not frame_id in tfs_by_topic_and_frame[topic].keys()) \
+                            or (t.header.stamp.sec > tfs_by_topic_and_frame[topic][frame_id].header.stamp.sec) \
+                            or (t.header.stamp.sec == tfs_by_topic_and_frame[topic][frame_id].header.stamp.sec and t.header.stamp.nanosec > tfs_by_topic_and_frame[topic][frame_id].header.stamp.nanosec):
+                                tfs_by_topic_and_frame[topic][frame_id] = t
+                        # await asyncio.sleep(0.01)
+                        
+                    except Empty:
+                        # print(f'Queue empty, got {len(tfs_by_topic_and_frame[topic].keys())} transforms')
+                        break
                 
-                if 'msg' in res and res['msg'] == None: # closing queue from the worker
-                    return    
-
-                await self.on_msg(res)
+                for topic in tfs_by_topic_and_frame.keys():
+                    # print(f'Sending {len(tfs_by_topic_and_frame[topic])} tfs for {topic}')
+                    await self.on_msg(topic, tfs_by_topic_and_frame[topic])
+                    
+                await asyncio.sleep(0.01)
                 
             except (KeyboardInterrupt, asyncio.CancelledError):
                 print(f'read_queued_data for {self.topic} got interrupt')
@@ -133,9 +159,9 @@ class DataQueuedTopicsSubscription:
 
 
     # called either by ctrl node's process or when data is received via reader_out_queue (called on ctrl node's process)
-    async def on_msg(self, reader_res:dict):
+    async def on_msg(self, topic, tf_msgs_by_frame):
         try:
-            topic=reader_res['topic']
+            # topic=reader_res['topic']
             
             if not topic in self.num_received.keys():
                 self.num_received[topic] = 0
@@ -146,11 +172,17 @@ class DataQueuedTopicsSubscription:
             if not topic in self.last_log.keys():
                 self.last_log[topic] = -1
             
-            self.last_msg[topic] = reader_res['msg']
+            tf = TFMessage()
+            tf.transforms = []
+            for t in tf_msgs_by_frame.values():
+                tf.transforms.append(t)
+            
+            msg = serialize_message(tf)
+            self.last_msg[topic] = msg
 
             log_msg = False
             if log_msg or self.num_received[topic] == 1: # first data in
-                self.ctrl_node.get_logger().debug(f'⚡️ Receiving {type(reader_res["msg"]).__name__} from {topic}')
+                self.ctrl_node.get_logger().debug(f'⚡️ Receiving transforms from {topic}')
 
             if self.last_log[topic] < 0 or self.last_msg_time[topic]-self.last_log[topic] > self.log_message_every_sec:
                 log_msg = True
@@ -167,7 +199,7 @@ class DataQueuedTopicsSubscription:
                 dc:RTCDataChannel = self.peers[topic][id_peer]
                 if dc.readyState == 'open':
                     if log_msg:
-                        self.ctrl_node.get_logger().info(f'⚡️ Sending {len(self.last_msg[topic])}B into {topic} for id_peer={id_peer} / dc= {str(id(dc))}, total received: {self.num_received[topic]}')
+                        self.ctrl_node.get_logger().info(f'⚡️ Sending {len(tf.transforms)} tfs /  {len(self.last_msg[topic])}B into {topic} for id_peer={id_peer} / dc= {str(id(dc))}, total received: {self.num_received[topic]}')
         
                     try:
                         dc.send(self.last_msg[topic])

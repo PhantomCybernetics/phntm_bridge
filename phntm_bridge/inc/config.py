@@ -163,6 +163,8 @@ class BridgeControllerConfig():
         self.declare_parameter('discovery_period_sec', 5.0)
         self.declare_parameter('stop_discovery_after_sec', -1.0) # < 0 => never
 
+        # self.declare_parameter('auto_queued_topics', [ '/tf', '/tf_static', '/robot_description' ])
+        
         # wifi monitoring + scan
         self.declare_parameter('ui_wifi_monitor_topic', '/iw_status') # agent writes here
         self.declare_parameter('ui_enable_wifi_scan', True) # enables scan without roaming
