@@ -1035,7 +1035,7 @@ class BridgeController(Node, BridgeControllerConfig):
         if topic != '_heartbeat':
             if not topic in self.topic_write_publishers:
                 try: 
-                    self.declare_parameter(f'{topic}.reliability', 2) # 0 = system default, 1 = reliable, 2 = best effort, 
+                    self.declare_parameter(f'{topic}.reliability', 2) # 0 = system default, 1 = reliable, 2 = best effort
                     self.declare_parameter(f'{topic}.durability', 2) # 0 = system default, 1 = transient local, 2 = volatile
                 except rclpy.exceptions.ParameterAlreadyDeclaredException:
                     pass
