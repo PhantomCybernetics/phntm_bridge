@@ -1034,9 +1034,22 @@ class BridgeController(Node, BridgeControllerConfig):
     async def open_write_channel(self, topic:str, msg_type:str, peer:WRTCPeer) -> str:
         if topic != '_heartbeat':
             if not topic in self.topic_write_publishers:
+                try: 
+                    self.declare_parameter(f'{topic}.reliability', 2) # 0 = system default, 1 = reliable, 2 = best effort, 
+                    self.declare_parameter(f'{topic}.durability', 2) # 0 = system default, 1 = transient local, 2 = volatile
+                except rclpy.exceptions.ParameterAlreadyDeclaredException:
+                    pass
+                reliability = self.get_parameter(f'{topic}.reliability').get_parameter_value().integer_value
+                durability = self.get_parameter(f'{topic}.durability').get_parameter_value().integer_value
+                qos = QoSProfile(history=QoSHistoryPolicy.KEEP_LAST,
+                    depth=1,
+                    reliability=QoSReliabilityPolicy(reliability),
+                    durability=DurabilityPolicy(durability)
+                )
                 self.topic_write_publishers[topic] = TopicWritePublisher(node=self,
                                                                         topic=topic,
                                                                         protocol=msg_type,
+                                                                        qos=qos,
                                                                         log_message_every_sec=self.log_message_every_sec)
                 asyncio.get_event_loop().create_task(self.introspection.start()) # created publisher => inrospect & update
 

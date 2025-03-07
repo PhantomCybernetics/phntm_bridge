@@ -15,6 +15,6 @@
         "/opt/ros/humble/local/lib/python3.10/dist-packages",
         "",
     ],
-    "workbench.colorTheme": "Tomorrow Night Blue",
+    "workbench.colorTheme": "Visual Studio 2017 Dark - C++",
     "ros.distro": "humble"
 }

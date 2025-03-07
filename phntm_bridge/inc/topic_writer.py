@@ -22,15 +22,16 @@ import threading
 # this can indeed lead for compeition
 class TopicWritePublisher:
 
-    def __init__(self, node:Node, topic:str, protocol:str, log_message_every_sec:float):
+    def __init__(self, node:Node, topic:str, protocol:str, qos:QoSProfile, log_message_every_sec:float):
         self.pub:Publisher = None
         self.node:Node = node
         self.peers:list[str] = []
         self.topic:str = topic
         self.protocol:str = protocol
-
+        self.qos:QoSProfile = qos
+        
         self.num_received:int = 0
-        self.num_written:int = 0;
+        self.num_written:int = 0
         self.last_msg:any = None
         self.last_received_time:float = -1.0
         self.last_time_logged:float = -1.0
@@ -57,13 +58,7 @@ class TopicWritePublisher:
                 self.peers.append(id_peer)
             return True #all done, one pub for all
 
-        # reliable from here (not)
-        qos = QoSProfile(history=QoSHistoryPolicy.KEEP_LAST, \
-                         depth=1, \
-                         reliability=QoSReliabilityPolicy.BEST_EFFORT \
-                         )
-
-        self.pub = self.node.create_publisher(self.message_class, self.topic, qos)
+        self.pub = self.node.create_publisher(self.message_class, self.topic, self.qos)
         if self.pub == None:
             self.get_logger().error(f'Failed creating publisher for topic {self.topic}, protocol={self.protocol}, peer={id_peer}')
             return False
