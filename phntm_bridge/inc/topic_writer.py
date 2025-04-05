@@ -73,23 +73,26 @@ class TopicWritePublisher:
         drop=False
         msg_header:Header = None
 
+        self.num_received += 1
+        
         if hasattr(self.message_class, 'header'):
             msg_header = deserialize_message(msg, Header)
             msg_s:float = msg_header.stamp.sec + (msg_header.stamp.nanosec * 1.0/1000000000.0)
-            msg_delta_s:float = msg_s - self.last_received_msg_stamp if self.last_received_msg_stamp > -1.0 else 0
+            msg_delta_s:float = (msg_s - self.last_received_msg_stamp) if (self.last_received_msg_stamp > -1.0) else 0.0
+            
             self.last_received_msg_stamp = msg_s
             expected_delta_s = msg_delta_s
         else:
             expected_delta_s = 0.033 #temp 30 Hz expected
 
-        self.num_received += 1
         self.last_msg = msg #save last always
 
-        local_delta_s:float = time.time() - self.last_received_time if self.last_received_time > -1.0 else 0
-        self.last_received_time = time.time()
+        now = time.time()
+        local_delta_s:float = (now - self.last_received_time) if (self.last_received_time > -1.0) else 0.0
+        self.last_received_time = now
 
         color:str = None
-        if local_delta_s < expected_delta_s/2.0: #local buff burst
+        if local_delta_s < expected_delta_s/4.0: #local buff burst
             color = 'red'
             drop = True
         if local_delta_s > expected_delta_s*2.0: #delayed in transport
@@ -97,13 +100,13 @@ class TopicWritePublisher:
             drop = False
         if msg_header and expected_delta_s > 1.0: # after pause
             color = 'magenta'
-            drop = False
-        if drop:
-            # if msg_header:
-            #     print (c(f'{self.topic} DROP msg: {str(msg_header.stamp.sec)}:{str(msg_header.stamp.nanosec)}, delta msg={msg_delta_s} local={local_delta_s} s', color))
-            # else:
-            #     print (c(f'{self.topic} DROP msg: exp delta msg={expected_delta_s} local={local_delta_s} s', color))
-            return
+            drop = False  
+        # if drop:
+        #     if msg_header:
+        #         print (c(f'{self.topic} DROP msg: {str(msg_header.stamp.sec)}:{str(msg_header.stamp.nanosec)}, delta msg={msg_delta_s} local={local_delta_s} s', color))
+        #     else:
+        #         print (c(f'{self.topic} DROP msg: exp delta msg={expected_delta_s} local={local_delta_s} s', color))
+        #     return
         # else:
         #     print (c(f'{self.topic} msg: local delta={local_delta_s} s', color))
 
@@ -113,7 +116,7 @@ class TopicWritePublisher:
                 self.node.get_logger().info(f'🐵 {self.topic} got message: {len(msg)}B from id_peer={id_peer}, total rcvd: {self.num_received}, written={self.num_written}')
             else:
                 self.node.get_logger().info(f'🐵 {self.topic} got message: {len(msg)}, from id_peer={id_peer}, total rcvd: {self.num_received}, written={self.num_written}')
-
+        
         self.num_written += 1
         self.pub.publish(self.last_msg)
         # self.pub.publish(self.last_msg)

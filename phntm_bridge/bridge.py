@@ -555,7 +555,13 @@ class BridgeController(Node, BridgeControllerConfig):
                 
                 try: 
                     self.declare_parameter(f'{sub}.reliability', 2) # 0 = system default, 1 = reliable, 2 = best effort, 
+                except rclpy.exceptions.ParameterAlreadyDeclaredException:
+                    pass
+                try: 
                     self.declare_parameter(f'{sub}.durability', 2) # 0 = system default, 1 = transient local, 2 = volatile
+                except rclpy.exceptions.ParameterAlreadyDeclaredException:
+                    pass
+                try:
                     self.declare_parameter(f'{sub}.lifespan_sec', -1) # num sec as int, -1 infinity
                 except rclpy.exceptions.ParameterAlreadyDeclaredException:
                     pass
